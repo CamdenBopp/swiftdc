@@ -12,17 +12,18 @@ outranks an OPEN in Reconstruction quality.
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-11-10, against 9369b0e. Every OPEN and UNKNOWN entry (93)
-was checked against the code and, where a fixture or a small build could show
+Last comprehensive audit: 2026-11-10, against 9369b0e. Every OPEN and UNKNOWN
+entry (93) was checked against the code and, where a fixture or a small build could show
 it, reproduced with a release binary. 11 were fixed or superseded and are
 marked so, 7 frame-memory entries are SUPERSEDED by one, and about 20 had
 stale counts, renamed symbols or a wrong stated cause, now corrected and marked
 "audited 2026-11-10". Entries not re-measured (they need a private app or a
 whole large image) say so. A 1,210-line block the 2026-11-08 commit 077d4f0
 pasted a second time, with one entry in the earlier copy corrupted, was
-removed, keeping the later copy. Two OPEN entries still render a wrong value or
-crash: the async-context assumption (`incomingLeaf`) and the nested ObjC type
-encoding.
+removed, keeping the later copy. At that date, two remaining OPEN entries
+rendered a wrong value or crashed: the async-context assumption (`incomingLeaf`)
+and the nested ObjC type encoding. Later hash-pinned entries below record
+targeted follow-ups; they do not constitute another sweep of all 93 entries.
 
 Previously audited: 2026-10-12, unified merge of all feature branches (MachOSwiftSection
 0.22.0, Capstone 6, x8 indirect returns, arm64e preflight, async funclets), then a
@@ -202,8 +203,10 @@ wrong output first, by how much ordinary code it touches.
 7. **FIXED in part (7311942): an outlined fragment's x0/v0** is no longer
    taken for a new call result when its decoded body proves it unwritten.
    The physical input survives, retaining FP precision; typed Swift/C result
-   contracts keep priority. **OPEN:** an outlined entry's x8 is still seeded
-   as a result buffer, and other unmodelled helper effects remain.
+   contracts keep priority. **FIXED in part (9479048):** an incoming x8 read
+   no longer establishes result-buffer ownership; entry and caller
+   interpretation require the supported ordinary ABI. **OPEN:** a census of
+   actual hidden-result parameters and other unmodelled helper effects.
 8. **OPEN: the rest of the wrong-render tables** in the findings
    document: metatype arguments stripped as plumbing, generic cast types
    cut short, a tail-called retain printing its call twice, a throw
@@ -12885,3 +12888,92 @@ it does not recover a source result type or infer a value from a failed
 transaction. Outlined x8 entry ownership remains separate.
 Candidate release SHA256:
 `45d4b7081fc2b2e92b1ab1d8671f67e22f5043d447f35d005f2b2242fa042353`.
+
+
+### 2026-11-17: qualify incoming x8 by the entry ABI
+
+**FIXED in part (947904890b2b712b7b33ef0492a3ec74da20c1ac).** Published
+`8f1793b` prints an outlined helper's incoming data word as `&result` and
+returns its call as a five-word result, though native execution leaves the
+caller buffer untouched. Go `main.store9` likewise receives its ninth word
+in x8 as data. A physical x8 read now establishes neither role by itself.
+
+- Entry seeds and caller result conventions require the supported ordinary
+  ABI. Async/validated Go entries, outlined/generated/empty identities and
+  missing ordinary preservation evidence decline; Swift's x21 error output
+  remains supported. Exact Go runtime-table membership reaches all three
+  context constructors and all five APIs. Entry, caller, probe, fixpoint and
+  nested modes agree. A declined callee convention remains unknown, not
+  direct. This qualifies ABI eligibility, not actual hidden-result ownership.
+- Removing a phantom seed does not erase proved GP/FP, incoming-stack or
+  opaque input extents. A separate fact closes unknown extents through tails,
+  opaque calls and unwritten incoming words, including a registered target
+  with no usable summary. No source count is invented from a MAY mask.
+  Existing metadata/witness layouts, trusted zero-formal getters, x21 runtime
+  handling, nonvoid ObjC owning tails and resolved BL-only input policy remain.
+  Internal/switch/async-return branches stay excluded; recursive calls remain.
+- Go's exact `morestack`, `morestack_noctxt`, `morestackc` and ABI0 entries
+  retain zero source formals despite their register/spill inputs. The contract
+  survives missing summaries and unknown/live snapshots; a spelling, another
+  Go entry, interior address or near name proves nothing. The installed Go
+  1.27.3 runtime declarations and `$0-0` assembly ground this bounded contract.
+- Authored assembly, fixed/resilient Swift, reabstracted and ObjC aggregate,
+  HFA and scalar controls at all optimization levels give **53 LLVM signatures
+  and 420 native observations**. Actual separate optional-Go builds match the
+  non-Go matrix: without Go, all **53 signatures / 406 observations** remain.
+  Native receipts and all 44 frozen new/BodyArity products are checked.
+- All **1,845 existing tests** remain; every original test body and assertion
+  is byte-identical across **333 Swift files**. Only a selected-FP setup helper
+  gains real d8 preservation and decoded evidence. **22 tests** are added.
+  **48 product mutations and two fixture controls** separately compile red,
+  with native controls green; independent halves fail separately. Sources
+  restore byte-exact and rebuild: **92 tests / two suites** pass (324.152 s),
+  then the full fixture-enforced **1,867 tests / 43 suites** pass (849.252 s).
+  Commands: `Tools/fixtures.sh`; `swift build --build-tests`;
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+- Matched frozen releases against `8f1793b`, with `Tools/blast-radius.sh
+  <base> <new> <out> --real --perf`: **578 inputs / 2,316 positive cost pairs**.
+  Instructions **7,466.2G -> 7,477.2G (+0.15%)**; summed per-run physical peaks
+  **21,959 -> 22,025 MB (+0.30%)**. Default budgets pass without override.
+  All exits match, including **35 identical expected preflight declines**.
+- Every output difference is reviewed: structured/pseudo **57 inputs,
+  9,955/9,659 lines**; listing/JSON **58 inputs, 10,450/35,325 lines**. In
+  **2,877 changed JSON functions**, serialized blocks, instruction text,
+  addresses, targets and control flow match. Deltas are **4,840 statements,
+  5,225 annotations and 4,335 argument sites**. Result-role declines retain
+  stores and producing calls; typed string stores can revert to raw words.
+  Existing GP-word facts survive Go's growth loop, recovering operands and
+  198 conditions. These word labels are not complete Go source formal layouts.
+  Named invocation spelling/count/order matches in both source views and flat
+  statements; JSON does not serialize typed callee facts or raw bytes.
+- Of **406** earlier unknown-to-empty sites, **284** now retain unknown arity,
+  four target Go's exact zero-formal shim, 117 call witness accessors and one
+  is a stripped partial-apply forwarder under the existing BL-only policy.
+  The latter absent lists do not establish zero source parameters.
+- Whole-image SDK changes: **137 Syntax functions / 296 lines**, **19 Parser
+  functions / 65 lines**. All 179 pairs/blocks are result-pointer/receiver
+  declines, retained unknown extents or three declined whole-result returns
+  retaining their producers. All prior unknown-arity markers remain. Four
+  guarded rerenders match measured hashes; both SDK xrefs outputs match.
+  All **252 CLI invocations** pass. Dump/layout/interface/objc/xrefs/lab and
+  stderr match; analyze changes only **2,215 annotation lines on ten inputs**.
+- Ten guarded renders of **Clarc, GoodLinks, Terminal, TextEdit and Chess**
+  pass (maximum sampled footprint **239 MB**, guard **2,000 MB**). All
+  **21,290 changed lines in 5,813 functions** are reviewed: role/arity declines,
+  raw symbol/string/vector stores, raw x0 return comments and retained
+  single-evaluation bindings. Independent LLVM decoding and function starts
+  account for **1,875 removed arity markers**: 1,849 witness-accessor sites
+  and 26 BL-only sites, with no opaque outgoing transfer. Headers and
+  per-function lexical named-call sequences match. Private reports/bodies/
+  strings stay ignored. These comparisons are not source-grounded app
+  correctness or proofs of lazy execution/ObjC bracket-send effects.
+- All **1,031 frozen source/test/fixture/tool hashes** still match. Readiness
+  estimates and pinned outcome benchmarks remain unchanged.
+
+**OPEN:** actual sret-parameter ownership, complete Go source inputs/results
+(including `main.store9`'s formals), resolved BL-only forwarding arity,
+`swifttail`/`swiftcoro` and other unmodelled helper effects. An absent argument
+list is not a zero-arity proof. Native reductions and guarded vendor-output
+comparisons imply no overall reconstruction accuracy or readiness percentage.
+Candidate release SHA256:
+`784483ca93b22a9d09dbacad688c0dc01a2465655a889b5edde500004aa021cd`.
