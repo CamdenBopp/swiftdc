@@ -3,11 +3,9 @@ import Foundation
 
 /// Whether a function reads the x8 it was entered with.
 ///
-/// In every ARM64 convention the incoming x8 is the indirect-result address and
-/// nothing else, so a body that reads it before writing it returns through a
-/// caller-owned buffer. That is the one fact that decides both halves of
-/// indirect-result recovery: the callee must not print a stale x0 as its return,
-/// and a caller whose x8 pointed into its own frame has had that frame written.
+/// This is a physical read classification, not an ABI ownership proof. An
+/// outlined fragment can read x8 as ordinary data. Both entry seeding and
+/// a caller's result-buffer convention must first accept the entry ABI.
 public enum IndirectResultUse: Equatable, Sendable {
     /// Some path reads the incoming x8 before any write to it.
     case reads
@@ -21,6 +19,25 @@ public enum IndirectResultUse: Equatable, Sendable {
 }
 
 extension Disassembler {
+    /// Whether ordinary result-register interpretation is supported at this
+    /// entry. A named machine fragment has no such contract. Nor does a body
+    /// whose preservation summary cannot establish the ordinary callee-saved
+    /// registers. Swift's error register is an ABI output, not such a failure.
+    static func permitsX8ResultABI(
+        name: String?, summary: CalleeRegisterFacts?, swiftABI: Bool, asyncABI: Bool,
+        goABI: Bool = false
+    ) -> Bool {
+        guard !asyncABI && !goABI else { return false }
+        // Preservation is necessary, but an unnamed machine fragment can
+        // preserve every ordinary register while accepting x8 as raw data.
+        // A generated address label supplies no ordinary entry identity.
+        guard let entryName = name.map({ String($0.drop(while: { $0 == "_" })) }),
+              !entryName.isEmpty, !entryName.hasPrefix("sub_") else { return false }
+        if entryName.hasPrefix(outlinedFragmentPrefix) { return false }
+        guard let summary else { return false }
+        return summary.clobberedCalleeSaved.allSatisfy { swiftABI && $0 == "x21" }
+    }
+
     /// Classify a function's use of its incoming x8 by walking the CFG from the
     /// entry while x8 is still the entry value. A read on any such path proves
     /// `.reads`; a path can also stop (x8 written, or a call, which clobbers x8)
@@ -257,7 +274,11 @@ extension Disassembler {
         indirectResultUses: [UInt64: IndirectResultUse],
         resolver: ReferenceResolver,
         fieldMaps: [String: FieldMap],
-        classTypeIndex: ClassTypeIndex
+        classTypeIndex: ClassTypeIndex,
+        registerSummaries: [UInt64: CalleeRegisterFacts],
+        swiftTargets: Set<UInt64>,
+        asyncIndex: AsyncFuncletIndex,
+        goFunctions: GoFunctionTable? = nil
     ) -> [UInt64: CalleeResultConvention] {
         var conventions: [UInt64: CalleeResultConvention] = [:]
         for insn in function.instructions where insn.controlFlow == .call {
@@ -267,6 +288,13 @@ extension Disassembler {
                 case .neverReads:
                     conventions[insn.address] = .direct
                 case .reads:
+                    let asyncABI = asyncIndex.funclets[target] != nil
+                        || callee.flatMap(DisassembledFunction.splitSignature)?.isAsync == true
+                        || callee?.contains("resume partial function for ") == true
+                    guard permitsX8ResultABI(name: callee, summary: registerSummaries[target],
+                                             swiftABI: swiftTargets.contains(target), asyncABI: asyncABI,
+                                             goABI: goFunctions?.containsEntry(at: target) == true)
+                    else { continue }
                     let size = callee.flatMap(Self.swiftReturnTypeName(ofDemangled:))
                         .flatMap { completeValueLayout(of: $0, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex) }
                         .map(\.instanceSize)

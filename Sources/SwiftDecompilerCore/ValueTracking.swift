@@ -286,9 +286,9 @@ public indirect enum AbstractValue: Equatable, Sendable {
     case local(Int)
     /// The incoming x8: the address of the caller-owned buffer an indirectly
     /// returned value (a struct wider than four words, a large payload enum, a
-    /// generic or existential result) is written into. Seeded at every entry,
-    /// because x8 means exactly this in every ARM64 convention; it carries
-    /// information only once the body reads it, and a body that writes x8 first
+    /// generic or existential result) is written into. Seeded only under the
+    /// supported ordinary result ABI; fragments and other register ABIs can
+    /// use x8 as data. It matters only once read; a body that writes x8 first
     /// simply overwrites the seed.
     case indirectResultPointer
     /// `x8 + constant`: the address of a byte offset inside the result buffer.
@@ -607,6 +607,11 @@ public struct ValueTracer: Sendable {
     /// under x8 is clobbered from that offset up.
     public var calleeConventions: [UInt64: CalleeResultConvention]
 
+    /// The low-level tracer's ordinary-entry ABI model. A nonstandard entry
+    /// supplies no result-buffer meaning for incoming x8. The disassembler
+    /// decides this separately for each entry from its ABI/preservation facts.
+    let entryHasResultBuffer: Bool
+
     /// Proven scalar precision of existing SIMD entry seeds. The ABI supplies
     /// only these low bits; the rest of the physical register stays unknown.
     var entryFloatWidths: [String: Int] = [:]
@@ -739,9 +744,11 @@ public struct ValueTracer: Sendable {
     /// generic value). `.unknown` claims nothing.
     var callResultBank: (@Sendable (_ callee: String) -> CallResultBank)?
 
-    public init(calleeConventions: [UInt64: CalleeResultConvention] = [:], asyncContextSlots: [Int: AbstractValue] = [:]) {
+    public init(calleeConventions: [UInt64: CalleeResultConvention] = [:], asyncContextSlots: [Int: AbstractValue] = [:],
+                entryHasResultBuffer: Bool = true) {
         self.calleeConventions = calleeConventions
         self.asyncContextSlots = asyncContextSlots
+        self.entryHasResultBuffer = entryHasResultBuffer
     }
 
     /// A place the tracer keeps a fact: a register, a frame, context or
@@ -1144,8 +1151,9 @@ public struct ValueTracer: Sendable {
     /// method convention for this exact implementation address.
     /// The registers `entry` seeds before the first instruction, in register
     /// order, for the `analysis.entry` probe.
-    static func entrySeeds(_ entry: MethodEntryConvention?, floatWidths: [String: Int] = [:]) -> [(register: String, value: AbstractValue)] {
-        initialState(entry: entry, floatWidths: floatWidths).compactMap { element -> (Int, String, AbstractValue)? in
+    static func entrySeeds(_ entry: MethodEntryConvention?, floatWidths: [String: Int] = [:],
+                           entryHasResultBuffer: Bool = true) -> [(register: String, value: AbstractValue)] {
+        initialState(entry: entry, floatWidths: floatWidths, entryHasResultBuffer: entryHasResultBuffer).compactMap { element -> (Int, String, AbstractValue)? in
             switch element.key {
             case .x(let n): (n, "x\(n)", element.value)
             case .v(let n): (100 + n, "v\(n)", element.value)
@@ -1155,11 +1163,11 @@ public struct ValueTracer: Sendable {
     }
 
     private static func initialState(entry: MethodEntryConvention?, asyncContextSlots: [Int: AbstractValue] = [:],
-                                     floatWidths: [String: Int] = [:]) -> State {
-        // x8 is the indirect-result address in every ARM64 convention, so the
-        // seed is a fact about the ABI, not about this function; see
-        // `AbstractValue.indirectResultPointer`.
-        var state: State = [.sp: .frame(0), .x(8): .indirectResultPointer]
+                                     floatWidths: [String: Int] = [:], entryHasResultBuffer: Bool = true) -> State {
+        // The ordinary ABI reserves x8 for an indirect result. Machine
+        // fragments need not use that ABI: their incoming x8 can be data.
+        var state: State = [.sp: .frame(0)]
+        if entryHasResultBuffer { state[.x(8)] = .indirectResultPointer }
         switch entry {
         case .swiftInstance(let scalarArguments, let existentialTables):
             state[.x(20)] = .selfPointer
@@ -1221,7 +1229,7 @@ public struct ValueTracer: Sendable {
             // `arg<n>.field` with no x20 pointer.
             for (register, value) in seededRegisters { if let location = Location(key: register) { state[location] = value } }
         case .asyncFunclet(let base, let seededRegisters):
-            state = initialState(entry: base, asyncContextSlots: asyncContextSlots)
+            state = initialState(entry: base, asyncContextSlots: asyncContextSlots, entryHasResultBuffer: entryHasResultBuffer)
             for (register, value) in seededRegisters { if let location = Location(key: register) { state[location] = value } }
             // ABI facts and entry seeds are mutable memory facts. They must
             // participate in the same invalidation and intersection as stores.
@@ -1364,7 +1372,7 @@ public struct ValueTracer: Sendable {
                 incoming = preds.compactMap { pred in
                     outState[pred].map { Self.refined($0, along: zeroEdges[pred], to: addr) }
                 }
-                if addr == function.startAddress { incoming.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots, floatWidths: entryFloatWidths)) }
+                if addr == function.startAddress { incoming.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots, floatWidths: entryFloatWidths, entryHasResultBuffer: entryHasResultBuffer)) }
                 // None of its predecessors has run: not reached yet, so its
                 // entry is unconstrained, not empty. Run from nothing, it
                 // gained facts once a predecessor ran, entry states grew

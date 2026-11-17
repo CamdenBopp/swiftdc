@@ -1132,7 +1132,8 @@ public struct Disassembler: Sendable {
         // Every closure is done: analysis reads only the facts.
         let finished = CalleeRegisterFacts.finish(&registerSummaries)
         let context = PerFunctionContext(
-            resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
+            resolver: resolver, swiftTargets: swiftTargets,
+            goFunctions: goFunctions(in: machO), objcIndex: objcIndex,
             fieldMaps: fieldMaps,
             selfIndex: SelfTypeIndex.build(in: machO),
             vtableIndex: VTableIndex.build(in: machO),
@@ -1612,7 +1613,8 @@ public struct Disassembler: Sendable {
         // Every closure is done: analysis reads only the facts.
         let finished = CalleeRegisterFacts.finish(&summaries)
         let context = PerFunctionContext(
-            resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
+            resolver: resolver, swiftTargets: swiftTargets,
+            goFunctions: goFunctions(in: machO), objcIndex: objcIndex,
             fieldMaps: fieldMaps, selfIndex: selfIndex, vtableIndex: vtableIndex,
             enumCaseIndex: enumCaseIndex, payloadEnumIndex: payloadEnumIndex,
             classTypeIndex: classTypeIndex,
@@ -1882,7 +1884,8 @@ public struct Disassembler: Sendable {
                 return CalleeRegisterFacts.finish(&summaries)
             }()
         let context = PerFunctionContext(
-            resolver: resolver, swiftTargets: swiftTargets, objcIndex: objcIndex,
+            resolver: resolver, swiftTargets: swiftTargets,
+            goFunctions: goFunctions(in: machO), objcIndex: objcIndex,
             fieldMaps: fieldMaps, selfIndex: selfIndex, vtableIndex: vtableIndex,
             enumCaseIndex: enumCaseIndex, payloadEnumIndex: payloadEnumIndex,
             classTypeIndex: classTypeIndex,
@@ -1942,6 +1945,8 @@ public struct Disassembler: Sendable {
     struct PerFunctionContext {
         let resolver: ReferenceResolver
         let swiftTargets: Set<UInt64>
+        /// The runtime's validated Go entries have their own register ABI.
+        var goFunctions: GoFunctionTable? = nil
         let objcIndex: ObjCMetadataIndex
         let fieldMaps: [String: FieldMap]
         let selfIndex: SelfTypeIndex
@@ -2257,6 +2262,13 @@ public struct Disassembler: Sendable {
         } else {
             [:]
         }
+        let entryHasResultBuffer = Self.permitsX8ResultABI(
+            name: resolver.callTargetName(at: function.startAddress) ?? function.symbol,
+            summary: context.registerSummaries[function.startAddress],
+            swiftABI: context.swiftTargets.contains(function.startAddress),
+            asyncABI: hasAsyncEntryABI || isResumeFunclet,
+            goABI: context.goFunctions?.containsEntry(at: function.startAddress) == true
+        )
         if Probe.isActive {
             let seeded = asyncEntry ?? entry
             let floatWidths = Self.entryFloatingWidths(seeded,
@@ -2267,7 +2279,7 @@ public struct Disassembler: Sendable {
                 Probe.record(.entryConvention, at: function.startAddress, [
                     "convention": .label(seeded.map(Self.conventionName) ?? "none"),
                     "selfType": .name(selfTypeName ?? "none"),
-                    "seeds": .object(Dictionary(uniqueKeysWithValues: ValueTracer.entrySeeds(seeded, floatWidths: floatWidths).map {
+                    "seeds": .object(Dictionary(uniqueKeysWithValues: ValueTracer.entrySeeds(seeded, floatWidths: floatWidths, entryHasResultBuffer: entryHasResultBuffer).map {
                         ($0.register, ProbeValue.abstractValue($0.value))
                     })),
                 ])
@@ -2280,6 +2292,7 @@ public struct Disassembler: Sendable {
         var enriched = enrichCallArguments(
             in: function, cfg: cfg, resolver: context.resolver, swiftTargets: context.swiftTargets,
             entry: asyncEntry ?? entry,
+            entryHasResultBuffer: entryHasResultBuffer,
             fieldMap: fieldMap,
             objcFieldSyntax: objcMethod != nil || symbolEntry != nil,
             selfTypeName: selfTypeName, vtableIndex: context.vtableIndex,
@@ -2299,11 +2312,16 @@ public struct Disassembler: Sendable {
             calleeConventions: Self.calleeResultConventions(
                 in: function, indirectResultUses: context.indirectResultUses,
                 resolver: context.resolver, fieldMaps: context.fieldMaps,
-                classTypeIndex: context.classTypeIndex
+                classTypeIndex: context.classTypeIndex,
+                registerSummaries: context.registerSummaries,
+                swiftTargets: context.swiftTargets,
+                asyncIndex: context.asyncIndex,
+                goFunctions: context.goFunctions
             ),
             asyncContextSlots: chainSlots,
             asyncSuspensions: Self.asyncSuspensionNotes(in: function, index: context.asyncIndex),
             asyncIndex: context.asyncIndex,
+            goFunctions: context.goFunctions,
             objcIndex: context.objcIndex,
             registerSummaries: context.registerSummaries,
             selfMembers: context.selfMembers,
@@ -8192,6 +8210,7 @@ public struct Disassembler: Sendable {
         resolver: ReferenceResolver,
         swiftTargets: Set<UInt64>,
         entry: MethodEntryConvention?,
+        entryHasResultBuffer: Bool,
         fieldMap: FieldMap?,
         objcFieldSyntax: Bool,
         selfTypeName: String? = nil,
@@ -8210,6 +8229,7 @@ public struct Disassembler: Sendable {
         asyncContextSlots: [Int: AbstractValue] = [:],
         asyncSuspensions: [UInt64: AsyncSuspensionNote] = [:],
         asyncIndex: AsyncFuncletIndex = .empty,
+        goFunctions: GoFunctionTable? = nil,
         objcIndex: ObjCMetadataIndex? = nil,
         registerSummaries: [UInt64: CalleeRegisterFacts] = [:],
         selfMembers: SelfMemberCache = SelfMemberCache(),
@@ -8431,7 +8451,8 @@ public struct Disassembler: Sendable {
             ValueTracer.trimTrailingUnknown(collapsingMultiWordResults(values).map(sanitizeValue))
         }
 
-        var tracer = ValueTracer(calleeConventions: calleeConventions, asyncContextSlots: asyncContextSlots)
+        var tracer = ValueTracer(calleeConventions: calleeConventions, asyncContextSlots: asyncContextSlots,
+                                 entryHasResultBuffer: entryHasResultBuffer)
         tracer.callFactsCache = callFactsCache
         tracer.entryFloatWidths = Self.entryFloatingWidths(entry, argumentTypes: argumentTypes,
             objcMethod: function.objcMethod, fieldMap: fieldMap, argumentFieldMaps: argumentFieldMaps)
@@ -8577,7 +8598,7 @@ public struct Disassembler: Sendable {
         // (usually a stale argument), never its result. Both single-register
         // return paths below are gated on this so no fabricated `return arg0`
         // is printed for a function that returns through the caller's buffer.
-        let returnsDirectly = indirectResultUse != .reads
+        let returnsDirectly = !entryHasResultBuffer || indirectResultUse != .reads
         // Call sites whose indirect result is read back word by word, each bound
         // to one name (`let r0 = callee(args)`) so the call is spelled out once
         // and every field read is `r0.field`; rendering the call at each read
@@ -8849,6 +8870,63 @@ public struct Disassembler: Sendable {
                     // not zero: `P()` read as a call with no arguments.
                     || undeclaredCImportCalls.contains(insn.address)
             else { continue }
+            sites[insn.address] = CallSite()
+        }
+        // An absent value snapshot must not erase a positive input contract.
+        // Resolve numeric targets independently of callee naming; a register
+        // branch may acquire its name only after the original snapshot loop.
+        func resolvedTransferTarget(_ insn: Instruction) -> UInt64? {
+            insn.branchTarget ?? {
+                switch analysis.indirectControlFlowTargets[insn.address] {
+                case .address(let address)?, .immediate(let address)?: address
+                default: nil
+                }
+            }()
+        }
+        // Entry metadata is a contract even without a usable body summary.
+        // callTargets deliberately contains only summarized bodies, so it
+        // cannot decide this ABI-specific source layout.
+        let goNoSourceArgumentSites: Set<UInt64> = if let goFunctions {
+            Set(function.instructions.compactMap { insn in
+                guard insn.controlFlow == .call || insn.controlFlow == .branch,
+                      !asyncReturns.contains(insn.address), function.switchTargets[insn.address] == nil,
+                      let target = resolvedTransferTarget(insn),
+                      goFunctions.hasNoSourceArguments(at: target) else { return nil }
+                if insn.controlFlow == .branch && ownAddresses.contains(target) { return nil }
+                return insn.address
+            })
+        } else { [] }
+        var unavailableBodyInputSites = Set<UInt64>()
+        for insn in function.instructions where sites[insn.address] == nil {
+            guard insn.controlFlow == .call || insn.controlFlow == .branch,
+                  !asyncReturns.contains(insn.address),
+                  function.switchTargets[insn.address] == nil else { continue }
+            let target = resolvedTransferTarget(insn)
+            if insn.controlFlow == .branch,
+               function.objcMethod.map({ !$0.returnsVoid }) == true,
+               insn.facts.arcIdentityContract {
+                sites[insn.address] = CallSite()
+                continue
+            }
+            guard let target, insn.controlFlow == .call || !ownAddresses.contains(target) else { continue }
+            if let summary = registerSummaries[target] {
+                // Keep the body-input policy even without tracked values.
+                // MUST reads establish a concrete prefix. A tail or opaque
+                // call can forward an unknown extent; retain that uncertainty
+                // without promoting resolved BL-only MAY reads to parameters.
+                guard summary.provenArgumentCount > 0 || summary.provenFloatArgumentCount > 0
+                        || summary.readsIncomingStack
+                        || (summary.hasOpaqueInputTransfer && summary.argumentCount > 0) else { continue }
+            } else {
+                // A missing body does not erase a Swift getter's zero-formal
+                // contract. Its hidden receiver follows the existing layouts;
+                // it is not an unbounded list of source arguments.
+                let callee = DisassembledFunction.calleeName(of: insn) ?? resolver.callTargetName(at: target)
+                let zeroFormalGetter = (swiftTargets.contains(target) || Self.isSwiftCall(insn, swiftTargets: swiftTargets))
+                    && callee.map { DisassembledFunction.swiftAccessorProperty($0)?.isGetter == true
+                        && !$0.contains(".subscript") } == true
+                if !zeroFormalGetter { unavailableBodyInputSites.insert(insn.address) }
+            }
             sites[insn.address] = CallSite()
         }
         // A property getter is often `ldr x0, [x20, #n]; ret` — no calls at all.
@@ -9367,6 +9445,15 @@ public struct Disassembler: Sendable {
                 argumentsByAddress[address] = []
                 unprovenVariadicSites.insert(address)
                 strategy = "unproven-arity"
+                continue
+            }
+            // A validated Go stack-growth entry takes runtime registers and
+            // spills, not source arguments. Neither MAY reads nor an absent
+            // body widens its zero-formal contract. Other Go entries keep
+            // their existing unresolved source layouts.
+            if goNoSourceArgumentSites.contains(address) {
+                argumentsByAddress[address] = []
+                strategy = "go-stack-growth"
                 continue
             }
             // `swift_willThrow(SWIFT_CONTEXT void *, SWIFT_ERROR_RESULT
@@ -10088,7 +10175,17 @@ public struct Disassembler: Sendable {
                 strategy = "unproven-arity"
                 continue
             }
-            if let values = sanitize(values) { argumentsByAddress[address] = values }
+            if let values = sanitize(values) {
+                argumentsByAddress[address] = values
+            } else if unavailableBodyInputSites.contains(address), strategy == "positional",
+                      calleeByAddress[address] != nil {
+                // Only an unplaced positional layout needs this decline.
+                // A handled metadata contract (such as x21 for willThrow)
+                // keeps its ABI even when every tracked value is unknown.
+                argumentsByAddress[address] = []
+                unprovenVariadicSites.insert(address)
+                strategy = "unproven-arity"
+            }
         }
 
         // Apply a scalar argument's physical view before collecting producer

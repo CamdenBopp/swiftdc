@@ -206,6 +206,10 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// stack arguments. Then the call passes more than its registers show
     /// (`readsIncomingStack(_:)`).
     var readsIncomingStack = false
+    /// An outgoing tail or opaque call can forward an unknown input extent.
+    /// Closed transitively only through unwritten incoming words; this proves
+    /// no concrete source count. Resolved BL-only leaves do not seed it.
+    var hasOpaqueInputTransfer = false
     /// The same for x22, the async context register: the body may write the
     /// context the caller holds there.
     var readsContextRegister = false
@@ -291,7 +295,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         definitelyClobbered: Set<String> = [], restoredFrom: [String: Int64] = [:], callees: [UInt64] = [],
         outgoingCalls: [OutgoingCall] = [], storesOnlyToStack: Bool = false, writesNoFields: Bool = false,
         memoryEffect: CalleeMemoryEffect = .unknown, inputProofEntry: UInt64? = nil, pureTailTarget: UInt64? = nil,
-        framedCallTarget: UInt64? = nil
+        framedCallTarget: UInt64? = nil, hasOpaqueInputTransfer: Bool = false
     ) {
         self.floatArgumentWidths = floatArgumentWidths
         self.resultReads = resultReads
@@ -319,6 +323,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         self.inputProofEntry = inputProofEntry
         self.pureTailTarget = pureTailTarget
         self.framedCallTarget = framedCallTarget
+        self.hasOpaqueInputTransfer = hasOpaqueInputTransfer
     }
 
     /// Each call once, indirect calls first, then by target.
@@ -734,6 +739,15 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             framedCallTarget: readFacts?.framedCallTarget ?? framedCallTarget(of: function, isFunction: isFunction))
         summary.provenAllocationSites = allocationSites
         summary.readsIncomingStack = Self.readsIncomingStack(instructions)
+        summary.hasOpaqueInputTransfer = readFacts?.hasOpaqueInputTransfer ?? instructions.contains { insn in
+            if insn.controlFlow == .branch {
+                return function.switchTargets[insn.address] == nil
+                    && !(insn.branchTarget.map(addresses.contains) ?? false)
+            }
+            guard insn.controlFlow == .call else { return false }
+            guard let target = insn.branchTarget else { return true }
+            return !isFunction(target) && calleeArity(target) == nil
+        }
         summary.mayReadRegisters = mayRead
         summary.mayWriteResult = writesResult
         summary.resultReads = readFacts?.resultReads ?? Self.resultReads(
@@ -924,7 +938,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister, clobberedCalleeSaved: Self.calleeSavedKeys,
             definitelyClobbered: Self.calleeSavedKeys, callees: callees, memoryEffect: memoryEffect,
-            inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget, framedCallTarget: framedCallTarget)
+            inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget, framedCallTarget: framedCallTarget, hasOpaqueInputTransfer: hasOpaqueInputTransfer)
             .keepingReadRegisters(mayReadRegisters, readsIncomingStack: readsIncomingStack)
     }
 
@@ -1062,9 +1076,16 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             var readsContextRegister = summary.readsContextRegister
             var readsSelfRegister = summary.readsSelfRegister
             var mayRead = summary.mayReadRegisters
+            var opaqueInputs = summary.hasOpaqueInputTransfer
             for call in summary.pendingReads {
                 mayRead |= (summaries[call.target]?.mayReadRegisters ?? allRegisterBits) & call.unwrittenRegisters
                 let targetReads = summaries[call.target]?.argumentReads ?? RegisterSet(0 ..< argumentKeys.count)
+                // Registry membership is not a usable body summary. Missing
+                // callees contribute an unknown extent alongside their MAY
+                // reads; a present false fact remains a negative control.
+                if call.unwritten != 0, (summaries[call.target]?.hasOpaqueInputTransfer ?? true) {
+                    opaqueInputs = true
+                }
                 for index in targetReads where call.unwritten & (1 << index) != 0 { reads.insert(index) }
                 if call.unwritten & framePointerBit != 0, summaries[call.target]?.readsFramePointer ?? true {
                     readsFramePointer = true
@@ -1080,11 +1101,13 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 || readsContextRegister != summary.readsContextRegister
                 || readsSelfRegister != summary.readsSelfRegister
                 || mayRead != summary.mayReadRegisters
+                || opaqueInputs != summary.hasOpaqueInputTransfer
             else { continue }
             summaries[start] = summary.replacingReads(
                 reads, readsFramePointer: readsFramePointer, readsContextRegister: readsContextRegister,
                 readsSelfRegister: readsSelfRegister)
             summaries[start]?.mayReadRegisters = mayRead
+            summaries[start]?.hasOpaqueInputTransfer = opaqueInputs
             for caller in callers[start] ?? [] where queued.insert(caller).inserted {
                 worklist.append(caller)
             }
@@ -1330,7 +1353,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 callees: old.callees,
                 outgoingCalls: old.outgoingCalls,
                 storesOnlyToStack: old.storesOnlyToStack, memoryEffect: old.memoryEffect,
-                inputProofEntry: old.inputProofEntry, pureTailTarget: old.pureTailTarget, framedCallTarget: old.framedCallTarget)
+                inputProofEntry: old.inputProofEntry, pureTailTarget: old.pureTailTarget, framedCallTarget: old.framedCallTarget, hasOpaqueInputTransfer: old.hasOpaqueInputTransfer)
             // The sites change no other summary, so they take no part in
             // the fixpoint's comparison: a change to them alone updates in
             // place.

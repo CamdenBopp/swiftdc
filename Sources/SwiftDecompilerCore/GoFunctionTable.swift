@@ -35,6 +35,40 @@ struct GoFunctionTable: Sendable {
     /// A span counts only when the name and the bytes agree.
     var dataSpans: [UInt64: (end: UInt64, name: String)] = [:]
 
+    /// Membership in the validated, strictly ordered runtime entry table.
+    /// A Go entry does not use AAPCS64's x8 indirect-result convention.
+    func containsEntry(at address: UInt64) -> Bool {
+        entryIndex(at: address) != nil
+    }
+
+    /// These compiler/runtime stack-growth shims have zero source formals.
+    /// Their R3/LR, context and spill inputs are machine bookkeeping. The
+    /// runtime's exact entry identity is required, never a callee spelling.
+    /// See runtime/stubs.go, stack.go and asm_arm64.s ($0-0) in Go.
+    func hasNoSourceArguments(at address: UInt64) -> Bool {
+        guard let index = entryIndex(at: address) else { return false }
+        switch entries[index].name {
+        case "runtime.morestack", "runtime.morestack.abi0",
+             "runtime.morestack_noctxt", "runtime.morestack_noctxt.abi0",
+             "runtime.morestackc", "runtime.morestackc.abi0":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func entryIndex(at address: UInt64) -> Int? {
+        var lower = 0
+        var upper = entries.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if entries[middle].address < address { lower = middle + 1 }
+            else { upper = middle }
+        }
+        guard lower < entries.count && entries[lower].address == address else { return nil }
+        return lower
+    }
+
     static let buildIDName = "go:buildid"
     static let buildIDPrefix = Data([0xff] + Array(" Go build ID: \"".utf8))
 

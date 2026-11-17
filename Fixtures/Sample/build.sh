@@ -153,6 +153,9 @@ $CLANG -arch arm64 -dynamiclib preserve_calls.s -o libPreserveCalls.dylib
 echo "==> untracked callee stores and disjoint async context controls (unknown_callee_store*, O0/O2/Os)"
 python3 build-unknown-callee-store.py
 
+echo "==> x8 scratch entries and genuine Swift/ObjC result ABIs (x8_entry*, all levels)"
+python3 build-x8-entry.py
+
 echo "==> unwritten GP/FP banks across effectful outlined helpers (outlined_results.s)"
 $CLANG -arch arm64 -dynamiclib outlined_results.s -o libOutlinedResults.dylib
 cp libOutlinedResults.dylib libOutlinedResults.stripped.dylib

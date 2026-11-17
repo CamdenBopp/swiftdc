@@ -30,6 +30,8 @@ struct CalleeRegisterFacts: Sendable {
     /// `CalleeRegisterSummary.readsIncomingStack`: its call passes stack
     /// arguments beyond its registers.
     let readsIncomingStack: Bool
+    /// Closed opaque-transfer extent; it supplies no concrete arity.
+    let hasOpaqueInputTransfer: Bool
     /// `CalleeRegisterSummary.mayReadRegisters`.
     let mayReadRegisters: UInt32
 
@@ -61,6 +63,7 @@ struct CalleeRegisterFacts: Sendable {
         memoryEffect = summary.memoryEffect
         provenAllocationSites = summary.provenAllocationSites
         readsIncomingStack = summary.readsIncomingStack
+        hasOpaqueInputTransfer = summary.hasOpaqueInputTransfer
         mayReadRegisters = summary.mayReadRegisters
     }
 

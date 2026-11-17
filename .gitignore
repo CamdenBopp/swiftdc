@@ -61,3 +61,6 @@ Fixtures/Sample/outlined_results_native
 Fixtures/Sample/body-arity-*-oracle
 
 Fixtures/Sample/unknown-store-*-oracle
+
+Fixtures/Sample/x8-entry-*-oracle
+Fixtures/Sample/x8entry.abi.json

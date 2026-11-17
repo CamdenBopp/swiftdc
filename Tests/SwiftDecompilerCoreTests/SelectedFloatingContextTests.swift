@@ -40,6 +40,13 @@ private func selectedFloatingContext(_ use: SelectedFloatingUse, selected: Bool 
             words += [0x9e660100, 0xd2800001, 0x940007f8] // fmov x0,d8; tag=some; call
             call = (8, "VectorJoin.consumeOptional(Swift.Double?) -> ()")
         }
+        if use == .indirectResult {
+            // This models an ordinary x8 result entry, whose low d8 must
+            // survive. Independently assembled str/ldr preserve it around
+            // the branch/dup body; no call offsets change in this case.
+            words.insert(0xfc1f0fe8, at: 0) // str d8,[sp,#-16]!
+            words.append(0xfc4107e8) // ldr d8,[sp],#16
+        }
         words += [0xd65f03c0]
         let engine = try #require(CapstoneEngine())
         let decoded = engine.disassemble(words.withUnsafeBytes { Data($0) }, address: 0x1000)
@@ -64,13 +71,20 @@ private func selectedFloatingContext(_ use: SelectedFloatingUse, selected: Bool 
             fields: (0..<5).map { (offset: $0 * 8, bytes: 8, name: "f\($0)", typeEncoding: "Sd") })
         let maps = ["VectorJoin.FPBox": map, "VectorJoin.FloatResult": resultMap]
         let resolver = Disassembler.ReferenceResolver(names: [0x3000: call?.1 ?? "VectorJoin.FPBox.value.setter : Swift.Double"], stringRanges: [], machO: machO, demangleSymbol: { _ in nil })
-        let context = Disassembler.PerFunctionContext(resolver: resolver, swiftTargets: [0x3000],
+        var context = Disassembler.PerFunctionContext(resolver: resolver, swiftTargets: [0x3000],
             objcIndex: ObjCMetadataIndex(methods: objc.map { [0x1000: [$0]] } ?? [:], fieldMaps: [:]),
             fieldMaps: maps, selfIndex: SelfTypeIndex(bindings: use == .indirectResult ? [:] : [0x1000: SelfBinding(selfTypeName: "FPBox",
                 kind: "method", isInstance: true, source: .vtableSlot(type: "VectorJoin.FPBox", slot: 0))]),
             vtableIndex: VTableIndex(methods: use == .setter ? ["FPBox": [0x60: 0x3000]] : [:]), enumCaseIndex: EnumCaseIndex(), payloadEnumIndex: PayloadEnumCaseIndex(),
             classTypeIndex: ClassTypeIndex(), classParameterFields: ClassParameterFieldIndex(),
             asyncIndex: .empty, asyncChainSlots: [:])
+        if use == .indirectResult {
+            // Supply the same decoded preservation evidence that image-wide
+            // analysis supplies. A physical x8 read alone proves no result ABI.
+            var summaries = [function.startAddress: try #require(CalleeRegisterSummary.of(function))]
+            context.registerSummaries = CalleeRegisterFacts.finish(&summaries).facts
+            #expect(context.registerSummaries[function.startAddress]?.clobberedCalleeSaved.isEmpty == true)
+        }
         return Disassembler().analyzeFunction(function, context: context)
     }
 }
