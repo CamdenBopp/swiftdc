@@ -91,6 +91,35 @@ cover results, bodies, or Objective-C methods (4 matched).
 
 ## Latest local verification
 
+At `09324d7`, ordinary BL forwarders retain unknown source inputs even
+when the caller has no tracked argument snapshot. Possible FP inputs close
+through the call graph separately from positive parameter proofs. When GP/FP
+source order is unproved, values decline to `?`; fixed pointer prefixes of
+unambiguous compiler helpers remain. Native controls pass **195 observations**
+across O0/O2/Os and **160 caller/API contract cases** across named and locally
+stripped fixtures. Complete forwarding arity/order remains open.
+
+All **334 original Swift test files and named functions** remain. **Five
+original test files intentionally change expectations** for newly recognized
+input uncertainty; placed-capture, zero-input and closed-body positive controls
+remain. Ten tests are added. **26 unique product mutations** separately compile
+red, with native controls green; an additional run proves the amended capture
+expectations red. The fixture-enforced **1,877 tests / 43 suites** pass
+(827.707 s). The existing integration gate has not yet run for this commit.
+
+Against `e6c478c`, **583 inputs in four views plus four SDK workloads** give
+**2,336 paired cost rows**: retired instructions **-2.48%**, summed per-run
+physical peaks **-0.59%**, all default budgets passing without override.
+All changed lines are reviewed, including the large Go changes and SDK/five-app
+expression/binding redisplays. Decoded instruction/target/control-flow DTOs match;
+this comparison does not prove app-wide source semantics. All **130 CLI runs**,
+four SDK rerenders and ten guarded renders of the five original apps pass.
+No pinned benchmark or readiness estimate is recomputed. See the
+[engineering record](https://github.com/CamdenBopp/swiftdc/commit/09324d78f3bcc4d82533bdb312bd62d4e5212066) and
+[readiness follow-up](PRODUCTION-READINESS.md#2026-11-17-retain-input-uncertainty-through-ordinary-calls).
+
+The previous x8 follow-up is retained below as historical evidence.
+
 At `9479048`, an incoming x8 read no longer establishes result-buffer
 ownership. Unsupported entries decline in both entry seeds and caller result
 conventions; removing a phantom seed retains proved or opaque input extents.
@@ -160,9 +189,9 @@ integration test: **1,805 tests in 43 suites** passed at that commit.
 
 | Check | Result | Where |
 |---|---|---|
-| Enforcing test suite (a missing fixture fails) | 1,867 tests / 43 suites pass at `9479048` (849.252 s); independently rebuilt gate at `917dea7` also passes (907.882 s) | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`, after a fresh test build; `Tools/integration-gate.sh --push` |
-| Output change against `8f1793b` | 578 inputs in four views. Structured/pseudo: 57 changed inputs, 9,955/9,659 lines; listing/JSON: 58, 10,450/35,325 lines. Every difference reviewed; stores and producing calls retained. SDK source outputs differ, xrefs match | `Tools/blast-radius.sh` |
-| Cost budget (instructions, footprint) | Published gate: all 2,316 render/workload pairs positive; +0.18% retired instructions, +0.45% summed per-run peak footprint. Every default budget passes without override. Gate output hashes match the reviewed frozen release | same, `--real --perf` |
+| Enforcing test suite (a missing fixture fails) | 1,877 tests / 43 suites pass at `09324d7` (827.707 s); integration gate pending for this slice | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`, after a fresh test build; `Tools/integration-gate.sh --push` |
+| Output change against `e6c478c` | 583 inputs in four views. Structured/pseudo: 63 changed inputs, 39,719/40,248 lines; listing/JSON: 75, 41,088/153,241 lines. Every difference reviewed; SDK source outputs differ, xrefs match | `Tools/blast-radius.sh` |
+| Cost budget (instructions, footprint) | Local frozen releases: 2,336 paired rows; -2.48% retired instructions, -0.59% summed per-run peak footprint. Every default budget passes without override; integration gate pending | same, `--real --perf` |
 | GitHub Actions, inspected 2026-11-17 | Run at published `917dea7` fails at Toolchain: Xcode 26.3 / Swift 6.2.4 is below the verified Swift 6.4 requirement. Fixtures, build and enforcing suite are skipped; this is no CI test result. The older `7efd0d2` runner-capacity failure is separate | [run 44070526750](https://github.com/CamdenBopp/swiftdc/actions/runs/44070526750), [CI.md](CI.md) |
 | Independent execution of rendered expressions | return values of the differential-oracle fixtures, integer and floating point (compared bit for bit). Not checked by execution: which way a branch went, registers at call sites, results beyond the first register, memory writes | `DifferentialOracleTests` |
 

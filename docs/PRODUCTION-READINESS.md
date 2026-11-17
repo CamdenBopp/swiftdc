@@ -12989,3 +12989,83 @@ against `8f1793b`; all default budgets pass without override.
 Hosted [run 44070526750 at 917dea7](https://github.com/CamdenBopp/swiftdc/actions/runs/44070526750)
 failed at Toolchain on Xcode 26.3 / Swift 6.2.4; fixtures, build and the
 suite were skipped. It supplies no CI test result.
+
+
+## 2026-11-17: retain input uncertainty through ordinary calls
+
+**FIXED in part (09324d78f3bcc4d82533bdb312bd62d4e5212066).** The own-source LR-saving BL wrappers
+`sub_BLInput_wrapper` and `sub_BLInput_fpWrapper` consume incoming words,
+but the published baseline rendered empty argument lists when caller snapshots
+were absent. They now retain unknown input extent. A separate MAY FP0...7 byte
+closes through calls and survives fallback, reanalysis, copies and projection.
+Missing providers and per-call unwritten masks participate; FP-only changes
+requeue callers. No MAY mask becomes a positive source count. Exact alias/frame
+proofs and machine vector effects are unchanged. PendingRead remains 16 bytes;
+the summary stays within its existing 144-byte budget.
+
+Possible FP formals can precede GP inputs in source. Decline GP values whose
+source positions are unproved; retain independently established pointer prefixes
+only for authentic, unambiguous compiler helpers. Contracts come from Swift
+compiler `1b7bd8eaf460396047c2644d1d69afb4a404b13d`:
+`lib/IRGen/Outlining.cpp`, `lib/IRGen/GenExistential.cpp` and
+`stdlib/public/core/ErrorType.swift`. Matching printed/raw identities and folded
+symbol negatives are tested. These are prefix proofs, not complete C arities.
+
+Verification:
+
+- Own assembly and native C controls cover **195 observations** across O0/O2/Os,
+  including both source orders at the same mixed GP/FP entry, sparse reads,
+  overwrites, zero-input and prior-call-result controls. Named/locally stripped
+  fixtures cover **160 caller/API contract cases**. Helper pipelines cover three
+  callers, two optimization levels, five APIs and two source renderers.
+- Retain all **334 original Swift test files and named functions**. Five original
+  files intentionally change expectations: PureTailInput (unknown extent),
+  X8EntryABI (present input-using provider uncertainty, plus true-zero control),
+  BodyArityBound (unproved GP source position), StackArgs (undeclared sink order,
+  plus closed-body constant control), DroppedArguments (unplaced capture order).
+  No cases removed; HiddenStoreTests and BodyReadsTests remain unchanged.
+- Ten new tests; **26 unique independently compiled-red product mutations**,
+  native controls green throughout. An additional run of the mixed-position
+  mutation proves both amended capture assertions red. Exact source restoration,
+  rebuild and focused tests precede the full enforcing suite: **1,877 tests /
+  43 suites pass in 827.707 s**. All 1,035 frozen public inputs and five fixture
+  product hashes still match.
+- `Tools/blast-radius.sh <base> <new> <out> --real --perf` against `e6c478c`:
+  **583 inputs, four views, four SDK workloads, 2,336 paired cost rows**.
+  Instructions **7,488.1G -> 7,302.6G (-2.48%)**; summed per-run physical peaks
+  **22,155 -> 22,024 MB (-0.59%)**. Every default budget passes without override.
+  Structured/pseudo change 63 inputs, 39,719/40,248 lines; listing/JSON change
+  75, 41,088/153,241 lines. Four Go inputs account for most changes. Both whole
+  SDK xrefs outputs match. These are instruction counts, not wall-time speed claims.
+- Every delta is reviewed. All serialized function/block metadata and instruction
+  counts/text/addresses/targets/control flow match. The 61,350 changed JSON fields
+  are 19,841 arguments, 19,965 statements and 20,544 annotations: argument/extent
+  declines and scoped result redisplays, lost String-pair coalescing at 22 sites
+  with unchanged six-word proofs, 569 removed unused bindings with expressions
+  retained, 594 serialized existing physical calls/tails and propagated notes.
+  All 75 lexical-call exception functions are accounted for by function-reference
+  signatures, false generic/owner tokens, unused plumbing and 23 existing calls
+  materialized once in 17 ParserDiagnostics functions. No new decoded calls/edges.
+- Whole-SDK and five-app changed functions keep identical headers and lexical
+  control shapes. All 1,008 extra expression/binding review units are classified.
+  Fifteen expanded unknown lists retain the same decoded code, raw snapshots and
+  positive layout counts in guarded labs. One receiver call adds only an ellipsis;
+  a false leaf diagnostic and three inserted nullary statements map to existing
+  physical calls. The indirect case is matched to its exact function occurrence
+  among 77 shared names; only its statement DTO changes. Lexical audits are not
+  AST/lazy-execution or source-grounded app-accuracy proofs; JSON omits typed
+  callees and raw bytes.
+- All **130 CLI invocations** pass. Four SDK rerenders match measured hashes.
+  Ten renders of Clarc, GoodLinks, Terminal, TextEdit and Chess pass under a
+  2,000 MB footprint guard (maximum sampled 231 MB). Private bodies, strings and
+  audit reports remain ignored. No readiness percentage is inferred; pinned
+  outcome and entry-register benchmark tables remain unchanged.
+
+Candidate release SHA256:
+`d84a096e8e7ab30d54cad7e2ad4336af69289dd8bf4544355c223c82e7e1afa7`.
+The original integration gate is pending for this slice; these are local results.
+
+**OPEN:** complete source arity and GP/FP order through ordinary forwarders,
+nonstandard and stack transports, complete Go input/result layouts, actual sret
+ownership, `swifttail`/`swiftcoro` and other unmodelled helper effects. This fixes
+uncertainty retention without claiming the full ABI or a new comprehensive audit.
