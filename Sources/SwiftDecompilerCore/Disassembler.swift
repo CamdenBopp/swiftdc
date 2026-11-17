@@ -1096,6 +1096,8 @@ public struct Disassembler: Sendable {
             protocolDescriptorSymbols: protocolDescriptorSymbols(in: machO),
             importedStubFunctions: importedStubFunctions(in: machO),
             specializationSymbols: ReferenceResolver.specializationSymbols(
+                labels: labelByAddress, names: names, folded: referenceFolds),
+            compilerHelperGPInputPrefixes: ReferenceResolver.compilerHelperGPInputPrefixes(
                 labels: labelByAddress, names: names, folded: referenceFolds)
         )
         CalleeRegisterSummary.closeOverFieldWrites(&registerSummaries, arcIdentityContract: { target, callee in
@@ -1472,6 +1474,8 @@ public struct Disassembler: Sendable {
             protocolDescriptorSymbols: protocolDescriptorSymbols(in: machO),
             importedStubFunctions: importedStubFunctions(in: machO),
             specializationSymbols: ReferenceResolver.specializationSymbols(
+                labels: labelByAddress, names: resolvedNames, folded: referenceFolds),
+            compilerHelperGPInputPrefixes: ReferenceResolver.compilerHelperGPInputPrefixes(
                 labels: labelByAddress, names: resolvedNames, folded: referenceFolds)
         )
         var swiftTargets = Set(labelByAddress.compactMap { address, symbol in
@@ -1730,6 +1734,8 @@ public struct Disassembler: Sendable {
             protocolDescriptorSymbols: protocolDescriptorSymbols(in: machO),
             importedStubFunctions: importedStubFunctions(in: machO),
             specializationSymbols: ReferenceResolver.specializationSymbols(
+                labels: labelByAddress, names: resolvedNames, folded: referenceFolds),
+            compilerHelperGPInputPrefixes: ReferenceResolver.compilerHelperGPInputPrefixes(
                 labels: labelByAddress, names: resolvedNames, folded: referenceFolds)
         )
         // Addresses whose callee uses the Swift calling convention, so `self` in
@@ -4786,6 +4792,21 @@ public struct Disassembler: Sendable {
         /// several symbols onto has none: the bodies of `bump<Int>` and
         /// `bump<UInt>` can be one, and the symbol there names either.
         var specializationSymbols: [UInt64: String] = [:]
+        /// Fixed pointer positions proved by an unambiguous compiler-helper symbol.
+        var compilerHelperGPInputPrefixes: [UInt64: Int] = [:]
+
+        static func compilerHelperGPInputPrefixes(
+            labels: [UInt64: String], names: [UInt64: String], folded: [UInt64: [String]]
+        ) -> [UInt64: Int] {
+            var prefixes: [UInt64: Int] = [:]
+            for (address, symbol) in labels {
+                guard (folded[address]?.count ?? 0) <= 1, let name = names[address],
+                      let prefix = DisassembledFunction.compilerHelperGPInputPrefix(symbol: symbol, printedName: name)
+                else { continue }
+                prefixes[address] = prefix
+            }
+            return prefixes
+        }
 
         /// The substituted signature of the specialization a call to `target`
         /// names, when its symbol proves one.
@@ -8911,11 +8932,11 @@ public struct Disassembler: Sendable {
             guard let target, insn.controlFlow == .call || !ownAddresses.contains(target) else { continue }
             if let summary = registerSummaries[target] {
                 // Keep the body-input policy even without tracked values.
-                // MUST reads establish a concrete prefix. A tail or opaque
-                // call can forward an unknown extent; retain that uncertainty
+                // MUST reads establish a concrete prefix. A call or tail
+                // can forward an unknown extent; retain that uncertainty
                 // without promoting resolved BL-only MAY reads to parameters.
                 guard summary.provenArgumentCount > 0 || summary.provenFloatArgumentCount > 0
-                        || summary.readsIncomingStack
+                        || summary.readsIncomingStack || summary.mayReadFloatArguments != 0
                         || (summary.hasOpaqueInputTransfer && summary.argumentCount > 0) else { continue }
             } else {
                 // A missing body does not erase a Swift getter's zero-formal
@@ -10105,6 +10126,7 @@ public struct Disassembler: Sendable {
                 // changes with the caller's live registers.
                 let proven = summary.provenArgumentCount
                 let unprovenIntegerTail = summary.argumentCount > proven
+                let unprovenFloatingTail = UInt16(summary.mayReadFloatArguments) >> summary.provenFloatArgumentCount != 0
                 var bounded = (0 ..< proven).map {
                     $0 < values.count && summary.provenArgumentReads.contains($0)
                         ? sanitizeValue(values[$0]) : AbstractValue.unknown
@@ -10116,6 +10138,12 @@ public struct Disassembler: Sendable {
                 // double, long)` rendered `mixed(?, 7)`, the 7 in the Double's
                 // place, and `takef3(double, double, double)` `takef3()`.
                 let floats = summary.provenFloatArgumentCount
+                if unprovenFloatingTail {
+                    // Unknown FP formals may precede these GP words in source.
+                    // Do not assign a known value to an unproved mixed position.
+                    let fixedPrefix = resolver.compilerHelperGPInputPrefixes[target] ?? 0
+                    bounded = bounded.enumerated().map { $0.offset < fixedPrefix ? $0.element : .unknown }
+                }
                 if floats > 0 {
                     // A constant renders as a float of the width the body
                     // reads it at, not as its bit pattern.
@@ -10127,7 +10155,7 @@ public struct Disassembler: Sendable {
                         }
                         return value
                     }
-                    bounded = bounded.isEmpty && !unprovenIntegerTail
+                    bounded = bounded.isEmpty && !unprovenIntegerTail && !unprovenFloatingTail
                         ? (0 ..< floats).map(floatArgument)
                         : Array(repeating: .unknown, count: bounded.count + floats)
                 }
@@ -10137,7 +10165,7 @@ public struct Disassembler: Sendable {
                 // the call also passes 100 at [sp]. Their count is not
                 // proven, so the list ends in `…`. Possible GP inputs past
                 // the proved prefix have the same unresolved source arity.
-                if summary.readsIncomingStack || unprovenIntegerTail {
+                if summary.readsIncomingStack || unprovenIntegerTail || unprovenFloatingTail {
                     unprovenVariadicSites.insert(address)
                 }
                 strategy = "body-reads"

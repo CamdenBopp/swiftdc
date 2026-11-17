@@ -17,6 +17,7 @@ func aCalleeReadingAStackArgumentEndsInEllipsisIfPresent(path: String) async thr
     #expect(nine.range(of: #"nine\([^)]*…\)"#, options: .regularExpression) != nil, Comment(rawValue: nine))
     let two = try structured("_callTwo")
     #expect(two.contains("two(") && !two.contains("…"), Comment(rawValue: two))
+    #expect(two.contains(", 3)"), Comment(rawValue: two)) // closed GP-only body keeps the constant
 }
 
 /// A callee with a frame reads its stack arguments through x29, after a
@@ -39,10 +40,10 @@ func aFramedCalleeReadingAStackArgumentEndsInEllipsisIfPresent(path: String) asy
         #expect(text.range(of: "\\b\(callee)\\([^)]*…\\)", options: .regularExpression) != nil, Comment(rawValue: text))
     }
     let two = try structured("_callFramedTwo")
-    // No incoming stack word is read here. The opaque sink can still read
-    // unproved GP inputs, so preserve both proved words and an unknown tail.
-    let first = path.contains(".O0.") ? "arg0" : "?"
-    #expect(two.contains("framedTwo(\(first), 3, …)"), Comment(rawValue: two))
+    // No incoming stack word is read here. The opaque sink can consume
+    // untouched FP inputs as well as GP inputs. Its missing prototype cannot
+    // prove where the two GP words belong in source order, including the 3.
+    #expect(two.contains("framedTwo(?, ?, …)"), Comment(rawValue: two))
     let target = try #require(functions.first { $0.displayName == "_framedTwo" })
     #expect(try #require(CalleeRegisterSummary.of(target)).readsIncomingStack == false)
 }

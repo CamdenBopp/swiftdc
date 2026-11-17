@@ -12,6 +12,8 @@ struct CalleeRegisterFacts: Sendable {
     let argumentReads: RegisterSet
     let provenArgumentReads: RegisterSet
     let provenFloatArgumentReads: RegisterSet
+    /// Possible FP0...7 reads; never a positive count or width proof.
+    let mayReadFloatArguments: UInt8
     let floatArgumentWidths: [Int: Int]
     let mayWriteFloatResult: Bool
     let mayWriteResult: Bool
@@ -50,6 +52,7 @@ struct CalleeRegisterFacts: Sendable {
         argumentReads = summary.argumentReads
         provenArgumentReads = summary.provenArgumentReads
         provenFloatArgumentReads = summary.provenFloatArgumentReads
+        mayReadFloatArguments = summary.mayReadFloatArguments
         floatArgumentWidths = summary.floatArgumentWidths
         mayWriteFloatResult = summary.mayWriteFloatResult
         mayWriteResult = summary.mayWriteResult

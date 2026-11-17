@@ -49,13 +49,26 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// A call whose reads depend on its target's summary.
     struct PendingRead: Sendable, Equatable {
         let target: UInt64
+        // Bits 8...15 are unused in the GP mask, so they hold FP0...7.
+        // Separate accessors keep the two bank contracts independent while
+        // this per-call record stays at sixteen bytes.
+        private let packedUnwritten: UInt32
         /// Bit n set when xn may still hold the body's incoming value there,
-        /// for x0-x7 and x29.
-        let unwritten: UInt32
+        /// for x0-x7, x29 and the dedicated self/context bits.
+        var unwritten: UInt32 { packedUnwritten & ~UInt32(0xff00) }
+        var unwrittenFloatArguments: UInt8 { UInt8(truncatingIfNeeded: packedUnwritten >> 8) }
         /// The same for every one of x0–x28, for `mayReadRegisters`. Kept
         /// apart: bits 20 and 22 above mean only the self and context proofs.
         /// All of them unless the read pass says otherwise.
         var unwrittenRegisters: UInt32 = CalleeRegisterSummary.allRegisterBits
+
+        init(target: UInt64, unwritten: UInt32,
+             unwrittenRegisters: UInt32 = CalleeRegisterSummary.allRegisterBits,
+             unwrittenFloatArguments: UInt8 = 0) {
+            self.target = target
+            self.packedUnwritten = (unwritten & ~UInt32(0xff00)) | (UInt32(unwrittenFloatArguments) << 8)
+            self.unwrittenRegisters = unwrittenRegisters
+        }
     }
 
     /// The width each of those is read at (16 h, 32 s, 64 d), when every read
@@ -208,7 +221,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     var readsIncomingStack = false
     /// An outgoing tail or opaque call can forward an unknown input extent.
     /// Closed transitively only through unwritten incoming words; this proves
-    /// no concrete source count. Resolved BL-only leaves do not seed it.
+    /// no concrete source count. An ordinary call forwarding a proved input
+    /// establishes uncertainty too, without inheriting a positive prefix.
     var hasOpaqueInputTransfer = false
     /// The same for x22, the async context register: the body may write the
     /// context the caller holds there.
@@ -281,13 +295,16 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// (`add x8, sp, #0x20; add x8, x8, x19`) reaches no callee that never
     /// reads x8. All bits when nothing is known.
     var mayReadRegisters: UInt32 = CalleeRegisterSummary.allRegisterBits
+    /// Possible reads of incoming v0...v7, closed through calls. This byte
+    /// supplies only an uncertain extent, never positive parameter/width facts.
+    var mayReadFloatArguments: UInt8 = 0
     private var hasInputProofEntry = false
     private var inputForwardKind: InputForwardKind = .none
     var needsEntryPreservation = false
 
     init(
         argumentReads: RegisterSet, provenArgumentReads: RegisterSet = [], provenFloatArgumentReads: RegisterSet = [],
-        floatArgumentWidths: [Int: Int] = [:], mayWriteFloatResult: Bool = true, mayWriteResult: Bool = true,
+        mayReadFloatArguments: UInt8? = nil, floatArgumentWidths: [Int: Int] = [:], mayWriteFloatResult: Bool = true, mayWriteResult: Bool = true,
         resultReads: [UInt64: ResultRead] = [:], pendingReads: [PendingRead] = [], readsFramePointer: Bool = false,
         readsContextRegister: Bool = false, readsSelfRegister: Bool = true,
         provenEntryRegisterReads: UInt32 = 0, pendingEntryRegisterReads: [EntryRegisterForward] = [],
@@ -309,6 +326,11 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         self.argumentReads = argumentReads
         self.provenArgumentReads = provenArgumentReads
         self.provenFloatArgumentReads = provenFloatArgumentReads
+        if let mayReadFloatArguments {
+            self.mayReadFloatArguments = mayReadFloatArguments
+        } else {
+            for index in provenFloatArgumentReads where index < 8 { self.mayReadFloatArguments |= 1 << index }
+        }
         self.mayWriteFloatResult = mayWriteFloatResult
         self.mayWriteResult = mayWriteResult
         self.readsFramePointer = readsFramePointer
@@ -476,6 +498,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         var readsFramePointer = readFacts?.readsFramePointer ?? false
         var readsContextRegister = readFacts?.readsContextRegister ?? false
         var mayRead: UInt32 = readFacts?.mayReadRegisters ?? 0
+        var mayReadFloat: UInt8 = readFacts?.mayReadFloatArguments ?? 0
         // By call address: a block revisited with fewer registers written
         // widens the mask, as it widens `reads`.
         var pending: [UInt64: PendingRead] = [:]
@@ -493,7 +516,13 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             var written = inState[start] ?? []
             for insn in block.instructions {
                 guard let detail = insn.detail else { return nil }
+                func readPossibleFloat(_ key: String, _ index: Int) {
+                    if !written.contains(key) { mayReadFloat |= 1 << index }
+                }
                 func read(_ key: String, proven: Bool = true) {
+                    if key.hasPrefix("v"), let index = Self.floatArgumentKeys.firstIndex(of: key) {
+                        readPossibleFloat(key, index)
+                    }
                     if let number = Self.registerNumbers[key], !written.contains(key) { mayRead |= 1 << number }
                     guard let index = argumentKeys.firstIndex(of: key), !written.contains(key) else { return }
                     reads.insert(index)
@@ -516,6 +545,10 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                         for (index, key) in argumentKeys.enumerated() where !written.contains(key) {
                             unwritten |= 1 << index
                         }
+                        var unwrittenFloat = pending[insn.address]?.unwrittenFloatArguments ?? 0
+                        for (index, key) in Self.floatArgumentKeys.enumerated() where !written.contains(key) {
+                            unwrittenFloat |= 1 << index
+                        }
                         if !written.contains("x29") { unwritten |= Self.framePointerBit }
                         if !written.contains("x22") { unwritten |= Self.contextRegisterBit }
                         var unwrittenRegisters = pending[insn.address]?.unwrittenRegisters ?? 0
@@ -523,10 +556,16 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                             unwrittenRegisters |= 1 << number
                         }
                         pending[insn.address] = PendingRead(
-                            target: target, unwritten: unwritten, unwrittenRegisters: unwrittenRegisters)
+                            target: target, unwritten: unwritten, unwrittenRegisters: unwrittenRegisters,
+                            unwrittenFloatArguments: unwrittenFloat)
                     } else {
                         let known = insn.branchTarget.flatMap(calleeArity)
                         argumentKeys.prefix(known ?? argumentKeys.count).forEach { read($0, proven: false) }
+                        // The finite runtime/C contracts above use the GP bank.
+                        // An opaque call may also consume any unwritten FP word.
+                        if known == nil {
+                            for (index, key) in Self.floatArgumentKeys.enumerated() { readPossibleFloat(key, index) }
+                        }
                         // A callee of known arity also takes x8; an ABI
                         // callee (an import, an indirect call) the ABI's
                         // inputs; any other target may take any register.
@@ -545,6 +584,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                     }
                     if case .register(let register) = info.operand, register.kind == .vector,
                        register.number < 8, info.access == 0 || info.isRead, !written.contains(register.key) {
+                        readPossibleFloat(register.key, register.number)
                         provenFloatReads.insert(register.number)
                         // Disagreeing widths (or a vector read) leave it unmarked.
                         let width = info.vectorIndex == nil ? register.widthBits : 0
@@ -648,8 +688,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             if let arity = calleeArity(target) { return Set((0..<min(arity, 8)).map { "x\($0)" } + ["x8"]) }
             if isImportStub(target) { return Preservation.abiCallInputs }
             // An in-image body takes only the registers it may read, closed
-            // over its own calls; vector reads are not tracked, so any of
-            // those may be an input still.
+            // over its own calls. This effect model carries only the GP
+            // mask; vector preservation still treats every vector as an input.
             if let bits = calleeEffects(target).mayReadRegisters {
                 return Self.registerKeys(bits).union(Self.vectorKeys)
             }
@@ -670,7 +710,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         } else {
             for (address, call) in pending where selfFlow?.forwardedAt.contains(address) ?? true {
                 pending[address] = PendingRead(target: call.target, unwritten: call.unwritten | Self.selfRegisterBit,
-                                               unwrittenRegisters: call.unwrittenRegisters)
+                                               unwrittenRegisters: call.unwrittenRegisters,
+                                               unwrittenFloatArguments: call.unwrittenFloatArguments)
             }
             readsSelfRegister = selfFlow?.reads ?? true
         }
@@ -718,6 +759,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             argumentReads: reads,
             provenArgumentReads: provenReads,
             provenFloatArgumentReads: provenFloatReads,
+            mayReadFloatArguments: mayReadFloat,
             floatArgumentWidths: floatWidths.filter { [16, 32, 64].contains($0.value) },
             mayWriteFloatResult: writesFloatResult,
             pendingReads: readFacts?.pendingReads ?? pending.keys.sorted().compactMap { pending[$0] },
@@ -933,7 +975,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     func claimingNothing() -> CalleeRegisterSummary {
         CalleeRegisterSummary(
             argumentReads: argumentReads, provenArgumentReads: provenArgumentReads,
-            provenFloatArgumentReads: provenFloatArgumentReads, floatArgumentWidths: floatArgumentWidths,
+            provenFloatArgumentReads: provenFloatArgumentReads, mayReadFloatArguments: mayReadFloatArguments, floatArgumentWidths: floatArgumentWidths,
             mayWriteFloatResult: true, pendingReads: pendingReads,
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister, clobberedCalleeSaved: Self.calleeSavedKeys,
@@ -1047,8 +1089,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// body had not written there. A target with no summary reads every one.
     /// This is the least fixpoint, from each body's own reads up, so a
     /// register counts only through a finite chain of calls that reads it,
-    /// which every real read is. Reads only grow, eight registers a
-    /// function, so the iteration ends without a cap; the pending calls are
+    /// which every real read is. GP and FP masks only grow, so the finite
+    /// register banks converge without a cap; the pending calls are
     /// then resolved and dropped.
     ///
     /// A helper whose body calls another in-image function counted as
@@ -1076,14 +1118,27 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             var readsContextRegister = summary.readsContextRegister
             var readsSelfRegister = summary.readsSelfRegister
             var mayRead = summary.mayReadRegisters
+            var possibleFloats = summary.mayReadFloatArguments
             var opaqueInputs = summary.hasOpaqueInputTransfer
             for call in summary.pendingReads {
                 mayRead |= (summaries[call.target]?.mayReadRegisters ?? allRegisterBits) & call.unwrittenRegisters
+                possibleFloats |= (summaries[call.target]?.mayReadFloatArguments ?? 0xff) & call.unwrittenFloatArguments
                 let targetReads = summaries[call.target]?.argumentReads ?? RegisterSet(0 ..< argumentKeys.count)
+                // Forwarding a finite provider's proved word leaves the source
+                // count unknown through an ordinary BL. This is not the
+                // positive alias/frame proof and adds no formal parameter.
+                let forwardsGP = (summaries[call.target]?.provenArgumentReads ?? []).contains {
+                    call.unwritten & (1 << $0) != 0
+                }
+                let forwardsFP = (summaries[call.target]?.provenFloatArgumentReads ?? []).contains {
+                    $0 < 8 && call.unwrittenFloatArguments & (1 << $0) != 0
+                }
+                if forwardsGP || forwardsFP { opaqueInputs = true }
                 // Registry membership is not a usable body summary. Missing
                 // callees contribute an unknown extent alongside their MAY
                 // reads; a present false fact remains a negative control.
-                if call.unwritten != 0, (summaries[call.target]?.hasOpaqueInputTransfer ?? true) {
+                if call.unwritten != 0 || call.unwrittenFloatArguments != 0,
+                   (summaries[call.target]?.hasOpaqueInputTransfer ?? true) {
                     opaqueInputs = true
                 }
                 for index in targetReads where call.unwritten & (1 << index) != 0 { reads.insert(index) }
@@ -1101,12 +1156,14 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 || readsContextRegister != summary.readsContextRegister
                 || readsSelfRegister != summary.readsSelfRegister
                 || mayRead != summary.mayReadRegisters
+                || possibleFloats != summary.mayReadFloatArguments
                 || opaqueInputs != summary.hasOpaqueInputTransfer
             else { continue }
             summaries[start] = summary.replacingReads(
                 reads, readsFramePointer: readsFramePointer, readsContextRegister: readsContextRegister,
                 readsSelfRegister: readsSelfRegister)
             summaries[start]?.mayReadRegisters = mayRead
+            summaries[start]?.mayReadFloatArguments = possibleFloats
             summaries[start]?.hasOpaqueInputTransfer = opaqueInputs
             for caller in callers[start] ?? [] where queued.insert(caller).inserted {
                 worklist.append(caller)
@@ -1168,7 +1225,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     ) -> CalleeRegisterSummary {
         var summary = CalleeRegisterSummary(
             argumentReads: reads, provenArgumentReads: provenArgumentReads,
-            provenFloatArgumentReads: provenFloatArgumentReads, floatArgumentWidths: floatArgumentWidths,
+            provenFloatArgumentReads: provenFloatArgumentReads, mayReadFloatArguments: mayReadFloatArguments, floatArgumentWidths: floatArgumentWidths,
             mayWriteFloatResult: mayWriteFloatResult, pendingReads: pendingReads,
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister, readsSelfRegister: readsSelfRegister,
@@ -1334,6 +1391,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 argumentReads: old.argumentReads,
                 provenArgumentReads: old.provenArgumentReads,
                 provenFloatArgumentReads: old.provenFloatArgumentReads,
+                mayReadFloatArguments: old.mayReadFloatArguments,
                 floatArgumentWidths: old.floatArgumentWidths,
                 mayWriteFloatResult: old.mayWriteFloatResult,
                 pendingReads: old.pendingReads,

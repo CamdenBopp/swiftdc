@@ -607,10 +607,24 @@ private func x8EmptyArityCaller(_ kind: String, tail: Bool, indirect: Bool = fal
         let result = try #require(summaries[caller.startAddress])
         #expect(result.argumentCount == (hasBody ? 1 : 8))
         #expect(result.provenArgumentReads.isEmpty)
-        #expect(result.hasOpaqueInputTransfer == !hasBody)
+        // A missing body has an unknown extent. A present body that consumes
+        // the forwarded word also leaves source arity unknown through BL;
+        // neither case grants a positive parameter prefix to this caller.
+        #expect(result.hasOpaqueInputTransfer)
         let facts = CalleeRegisterFacts.finish(&summaries).facts
-        #expect(facts[caller.startAddress]?.hasOpaqueInputTransfer == !hasBody)
+        #expect(facts[caller.startAddress]?.hasOpaqueInputTransfer == true)
     }
+    // Preserve an independently checked present/false control: this provider
+    // overwrites x0 and takes no incoming GP or FP word.
+    let zero = try x8RawBody([0xd2800b60, 0xd65f03c0], at: leaf.startAddress) // mov x0,#91; ret
+    var noInputs = [caller.startAddress: initial,
+                    zero.startAddress: try #require(CalleeRegisterSummary.of(zero))]
+    CalleeRegisterSummary.closeOverReads(&noInputs)
+    let zeroResult = try #require(noInputs[caller.startAddress])
+    #expect(zeroResult.argumentCount == 0 && zeroResult.mayReadFloatArguments == 0)
+    #expect(!zeroResult.hasOpaqueInputTransfer && zeroResult.provenArgumentReads.isEmpty)
+    let zeroFacts = CalleeRegisterFacts.finish(&noInputs).facts
+    #expect(zeroFacts[caller.startAddress]?.hasOpaqueInputTransfer == false)
 }
 
 private let x8GoStackGrowthNames = ["runtime.morestack", "runtime.morestack.abi0",

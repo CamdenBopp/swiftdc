@@ -64,3 +64,5 @@ Fixtures/Sample/unknown-store-*-oracle
 
 Fixtures/Sample/x8-entry-*-oracle
 Fixtures/Sample/x8entry.abi.json
+
+Fixtures/Sample/bl-call-input-*-oracle

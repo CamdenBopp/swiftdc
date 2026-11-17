@@ -47,7 +47,10 @@ private func bodyArityCall(_ group: [DisassembledFunction], _ name: String) thro
         guard FileManager.default.fileExists(atPath: path) else { continue }
         for group in try await bodyArityPipelines(path) {
             let (function, call) = try bodyArityCall(group, "third")
-            #expect(call.callArguments == ["?", "?", "arg0", "…"], Comment(rawValue: path + "\n" + function.renderStructured()))
+            // The x2 read proves a GP prefix, but the opaque call can
+            // consume untouched FP inputs before it in source order. The
+            // incoming arg0 cannot be assigned to the third source formal.
+            #expect(call.callArguments == ["?", "?", "?", "…"], Comment(rawValue: path + "\n" + function.renderStructured()))
         }
     }
 }

@@ -319,7 +319,9 @@ private func tailInputProgram() -> TailInputProgram {
     let expected = [
         "callerAbsent": "sub_tail_input_relayA(?)", "callerUnknown": "sub_tail_input_relayA(?)",
         "callerSnapshot": "sub_tail_input_relayA(?)", "callerEmpty": "sub_tail_input_emptyRelay()",
-        "callerWrapper": "sub_tail_input_wrapper()", "callerDouble": "sub_tail_input_doubleRelayA(?)",
+        // An ordinary BL proves no fixed source prefix, but its possible
+        // forwarded input is not a proof of zero arguments either.
+        "callerWrapper": "sub_tail_input_wrapper(…)", "callerDouble": "sub_tail_input_doubleRelayA(?)",
         "callerFloat": "sub_tail_input_floatRelay(?)", "callerMixed": "sub_tail_input_mixedRelay(?, ?)",
     ]
     for functions in [array, objdump, filtered, selectedArray, Array(each.values)] {
