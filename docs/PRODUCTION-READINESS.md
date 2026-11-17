@@ -12977,3 +12977,15 @@ list is not a zero-arity proof. Native reductions and guarded vendor-output
 comparisons imply no overall reconstruction accuracy or readiness percentage.
 Candidate release SHA256:
 `784483ca93b22a9d09dbacad688c0dc01a2465655a889b5edde500004aa021cd`.
+
+Publication follow-up: the original `Tools/integration-gate.sh --push`
+rebuilt `917dea7`, passed **1,867 tests / 43 suites** (907.882 s) and pushed
+it to `origin/dev`. Its independent release SHA256 is
+`2a89a1693f0c8663368137d83056277151a6af3f5eecb7a9ce400b9113d03b87`.
+All 578 outputs in each of four views and all four SDK workload hashes
+match the reviewed frozen candidate. The gate's 2,316 positive cost pairs
+measure **+0.18% instructions / +0.45% summed per-run physical peaks**
+against `8f1793b`; all default budgets pass without override.
+Hosted [run 44070526750 at 917dea7](https://github.com/CamdenBopp/swiftdc/actions/runs/44070526750)
+failed at Toolchain on Xcode 26.3 / Swift 6.2.4; fixtures, build and the
+suite were skipped. It supplies no CI test result.

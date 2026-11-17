@@ -6,7 +6,7 @@ its commit, its denominator and the command that reproduces it. The long
 history is [PRODUCTION-READINESS.md](PRODUCTION-READINESS.md); this page
 is what to quote.
 
-Updated 2026-11-16. Each measurement names its commit; the benchmark
+Updated 2026-11-17. Each measurement names its commit; the benchmark
 tables retain their original measurements.
 
 ## What to report, and what not to
@@ -79,9 +79,11 @@ analysis seeded at each entry.
 The 19 wrong entries were one defect, found by this check and fixed in
 0f1f69b: the compiler's `default argument N of f(…)` generators take no
 parameters (or only metadata), and swiftdc read `f`'s parameter list out
-of their name. Still open from it: x8 is seeded as a possible result
+of their name. In that measured version, x8 was seeded as a possible result
 buffer in every function, though the compiler passes one in 13 of 1,176;
-and 30% of entries are not seeded at all.
+30% of entries were not seeded at all. `9479048` now qualifies x8 by entry
+ABI eligibility, but this corpus has not been remeasured. Actual hidden-result
+parameter ownership remains open; the table above is still the pinned run.
 
 Reproduce: `Tools/ghidra-compare/interface_oracle.py <swiftdc>
 <built-corpus>`. It covers symbols the compiler emits IR for; it does not
@@ -89,8 +91,30 @@ cover results, bodies, or Objective-C methods (4 matched).
 
 ## Latest local verification
 
-At `774ed56`, failed complete callee transfers retain their proved possible
-writes. The native controls pass **105 observations** across C O0/O2/Os,
+At `9479048`, an incoming x8 read no longer establishes result-buffer
+ownership. Unsupported entries decline in both entry seeds and caller result
+conventions; removing a phantom seed retains proved or opaque input extents.
+Native controls pass **53 LLVM signatures / 420 observations** across
+assembly, fixed/resilient Swift, reabstracted and ObjC results. Separate
+Go-absent builds retain all **53 signatures / 406 observations**.
+All **1,845 existing tests** remain, with every original test body/assertion
+byte-identical across **333 Swift files**; only a selected-FP setup helper
+changes. **22 tests** are added. **48 product mutations and two fixture
+controls** separately compile red with native controls green. The full
+fixture-enforced **1,867 tests / 43 suites** pass (849.252 s).
+
+The original integration gate then rebuilt committed `917dea7`, passed the
+same **1,867 tests / 43 suites** (907.882 s), passed every default cost budget
+and pushed it to `origin/dev`. Its independently built release matches all
+**578 inputs in four reviewed views** and all four SDK workload hashes.
+This is bounded x8 ABI qualification, not actual sret ownership or complete
+Go source input/result recovery. Resolved BL-only forwarding arity remains
+open; an absent list does not establish zero source parameters. See the
+[hash-pinned engineering record](https://github.com/CamdenBopp/swiftdc/commit/947904890b2b712b7b33ef0492a3ec74da20c1ac)
+and [readiness follow-up](PRODUCTION-READINESS.md#2026-11-17-qualify-incoming-x8-by-the-entry-abi).
+
+Earlier, at `774ed56`, failed complete callee transfers retain their proved
+possible writes. The native controls pass **105 observations** across C O0/O2/Os,
 covering context, result-buffer and private-frame aliases; the existing
 **15** AsyncCalls native cases also pass. All **1,838** existing test
 declarations remain and every existing test file is byte-identical. Seven
@@ -136,10 +160,10 @@ integration test: **1,805 tests in 43 suites** passed at that commit.
 
 | Check | Result | Where |
 |---|---|---|
-| Enforcing test suite (a missing fixture fails) | 1,845 tests / 43 suites pass at `774ed56` (660.627 s) | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`, after a fresh test build |
-| Output change against `7efd0d2` | Six false argument returns decline, 13 unproved return labels become indirect branches, and one stale observe(7) becomes observe(?). Seven inputs: structured/pseudo 39 changed lines each, listing 40, JSON 107. Every difference reviewed | `Tools/blast-radius.sh` |
-| Cost budget (instructions, footprint) | All 2,188 render/workload pairs positive; -0.04% retired instructions, +0.10% summed per-run peak footprint; every default budget passes without override. All four SDK outputs match | same, `--real --perf` |
-| GitHub Actions, last inspected 2026-11-16 | Run at published `7efd0d2` fails because no hosted runner was acquired. Suite job cancelled, no steps, no assigned runner; macOS arm64 capacity notices. Tests never started. The earlier `46e51b6` Toolchain failure is a separate run | [run 43953476174](https://github.com/CamdenBopp/swiftdc/actions/runs/43953476174), [CI.md](CI.md) |
+| Enforcing test suite (a missing fixture fails) | 1,867 tests / 43 suites pass at `9479048` (849.252 s); independently rebuilt gate at `917dea7` also passes (907.882 s) | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`, after a fresh test build; `Tools/integration-gate.sh --push` |
+| Output change against `8f1793b` | 578 inputs in four views. Structured/pseudo: 57 changed inputs, 9,955/9,659 lines; listing/JSON: 58, 10,450/35,325 lines. Every difference reviewed; stores and producing calls retained. SDK source outputs differ, xrefs match | `Tools/blast-radius.sh` |
+| Cost budget (instructions, footprint) | Published gate: all 2,316 render/workload pairs positive; +0.18% retired instructions, +0.45% summed per-run peak footprint. Every default budget passes without override. Gate output hashes match the reviewed frozen release | same, `--real --perf` |
+| GitHub Actions, inspected 2026-11-17 | Run at published `917dea7` fails at Toolchain: Xcode 26.3 / Swift 6.2.4 is below the verified Swift 6.4 requirement. Fixtures, build and enforcing suite are skipped; this is no CI test result. The older `7efd0d2` runner-capacity failure is separate | [run 44070526750](https://github.com/CamdenBopp/swiftdc/actions/runs/44070526750), [CI.md](CI.md) |
 | Independent execution of rendered expressions | return values of the differential-oracle fixtures, integer and floating point (compared bit for bit). Not checked by execution: which way a branch went, registers at call sites, results beyond the first register, memory writes | `DifferentialOracleTests` |
 
 Render exit statuses match the baseline, including **35** identical expected
@@ -210,7 +234,8 @@ constant (275a60b); tail returns to getters and runtime entries
 Still open from that review's list: false helper results without a decoded
 preservation proof, a body-entered loop losing its exit test, and the
 malformed condition from reused flags. Body-proven unwritten x0/v0 transport
-was fixed in `7311942`; outlined entry x8 ownership remains open.
+was fixed in `7311942`; `9479048` qualifies entry/caller x8 interpretation
+by supported ABI eligibility. Actual hidden-result ownership remains open.
 
 ## Not established
 

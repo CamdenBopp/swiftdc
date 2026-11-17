@@ -12,6 +12,14 @@ fixtures, and `macos-26` jobs were never given a runner when tried
 as the runner. That applies to a fork as much as to the main
 repository: each copy sets up its own.
 
+Observed on 2026-11-17: [run 44070526750 at published
+917dea7](https://github.com/CamdenBopp/swiftdc/actions/runs/44070526750) acquired
+a hosted runner, selected Xcode 26.3 / Swift 6.2.4, and failed the Toolchain
+step. Fixtures, build and the enforcing suite were skipped. This differs
+from the earlier runner-capacity failure and is not a CI test result.
+The original local integration gate passed all 1,867 tests / 43 suites
+before pushing that commit; a local gate pass is not a hosted CI pass.
+
 ## The environment
 
 | | Tested with | Required |
