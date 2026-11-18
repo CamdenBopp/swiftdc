@@ -129,11 +129,16 @@ comparison, not source-grounded app accuracy. Production and fixture bytes
 are unchanged since those CLI/SDK/app runs; an added synthetic late-probe
 test prompted a fresh full suite and cost comparison.
 
-Publication through the original integration gate is pending. The last
-observed hosted run remains
-[44219380730](https://github.com/CamdenBopp/swiftdc/actions/runs/44219380730)
-at `1635cbc`, which failed Toolchain before fixtures/build/tests. It supplies
-no hosted test result. General/transitive incoming-x8 ownership, narrow C
+The original integration gate independently rebuilt `90b4169`, passed
+**1,942 tests / 43 suites (1014.377 s)** and pushed it and code `3af60f8`
+to `origin/dev`. All **648 inputs in each of four views** and all four SDK
+workload hashes match the reviewed release. Gate costs are **+0.19%
+instructions / +0.06% summed per-run physical peaks**; every default budget
+passes without override. A fresh fetch confirmed agreement with origin/dev.
+Hosted [run 44271037278](https://github.com/CamdenBopp/swiftdc/actions/runs/44271037278)
+at `90b4169` failed Toolchain on Swift 6.2.4 / Xcode 26.3; fixtures, build and
+the enforcing suite were skipped. It supplies no hosted test result.
+General/transitive incoming-x8 ownership, narrow C
 widths, other name-only call-effect models, RET/fallthrough reconstruction
 and values across awaits remain open. No pinned Ghidra/entry benchmark or
 readiness/coverage percentage is recomputed. See the

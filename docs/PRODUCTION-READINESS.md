@@ -13389,11 +13389,21 @@ earlier was tried and reverted: **+13.35% versus baseline**, about **-0.12%**
 versus the prior outlier candidate, no material improvement. Only experiment-added
 assertions were reverted with that dead end; no pre-existing test was removed.
 
-**Publication pending:** the original `Tools/integration-gate.sh --push` must
-independently qualify the committed head before publication. The last observed
-hosted [run 44219380730](https://github.com/CamdenBopp/swiftdc/actions/runs/44219380730)
-at `1635cbc` failed Toolchain on Swift 6.2.4 / Xcode 26.3 before fixtures,
-build and tests; it supplies no hosted test result.
+**Published:** the original `Tools/integration-gate.sh --push` independently
+rebuilt `90b41690c063d5bd2a1c8d718ac520245b4f8cd0`, passed
+**1,942 tests / 43 suites (1014.377 s)** and pushed it and code `3af60f8`
+to `origin/dev`. All **648 inputs in each of four views**, including the
+35 expected preflight-decline pairs, and all four SDK workload output hashes
+match the reviewed release. Gate costs are **7,507.3G -> 7,521.3G instructions
+(+0.19%)** and **23,673 -> 23,686 MB summed per-run physical peaks (+0.06%)**;
+all **2,596 positive cost pairs** meet every default budget without override.
+All **1,064 public source hashes / 788 fixture product hashes** agree in the
+main and gate checkouts. Independent gate release SHA256:
+`e3fb96b32642ca9c20ae09546ee361fa9fe09a535424e61d40b99f0724c9b908`.
+A fresh fetch confirmed agreement with origin/dev before this documentation
+follow-up. Hosted [run 44271037278](https://github.com/CamdenBopp/swiftdc/actions/runs/44271037278)
+at `90b4169` failed Toolchain on Swift 6.2.4 / Xcode 26.3, with fixtures,
+build and enforcing suite skipped; it supplies no hosted test result.
 
 **OPEN:** general/transitive incoming-x8 ownership through in-image helpers,
 narrow C parameter/result widths, other name-only call-effect models,
