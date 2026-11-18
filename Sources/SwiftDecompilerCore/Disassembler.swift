@@ -6468,6 +6468,17 @@ public struct Disassembler: Sendable {
               ordinaryHead(caller.head),
               let callerRegister = swiftReturnRegister(of: function, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cfg: cfg)
         else { return [] }
+        // An opposite-signedness narrow result consumes the same physical
+        // low bits. Its source view is applied by typedReturnValue below;
+        // accepting the tail must never turn it into a bare callee value.
+        func forwardsResult(_ result: String) -> Bool {
+            if caller.result == result { return true }
+            let destination = TypeInference.classify(caller.result)
+            let source = TypeInference.classify(result)
+            return destination.category == .integer && source.category == .integer
+                && [8, 16, 32].contains(destination.width ?? 0)
+                && source.width == destination.width
+        }
         return Set(function.instructions.compactMap { insn in
             guard insn.controlFlow == .branch,
                   insn.branchTarget.map({ $0 < first.address || $0 > last.address }) ?? true,
@@ -6477,7 +6488,7 @@ public struct Disassembler: Sendable {
                   case let name = insn.branchTarget.flatMap({ provenSignature($0, printed) }) ?? printed
             else { return nil }
             if let callee = DisassembledFunction.splitSignature(name) {
-                guard !callee.isAsync, !callee.isThrowing, caller.result == callee.result,
+                guard !callee.isAsync, !callee.isThrowing, forwardsResult(callee.result),
                       ordinaryHead(callee.head) || signatureSpecializationKeepsResult(callee.head) && ordinaryHead(withoutSpecializationClauses(callee.head))
                 else { return nil }
                 return insn.address
@@ -6485,7 +6496,7 @@ public struct Disassembler: Sendable {
             // A property getter has no argument list: `String.count.getter :
             // Swift.Int`. Its type is its result.
             if let getter = name.range(of: ".getter : "),
-               name[getter.upperBound...].trimmingCharacters(in: .whitespaces) == caller.result {
+               forwardsResult(name[getter.upperBound...].trimmingCharacters(in: .whitespaces)) {
                 return insn.address
             }
             // A C entry point (the SDK or the runtime) that returns one

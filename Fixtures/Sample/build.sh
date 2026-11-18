@@ -1268,3 +1268,6 @@ python3 build-c-narrow-arguments.py
 
 echo "==> narrow integer results keep their source conversion (narrow_integer_return*.swift, -Onone/-O/-Osize)"
 python3 build-narrow-integer-returns.py
+
+echo "==> opposite-signedness Swift function/getter tails retain converted returns (swift_integer_tail_*.swift, -Onone/-O/-Osize)"
+python3 build-swift-integer-tail-results.py
