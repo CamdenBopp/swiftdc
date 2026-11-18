@@ -13183,3 +13183,82 @@ reconstruction and values carried across awaits. This qualifies no-error
 folds, not the full Swift/C ABI. No source-grounded app accuracy, readiness
 percentage or ABI coverage percentage is inferred; pinned benchmarks remain
 unchanged.
+
+
+## 2026-11-17: preserve compare-and-branch operand width
+
+**FIXED (86054a10d6906d10c82b4676f909dfa80557b7c6).** `branchTakenCondition` read a `cbz w0`
+operand from the canonical x-register map without narrowing it. An own-source
+producer returns `0x100000000`; native execution takes the low-word zero
+branch and returns 1, while published `23d7bb1` renders a whole-result test
+that selects 2. The same defect affects CBNZ and copied registers and does
+not require a runtime-name assumption.
+
+Use the existing width-aware operand reader for CBZ/CBNZ. Word views retain
+their low 32 bits; x views stay 64 bits; unavailable or opaque truncated
+values decline. Both published conditions and reconstructed diamond results
+use the correction. TBZ/TBNZ and the existing 64-bit-only zero-edge refinement
+are unchanged. This fixes machine operand width, not callee source typing.
+
+Verification of the exact frozen source:
+
+- All **337 existing Swift test files and declarations remain**; 336 files
+  are byte-identical. One LabReportTests assertion now requires the actual
+  masked w0 condition and is independently compiled red under the CBZ fault.
+  **Four tests** are added. The first full-suite attempt was stopped after
+  the obsolete lab-format expectation failed; it is not a passing run.
+- Native C callers at **O0/O2/Os** pass **72 observations each / 216 total**
+  over eight assembly forms and nine inputs. These are repeated observations,
+  not 216 distinct semantic cases. Named and locally stripped libraries cover
+  all five analysis APIs: **240 function/API checks / 2,160 input comparisons**,
+  each checking branch and selected value against actual native execution.
+  Unit matrices add **144 branch/result comparisons** without source ABI
+  inference. The assembly is fixed; the optimization levels apply to C callers.
+- **Three unique faults** independently compile and fail: bypass CBZ's view
+  (429 assertion issues), bypass CBNZ's view (428), and truncate 64-bit tests
+  (856). Native controls remain green under each. Exact restoration, rebuild
+  and **18 selected tests (1.075 s)** pass. `Tools/fixtures.sh`,
+  `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build` pass **1,915 tests /
+  43 suites (924.489 s)**. All **1,048 public inputs / nine fixture products**
+  match frozen hashes after verification.
+- `Tools/blast-radius.sh <base> <new> <out> --real --perf` compares frozen
+  releases against `23d7bb1`: **610 inputs in four views + four SDK workloads
+  = 2,444 paired cost rows**. Instructions **7,453.8G -> 7,449.8G (-0.05%)**;
+  summed per-run physical peaks **22,786 -> 22,814 MB (+0.12%)**. Every
+  default budget passes without override. Both whole-SDK xrefs outputs match.
+- Every changed line in **80 inputs / 147 functions** is reviewed:
+  structured/pseudo/listing **294 lines each**, JSON **588**. Each function
+  changes one statement and one annotation; arguments and all serialized
+  function/block/raw-instruction/control-flow DTOs match. JSON omits typed
+  callees and raw bytes. Every field/line differs only by wrapping the existing
+  zero-tested value in a low-word mask: **122 Boolean-store predicates,
+  24 new-fixture selected returns and one mainOr return** in libKnownArity.
+  The latter calls pthread_main_np, whose word result controls a pointer-or-zero
+  return. Existing calls and control structure remain.
+- Four guarded whole-SDK rerenders match measured hashes. Syntax changes
+  **five** Boolean stores; Parser **one**. Independent LLVM raw decoding
+  confirms `cbz w1`, the two w8 constants and `strb` at all six sites.
+- All **234 unique CLI invocations** pass. All **117 stderr pairs** and
+  **45 dump/layout/interface/objc/xrefs stdout pairs** match. Whole views match
+  measured bytes; analyze/lab raw instructions, headers and entry seeds match.
+  All **120 analyze/lab/filtered changed line pairs** are exact mask additions;
+  no other CLI contract changes occur.
+- Ten Clarc/GoodLinks/Terminal/TextEdit/Chess renders pass a **2,000 MB**
+  footprint guard (maximum sampled **210 MB**). Every app delta is reviewed:
+  **129 changed line pairs / 133 inserted masks**, including unresolved
+  producers and nested selects. Exact reverse transformation preserves other
+  zero tests, calls, headers and control text. Private bodies, strings and
+  reports stay ignored; this is not source-grounded app accuracy.
+
+Candidate release SHA256:
+`ce9529d865ec7c64b0107b1f9aceb7b656eafa8ea0bf4a9e023b6a3a647e06f3`.
+The original `Tools/integration-gate.sh --push` remains pending for this
+slice. Hosted [run 44209378717](https://github.com/CamdenBopp/swiftdc/actions/runs/44209378717)
+at `23d7bb1` failed Toolchain on Swift 6.2.4 / Xcode 26.3, with fixtures,
+build and suite skipped; it supplies no hosted test result for this fix.
+
+**OPEN:** foreign C prototype arity/order/results/ownership and other named
+runtime contracts, general RET/fallthrough reconstruction and values carried
+across awaits. No readiness/coverage percentage or pinned benchmark is
+recomputed. This is a bounded machine-width correction.

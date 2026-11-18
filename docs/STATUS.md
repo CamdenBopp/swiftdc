@@ -91,6 +91,42 @@ cover results, bodies, or Objective-C methods (4 matched).
 
 ## Latest local verification
 
+At `86054a1`, the tracer reads `cbz`/`cbnz` operands at their encoded
+width. A test of `w0` previously used the entire tracked `x0`: with a
+producer returning `0x100000000`, native execution returned 1 while the
+rendered whole-result condition selected 2. Word tests now retain a
+low-word mask in branch facts and selected values; 64-bit tests stay wide.
+
+All **337 existing Swift test files and declarations remain**; **336 files
+are byte-identical**, and one lab assertion is strengthened to require the
+masked condition. Four tests are added. **Three independently compiled
+faults** fail their intended tests, with native controls green. Own-source
+assembly and C callers at O0/O2/Os pass **216 native observations**; named
+and locally stripped libraries cover **240 function/API cases**. The full
+fixture-enforced **1,915 tests / 43 suites** pass (924.489 s).
+
+Against `23d7bb1`, **610 inputs in four views plus four SDK workloads** give
+**2,444 paired cost rows**: instructions **-0.05%**, summed per-run physical
+peaks **+0.12%**. Every default budget passes without override. Every changed
+line across **80 inputs / 147 functions** is reviewed; each change is the
+low-word mask, with serialized raw-instruction/control-flow DTOs unchanged.
+Six additional whole-SDK Boolean stores have independent LLVM raw checks.
+All **234 CLI invocations**, four guarded SDK rerenders and ten guarded
+renders of the five original apps pass. The app changes are **129 line
+pairs / 133 inserted masks**, preserving surrounding calls and control text;
+maximum sampled footprint is **210 MB** under a **2,000 MB** guard.
+
+The original integration gate and publication are pending for this slice.
+The latest hosted [run 44209378717](https://github.com/CamdenBopp/swiftdc/actions/runs/44209378717)
+at `23d7bb1` failed Toolchain before fixtures/build/tests, so it supplies no
+hosted test result. Foreign C prototypes and other named runtime contracts,
+general RET/fallthrough reconstruction and values across awaits remain open.
+No pinned benchmark or readiness/coverage percentage is recomputed. See the
+[engineering record](https://github.com/CamdenBopp/swiftdc/commit/86054a10d6906d10c82b4676f909dfa80557b7c6) and
+[readiness follow-up](PRODUCTION-READINESS.md#2026-11-17-preserve-compare-and-branch-operand-width).
+
+The callee error-proof follow-up below is historical evidence.
+
 At `e0b608c`, Swift error checks require a language contract, exact
 callee ABI binding, or independent body-preservation proof. A plain symbol
 name alone no longer proves that x21 survives. Separate Swift providers named
