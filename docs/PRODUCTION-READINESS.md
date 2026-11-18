@@ -13411,3 +13411,76 @@ general RET/fallthrough reconstruction and values carried across awaits.
 This fixes named declaration provenance and its listed consumers, not all C
 ABI recovery. Pinned Ghidra/entry benchmarks and readiness/coverage estimates
 are not recomputed.
+
+
+## 2026-11-18: require body proof for boxed existential projection effects
+
+**FIXED (`c0429a1`):** a name-only readonly/plumbing contract kept a stale 7
+across a foreign projection-shaped call that writes 41 into the caller's
+local, then hid the call. The independent native caller returns 42; the
+published binary showed `boxedProjectionConsumeWord(7)`. A named in-image
+helper differing from a canonical shape by one STR had the same defect.
+The caller now retains the effectful call and declines the stale argument.
+
+Exact complete 9/19-instruction helper bodies supply a separate typed
+memory fact, including named candidates without renaming them. Exact
+entry/immutable-pointer checks, direct and late-indirect resolution,
+cache isolation, instruction copies and independent replay on proof
+addition/revocation keep it distinct from SDK, ARC and Swift-error facts.
+Unproved external source argument extent declines; existing in-image
+body-read layout remains independent. Statement, text-condition and reused
+producer rendering require the same proof before hiding a projection.
+
+All **339 existing Swift test files and function declarations remain**;
+**338 files are byte-identical**. One test supplies explicit body proof to
+its original positive expectations and adds name-only rejection. **13 tests
+are added**: twelve regression tests each observed failing and one native
+control. **25 independently compiled faults** fail with **1,681 assertion
+issues**, while the native control stays green. Own-source assembly and C
+drivers give **129 native observations**, at three **C driver** optimization
+levels; this is not a three-level Swift code-generation claim. The fresh
+fixture-enforced **1,955 tests / 43 suites** pass (**903.366 s**).
+
+Against the published `90b4169` release, **658 inputs in four views plus
+four SDK workloads** give **2,636 paired cost rows**: instructions **+0.60%**,
+summed per-run physical peaks **+0.07%**. Every default budget passes without
+override. Only the new client and its stripped copy change: five functions,
+22 JSON fields, 14 listing diff-side lines and 11 lines in each pseudo and
+structured view. Every delta is reviewed against native execution and raw
+LLVM instructions/imports. The 35 identical independently checked
+preflight-decline pairs are not successful decompilations.
+
+All **468 CLI invocations** pass and every difference is classified. Four
+guarded SDK rerenders match measured hashes; all four whole-SDK
+structured/xrefs output pairs are unchanged. Ten guarded renders of the
+five original apps pass with **byte-identical output**, retaining all
+**84,833 function headers and their order**; maximum sampled
+footprint is **195 MB** under a **2,000 MB** guard. This is output
+reliability, not source-grounded app accuracy. The final rebuilt release is
+byte-identical to the reviewed candidate. The original integration gate
+remains the publication check; this local record supplies no new hosted CI
+result.
+
+**Corpus provenance:** the fresh fixture cache adds ten built products;
+an old auxiliary Python bytecode file is absent. 179 existing product hashes
+changed on rebuilding. Both frozen releases use the exact same current
+797-product corpus; no cross-slice byte-equivalence claim is made for those
+rebuilt products. All 1,071 public source and 797 product pins stayed fixed
+through full qualification, CLI, SDK and app runs.
+
+Reproduce: `Tools/fixtures.sh`; rebuild tests with `swift build --build-tests`,
+then `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`. The seven caller
+cases and separate two-shape pointer/no-write controls live in
+`Fixtures/Sample/boxed_projection_*`; run the six built
+`boxed-projection-*-oracle` programs. Freeze matched releases built with
+`swift build -c release --scratch-path .build-release`, then run
+`Tools/blast-radius.sh <base> <new> <out> --real --perf`. The code commit
+records every fault/test mapping and each changed fixture line/field.
+Reviewed release SHA256: `aa1e2d858ea6a23d4459965bf37bc2add37a2107255b838513024f0006dacc02`.
+
+**OPEN:** the near-shape helper's unchanged two-GP body-read prefix is not
+full source ABI recovery; raw x9=41 supplies an additional nonstandard
+input. General source ABI and incoming-x8 ownership, other name-only call
+effects, C widths, RET/fallthrough and values across awaits remain open.
+Pinned Ghidra/entry measurements and readiness/coverage percentages are
+not recomputed. Publication and hosted CI must be recorded separately.

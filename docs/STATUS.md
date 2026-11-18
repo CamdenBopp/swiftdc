@@ -91,6 +91,55 @@ cover results, bodies, or Objective-C methods (4 matched).
 
 ## Latest local verification
 
+At `c0429a1`, boxed-existential projection memory preservation and call
+hiding require an independently checked complete helper body. A foreign
+import or in-image mutator with that name no longer keeps a stale local
+value or disappears from the output. Exact 9/19-instruction projection
+bodies remain supported through direct calls and immutable pointers; names,
+SDK declarations, ARC identity and no-Swift-error proofs do not supply this
+memory fact. Late additions and revocations refresh the analysis.
+
+All **339 existing Swift test files and function declarations remain**;
+**338 files are byte-identical**. One test supplies explicit body proof to
+its original positive expectations and adds name-only rejection. **13 tests
+are added**: twelve regression tests each observed failing and one native
+control. **25 independently compiled faults** fail with **1,681 assertion
+issues**, while the native control stays green. Own-source assembly and C
+drivers give **129 native observations**, at three **C driver** optimization
+levels; this is not a three-level Swift code-generation claim. The fresh
+fixture-enforced **1,955 tests / 43 suites** pass (**903.366 s**).
+
+Against the published `90b4169` release, **658 inputs in four views plus
+four SDK workloads** give **2,636 paired cost rows**: instructions **+0.60%**,
+summed per-run physical peaks **+0.07%**. Every default budget passes without
+override. Only the new client and its stripped copy change: five functions,
+22 JSON fields, 14 listing diff-side lines and 11 lines in each pseudo and
+structured view. Every delta is reviewed against native execution and raw
+LLVM instructions/imports. The 35 identical independently checked
+preflight-decline pairs are not successful decompilations.
+
+All **468 CLI invocations** pass and every difference is classified. Four
+guarded SDK rerenders match measured hashes; all four whole-SDK
+structured/xrefs output pairs are unchanged. Ten guarded renders of the
+five original apps pass with **byte-identical output**, retaining all
+**84,833 function headers and their order**; maximum sampled
+footprint is **195 MB** under a **2,000 MB** guard. This is output
+reliability, not source-grounded app accuracy. The final rebuilt release is
+byte-identical to the reviewed candidate. The original integration gate
+remains the publication check; this local record supplies no new hosted CI
+result.
+
+The in-image near-shape helper's existing two-GP body-read projection is
+not a full source-formal ABI proof: its handwritten x9 input remains
+outside that projection. Other name-only call effects, general source ABI
+and incoming-x8 ownership, C widths, RET/fallthrough and values across
+awaits remain open. Pinned Ghidra/entry benchmarks and readiness/coverage
+percentages are not recomputed. See the
+[engineering record](https://github.com/CamdenBopp/swiftdc/commit/c0429a16395044d146ce382658186c73e59581d3)
+and [readiness follow-up](PRODUCTION-READINESS.md#2026-11-18-require-body-proof-for-boxed-existential-projection-effects).
+
+The provider-binding verification below is historical evidence.
+
 At `3af60f8`, catalogued SDK/runtime declarations require an exact
 symbol/provider binding before supplying argument layout, result-bank,
 memory-helper or result-buffer facts. A foreign Swift function named
