@@ -99,6 +99,10 @@ public struct Instruction: Sendable {
     /// rendered string literal. Empty for an instruction built by hand
     /// without any.
     public var facts: Facts { factBox?.facts ?? Facts() }
+    /// Reject instructions with no binding evidence before inspecting names.
+    internal var hasABIBindingEvidence: Bool {
+        factBox?.facts.namedABIContract == true || factBox?.facts.arcIdentityContract == true
+    }
     /// `facts.exit`.
     public var exit: Exit? { factBox?.facts.exit }
     /// `facts.binding`.
@@ -191,6 +195,9 @@ public struct Instruction: Sendable {
         /// The exact target has a known ABI without a Swift error result.
         /// This is not a source arity, result-bank or general effect proof.
         var nonThrowingABIContract: Bool = false
+        /// Exact symbol/provider binding for a supported ABI. Consumers still
+        /// need a declaration before claiming parameters, results or effects.
+        var namedABIContract: Bool = false
         /// The exact in-image body preserves x21, including every outgoing
         /// transfer. No source ABI, arity or memory contract is implied.
         var bodyPreservesSwiftError: Bool = false
@@ -985,6 +992,7 @@ public struct Disassembler: Sendable {
         let functionStarts = Set(boundaries)
         let isFunction = { (target: UInt64) in functionStarts.contains(target) }
         let arcReferences = arcFunctionReferences(in: machO)
+        let namedABIReferences = nonThrowingABIFunctionReferences(in: machO)
         // Names and function membership are fixed for this summary pass.
         // Remember unknown arities too; sharing an address across images
         // must never share this image-local result.
@@ -992,7 +1000,7 @@ public struct Disassembler: Sendable {
         let arity = { [names] target in
             if let cached = summaryArities[target] { return cached }
             let result = self.knownArity(ofCallTarget: target, names: names, cacheSymbols: cacheSymbols,
-                                         arcFunctions: arcReferences, isFunction: isFunction)
+                                         arcFunctions: arcReferences, abiFunctions: namedABIReferences, isFunction: isFunction)
             summaryArities[target] = .some(result)
             return result
         }
@@ -1096,7 +1104,7 @@ public struct Disassembler: Sendable {
             cacheSymbols: cacheSymbols,
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
             arcFunctions: arcFunctionReferences(in: machO),
-            nonThrowingABIFunctions: nonThrowingABIFunctionReferences(in: machO),
+            nonThrowingABIFunctions: namedABIReferences,
             fileRanges: fileRanges,
             foldedCandidates: referenceFolds,
             witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
@@ -1541,7 +1549,7 @@ public struct Disassembler: Sendable {
             if let cached = summaryArities[target] { return cached }
             let result = self.knownArity(
                 ofCallTarget: target, names: resolver.names, cacheSymbols: cacheSymbols,
-                arcFunctions: resolver.arcFunctions, isFunction: isFunction)
+                arcFunctions: resolver.arcFunctions, abiFunctions: resolver.nonThrowingABIFunctions, isFunction: isFunction)
             summaryArities[target] = .some(result)
             return result
         }
@@ -1838,7 +1846,7 @@ public struct Disassembler: Sendable {
                     if let cached = summaryArities[target] { return cached }
                     let result = self.knownArity(
                         ofCallTarget: target, names: resolver.names, cacheSymbols: cacheSymbols,
-                        arcFunctions: resolver.arcFunctions, isFunction: isFunction)
+                        arcFunctions: resolver.arcFunctions, abiFunctions: resolver.nonThrowingABIFunctions, isFunction: isFunction)
                     summaryArities[target] = .some(result)
                     return result
                 }
@@ -2904,7 +2912,8 @@ public struct Disassembler: Sendable {
     // can hide an incorrect name-based fallback in the rendered caller.
     func knownArity(
         ofCallTarget target: UInt64, names: [UInt64: String], cacheSymbols: CacheSymbolResolver?,
-        arcFunctions: [UInt64: RuntimeFunctionReference], isFunction: (UInt64) -> Bool
+        arcFunctions: [UInt64: RuntimeFunctionReference], abiFunctions: [UInt64: RuntimeFunctionReference] = [:],
+        isFunction: (UInt64) -> Bool
     ) -> Int? {
         let name = names[target] ?? cacheSymbols?.name(forCallTarget: target).map {
             demangle($0) ?? Self.stripLeadingUnderscore($0)
@@ -2913,10 +2922,16 @@ public struct Disassembler: Sendable {
         if DisassembledFunction.isARCReferenceHelper(name),
            arcFunctions[target]?.permitsARCIdentity(named: name) != true,
            cacheSymbols?.arcIdentityContract(forCallTarget: target, named: name) != true { return nil }
-        // An in-image function named like a C library function is bounded by
-        // its own body instead.
-        if isFunction(target), DisassembledFunction.knownArityNameMayHaveTwin(name) { return nil }
-        return DisassembledFunction.knownCArity(of: name)
+        let namedABI: Bool
+        if DisassembledFunction.isARCReferenceHelper(name) {
+            namedABI = arcFunctions[target]?.permitsARCIdentity(named: name) == true
+                || cacheSymbols?.arcIdentityContract(forCallTarget: target, named: name) == true
+        } else {
+            namedABI = abiFunctions[target]?.permitsNamedABI(named: name) == true
+                || cacheSymbols?.namedABIContract(forCallTarget: target, named: name) == true
+        }
+        if isFunction(target), !namedABI, DisassembledFunction.knownLanguageArity(of: name) == nil { return nil }
+        return DisassembledFunction.knownCArity(of: name, namedABIContract: namedABI)
     }
 
     private func resolveCrossImageNames(
@@ -4417,9 +4432,10 @@ public struct Disassembler: Sendable {
                 resolver.arcIdentityContract(at: $0, named: callee)
             } ?? false
             facts.bodyPreservesSwiftError = insn.branchTarget.map(resolver.bodyPreservesSwiftError(at:)) ?? false
-            facts.nonThrowingABIContract = insn.branchTarget.map {
-                resolver.nonThrowingABIContract(at: $0, named: callee)
+            facts.namedABIContract = insn.branchTarget.map {
+                resolver.namedABIContract(at: $0, named: callee)
             } ?? false
+            facts.nonThrowingABIContract = ValueTracer.hasKnownNonThrowingABIName(callee) && facts.namedABIContract
             return Instruction(address: insn.address, text: insn.text, annotation: insn.annotation,
                                controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
                                callArguments: insn.callArguments, callSelf: insn.callSelf,
@@ -4795,7 +4811,8 @@ public struct Disassembler: Sendable {
             var facts = insn.facts
             facts.isSelfDispatch = resolved.isSelfDispatch
             facts.arcIdentityContract = resolver.arcIdentityContract(for: value, named: resolved.name)
-            facts.nonThrowingABIContract = resolver.nonThrowingABIContract(for: value, named: resolved.name)
+            facts.namedABIContract = resolver.namedABIContract(for: value, named: resolved.name)
+            facts.nonThrowingABIContract = ValueTracer.hasKnownNonThrowingABIName(resolved.name) && facts.namedABIContract
             facts.bodyPreservesSwiftError = resolver.bodyPreservesSwiftError(for: value)
             let protocolWitness = protocolWitnessCall(value, site: insn.address)
             if let witness = protocolWitness, witness.name == resolved.name, let signature = witness.signature {
@@ -5431,6 +5448,30 @@ public struct Disassembler: Sendable {
                 let field = object &+ UInt64(offset)
                 guard holdsFixedPointer(at: field), let target = pointerTarget(at: field) else { return false }
                 return nonThrowingABIContract(at: target, named: callee)
+            default: return false
+            }
+        }
+
+        func namedABIContract(at target: UInt64, named callee: String) -> Bool {
+            return nonThrowingABIFunctions[target]?.permitsNamedABI(named: callee) == true
+                || cacheSymbols?.namedABIContract(forCallTarget: target, named: callee) == true
+        }
+
+        func namedABIContract(for value: AbstractValue, named callee: String) -> Bool {
+            switch value {
+            case .address(let target), .immediate(let target):
+                return namedABIContract(at: target, named: callee)
+            case .loaded(let slot):
+                guard holdsFixedPointer(at: slot) else { return false }
+                if let target = pointerTarget(at: slot) { return namedABIContract(at: target, named: callee) }
+                guard let offset = machO.fileOffset(of: slot) else { return false }
+                return chainedFixups.validatedFunctionReference(at: UInt64(offset), in: machO)?
+                    .permitsNamedABI(named: callee) == true
+            case .loadedThrough(let slot, let offset):
+                guard offset >= 0, holdsFixedPointer(at: slot), let object = pointerTarget(at: slot) else { return false }
+                let field = object &+ UInt64(offset)
+                guard holdsFixedPointer(at: field), let target = pointerTarget(at: field) else { return false }
+                return namedABIContract(at: target, named: callee)
             default: return false
             }
         }
@@ -6411,7 +6452,8 @@ public struct Disassembler: Sendable {
             // (`knownArityNameMayHaveTwin`, as argument layout already
             // requires). A narrow, float, void or two-word result is not one
             // whole integer register either.
-            if callerRegister == .integer, DisassembledFunction.cPrototype(of: name)?.result == "i",
+            if callerRegister == .integer, DisassembledFunction.hasNamedABIContract(insn),
+               DisassembledFunction.cPrototype(of: name)?.result == "i",
                !(insn.branchTarget.map(isInImageFunction) == true && DisassembledFunction.knownArityNameMayHaveTwin(name)) {
                 return insn.address
             }
@@ -8815,6 +8857,7 @@ public struct Disassembler: Sendable {
         })
         let originalARCContracts = Set(function.instructions.filter { $0.facts.arcIdentityContract }.map(\.address))
         let originalNonThrowingABIContracts = Set(function.instructions.filter { $0.facts.nonThrowingABIContract }.map(\.address))
+        let originalNamedABIContracts = Set(function.instructions.filter { DisassembledFunction.hasNamedABIContract($0) }.map(\.address))
         let originalSwiftErrorBodyProofs = Set(function.instructions.filter { $0.facts.bodyPreservesSwiftError }.map(\.address))
         let resolvedControlFlow = annotateIndirectControlFlowTargets(
             in: function, targets: analysis.indirectControlFlowTargets,
@@ -8883,10 +8926,37 @@ public struct Disassembler: Sendable {
             $0.facts.arcIdentityContract && !originalARCContracts.contains($0.address)
         }
         let resolvedNonThrowingABIContracts = Set(function.instructions.filter { $0.facts.nonThrowingABIContract }.map(\.address))
+        let resolvedNamedABIContracts = Set(function.instructions.filter { DisassembledFunction.hasNamedABIContract($0) }.map(\.address))
         let resolvedSwiftErrorBodyProofs = Set(function.instructions.filter { $0.facts.bodyPreservesSwiftError }.map(\.address))
-        if !resolvedVoidCalls.isEmpty || resolvedARCCalls
+        var resolvedNamedABIChanges = resolvedNamedABIContracts.symmetricDifference(originalNamedABIContracts)
+        if !resolvedNamedABIChanges.isEmpty, !tracer.stackProbeSlots.isEmpty {
+            // The first trace already used these GOT slots' special stack-probe
+            // transfer, which returns before reading declaration-dependent facts.
+            // Keep the new binding for argument layout without repeating dataflow.
+            for instruction in function.instructions where instruction.controlFlow == .call
+                && instruction.branchTarget == nil && resolvedNamedABIChanges.contains(instruction.address) {
+                if DisassembledFunction.calleeName(of: instruction) == "__chkstk_darwin",
+                   case .loaded(let slot)? = analysis.indirectControlFlowTargets[instruction.address],
+                   tracer.stackProbeSlots.contains(slot) {
+                    resolvedNamedABIChanges.remove(instruction.address)
+                }
+            }
+        }
+        // A newly resolved SDK call can prove it does not receive the caller's
+        // result buffer. Install that convention before repeating transfer;
+        // otherwise the first opaque BLR permanently poisons its contents.
+        var resolvedNamedDirectReturns = false
+        for instruction in function.instructions where instruction.controlFlow == .call
+            && tracer.calleeConventions[instruction.address] == nil {
+            if Self.hasNamedDirectReturnContract(instruction, resolver: resolver) {
+                tracer.calleeConventions[instruction.address] = .direct
+                resolvedNamedDirectReturns = true
+            }
+        }
+        if !resolvedVoidCalls.isEmpty || resolvedARCCalls || resolvedNamedDirectReturns
             || resolvedSwiftErrorBodyProofs != originalSwiftErrorBodyProofs
-            || resolvedNonThrowingABIContracts != originalNonThrowingABIContracts {
+            || resolvedNonThrowingABIContracts != originalNonThrowingABIContracts
+            || !resolvedNamedABIChanges.isEmpty {
             tracer.voidCallSites = resolvedVoidCalls
             analysis = tracer.reanalyze(function, entry: entry, cfg: cfg)
         }
@@ -8988,6 +9058,7 @@ public struct Disassembler: Sendable {
         // arity is unknown, not absent. Not a call through a register the
         // tracer resolved, which may land on an in-image body (`blr x8`
         // into `twice(long)`), nor an in-image callee with a summary.
+        let namedABISites = Set(function.instructions.filter { DisassembledFunction.hasNamedABIContract($0) }.map(\.address))
         let unprovenARCSites = Set(function.instructions.lazy.filter { insn in
             guard insn.controlFlow == .call || insn.controlFlow == .branch
                     || insn.controlFlow == .conditionalBranch else { return false }
@@ -8996,8 +9067,19 @@ public struct Disassembler: Sendable {
         }.map(\.address))
         let undeclaredCImportCalls = Set(function.instructions.lazy.filter { insn in
             let mnemonic = insn.text.prefix { $0 != " " && $0 != "\t" }
+            guard mnemonic == "bl" || mnemonic == "b" || insn.controlFlow == .call
+                    || insn.controlFlow == .branch || insn.controlFlow == .conditionalBranch else { return false }
+            let unboundDeclaration = !namedABISites.contains(insn.address) && callTargets[insn.address] == nil
+                && DisassembledFunction.calleeName(of: insn).map { callee in
+                    (DisassembledFunction.knownCArity(of: callee) != nil
+                        || DisassembledFunction.cPrototype(of: callee) != nil
+                        || Self.cFormatVariadics[callee] != nil)
+                        && DisassembledFunction.knownLanguageArity(of: callee) == nil
+                } == true
             return (mnemonic == "bl" || mnemonic == "b")
                 && DisassembledFunction.calleeName(of: insn).map(Self.isUndeclaredCSymbol) == true
+                || (unboundDeclaration && (insn.controlFlow == .call || insn.controlFlow == .branch
+                                          || insn.controlFlow == .conditionalBranch))
                 || (unprovenARCSites.contains(insn.address) && callTargets[insn.address] == nil)
         }.map(\.address))
         var unprovenGenericLayoutSites = Set<UInt64>()
@@ -9593,12 +9675,21 @@ public struct Disassembler: Sendable {
             }
         }
 
-        /// A call to an in-image function whose name is also a C library
-        /// function's in the known-arity table: the table is no evidence for it.
+        /// A spelling without its named ABI binding cannot borrow the library
+        /// declaration, including when the matching name comes from an import.
+        var nameTwinResults: [UInt64: Bool] = [:]
         func isNameTwin(_ address: UInt64) -> Bool {
-            if unprovenARCSites.contains(address) { return true }
-            guard callTargets[address] != nil, let callee = calleeByAddress[address] else { return false }
-            return DisassembledFunction.knownArityNameMayHaveTwin(callee)
+            if let result = nameTwinResults[address] { return result }
+            let result = unprovenARCSites.contains(address) || calleeByAddress[address].map { callee in
+                return !namedABISites.contains(address)
+                    && (DisassembledFunction.knownCArity(of: callee) != nil
+                        || DisassembledFunction.cPrototype(of: callee) != nil
+                        || Self.cFormatVariadics[callee] != nil
+                        || (callTargets[address] != nil && DisassembledFunction.knownArityNameMayHaveTwin(callee)))
+                    && DisassembledFunction.knownLanguageArity(of: callee) == nil
+            } == true
+            nameTwinResults[address] = result
+            return result
         }
         func isRuntimeNoise(_ callee: String, at address: UInt64) -> Bool {
             !unprovenARCSites.contains(address) && DisassembledFunction.isRuntimeNoise(callee)
@@ -10405,7 +10496,8 @@ public struct Disassembler: Sendable {
         func normalizedArguments(callee: String, values: [AbstractValue], at address: UInt64?) -> [AbstractValue] {
             // Not for a call to an in-image function that shares the name.
             if let address, isNameTwin(address) { return values }
-            return DisassembledFunction.knownCArity(of: callee).map { Array(values.prefix($0)) } ?? values
+            return DisassembledFunction.knownCArity(of: callee, namedABIContract: address.map(namedABISites.contains) ?? false)
+                .map { Array(values.prefix($0)) } ?? values
         }
 
         /// Render a runtime helper as the source send it lowers from.
@@ -12771,7 +12863,7 @@ public struct Disassembler: Sendable {
             // `return CGRectInset(…)`.
             if isObjCNonVoid, exits.isEmpty, insn.controlFlow == .branch, let callee,
                function.objcMethod?.returnsFloatAggregate == true,
-               DisassembledFunction.cPrototype(of: callee)?.result == "s",
+               namedABISites.contains(insn.address), DisassembledFunction.cPrototype(of: callee)?.result == "s",
                let values = argumentsByAddress[insn.address] {
                 noteExit(.normal(callExpression(callee: callee, values: values, site: insn.address)))
             }

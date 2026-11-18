@@ -866,6 +866,13 @@ public extension DisassembledFunction {
         }
     }
 
+    internal static func resultFitsInWord(_ instruction: Instruction) -> Bool {
+        guard let callee = calleeName(of: instruction), resultFitsInWord(callee) else { return false }
+        if splitSignature(callee) != nil || callee.hasPrefix("getEnumTag value witness for ")
+            || callee.hasPrefix("getEnumTagSinglePayload value witness for ") { return true }
+        return hasNamedABIContract(instruction)
+    }
+
     /// Each value witness function's parameter count
     /// (swift/include/swift/ABI/ValueWitness.def), by the slot name a
     /// call through it is named with.
@@ -935,6 +942,53 @@ public extension DisassembledFunction {
                 || (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
         }) else { return false }
         return bytes.last == UInt8(ascii: "v")
+    }
+
+    /// Arity supplied by a language-level entity rather than a library spelling.
+    internal static func knownLanguageArity(of callee: String) -> Int? {
+        // An Itanium-mangled free function whose parameter list is `v`
+        // takes nothing: `_ZSt9terminatev` is `std::terminate()`, and a
+        // stale x0 printed as its argument.
+        if isItaniumFreeFunctionTakingNothing(callee) { return 0 }
+        // `() -> WitnessTable` (swift/lib/IRGen/GenDecl.cpp:6384,
+        // `FunctionType::get(WitnessTablePtrTy, false)`). A stale x0 used
+        // to print as its argument, often a whole unrelated call.
+        if callee.hasPrefix("lazy protocol witness table accessor for ") { return 0 }
+        // `MetadataResponse (MetadataRequest, …)`: the request, then the
+        // type's key generic arguments, up to three directly and past
+        // three one pointer to them all (swift/lib/IRGen/MetadataRequest.cpp,
+        // `NumDirectGenericTypeMetadataAccessFunctionArgs`). A system
+        // library's accessor took whatever x1-x7 held:
+        // `type metadata accessor for Swift.MainActor(0, arg1, arg2)`,
+        // `type metadata accessor for Swift.Optional(0, ?, arg2, arg3, arg4)`.
+        let accessorPrefix = "type metadata accessor for "
+        if callee.hasPrefix(accessorPrefix),
+           let keyArguments = SDKMetadataAccessors.keyArguments[String(callee.dropFirst(accessorPrefix.count))] {
+            return 1 + (keyArguments <= 3 ? keyArguments : 1)
+        }
+        // A value witness has its ABI signature whatever the type
+        // (swift/include/swift/ABI/ValueWitness.def): `destroy(T *,
+        // Self)`, `initializeWithCopy(T *dest, T *src, Self)`. Laid out
+        // positionally, `destroy value witness for X` read three
+        // registers, or one where the metadata had gone unnamed.
+        if let range = callee.range(of: " value witness for "),
+           let arity = valueWitnessArity[String(callee[..<range.lowerBound])] {
+            return arity
+        }
+        if isGlobalVariableAddressor(callee) { return 0 }
+        return nil
+    }
+
+    /// A named declaration applies only to its verified provider. A body that
+    /// preserves the Swift error register supplies no source signature.
+    internal static func knownCArity(of callee: String, namedABIContract: Bool) -> Int? {
+        namedABIContract ? knownCArity(of: callee) : knownLanguageArity(of: callee)
+    }
+
+    internal static func hasNamedABIContract(_ instruction: Instruction) -> Bool {
+        guard instruction.hasABIBindingEvidence else { return false }
+        guard let callee = calleeName(of: instruction) else { return false }
+        return isARCReferenceHelper(callee) ? instruction.facts.arcIdentityContract : instruction.facts.namedABIContract
     }
 
     static func knownCArity(of callee: String) -> Int? {
@@ -1099,36 +1153,7 @@ public extension DisassembledFunction {
         default:
             // The formatted-emit os_log helpers: (dso, log, type, format, buf, size).
             if callee.hasPrefix("_os_log"), callee.hasSuffix("_impl") { return 6 }
-            // An Itanium-mangled free function whose parameter list is `v`
-            // takes nothing: `_ZSt9terminatev` is `std::terminate()`, and a
-            // stale x0 printed as its argument.
-            if isItaniumFreeFunctionTakingNothing(callee) { return 0 }
-            // `() -> WitnessTable` (swift/lib/IRGen/GenDecl.cpp:6384,
-            // `FunctionType::get(WitnessTablePtrTy, false)`). A stale x0 used
-            // to print as its argument, often a whole unrelated call.
-            if callee.hasPrefix("lazy protocol witness table accessor for ") { return 0 }
-            // `MetadataResponse (MetadataRequest, …)`: the request, then the
-            // type's key generic arguments, up to three directly and past
-            // three one pointer to them all (swift/lib/IRGen/MetadataRequest.cpp,
-            // `NumDirectGenericTypeMetadataAccessFunctionArgs`). A system
-            // library's accessor took whatever x1-x7 held:
-            // `type metadata accessor for Swift.MainActor(0, arg1, arg2)`,
-            // `type metadata accessor for Swift.Optional(0, ?, arg2, arg3, arg4)`.
-            let accessorPrefix = "type metadata accessor for "
-            if callee.hasPrefix(accessorPrefix),
-               let keyArguments = SDKMetadataAccessors.keyArguments[String(callee.dropFirst(accessorPrefix.count))] {
-                return 1 + (keyArguments <= 3 ? keyArguments : 1)
-            }
-            // A value witness has its ABI signature whatever the type
-            // (swift/include/swift/ABI/ValueWitness.def): `destroy(T *,
-            // Self)`, `initializeWithCopy(T *dest, T *src, Self)`. Laid out
-            // positionally, `destroy value witness for X` read three
-            // registers, or one where the metadata had gone unnamed.
-            if let range = callee.range(of: " value witness for "),
-               let arity = valueWitnessArity[String(callee[..<range.lowerBound])] {
-                return arity
-            }
-            if isGlobalVariableAddressor(callee) { return 0 }
+            if let arity = knownLanguageArity(of: callee) { return arity }
             // Historical prefix match: some selectors resolve as
             // `objc_opt_isKindOfClass` with a trailing disambiguator.
             if callee.hasPrefix("objc_opt_isKindOfClass") { return 2 }
@@ -1182,6 +1207,10 @@ public extension DisassembledFunction {
             parameters.append(token)
         }
         return CPrototype(result: result, parameters: parameters, isVariadic: isVariadic)
+    }
+
+    internal static func cPrototype(of callee: String, namedABIContract: Bool) -> CPrototype? {
+        namedABIContract ? cPrototype(of: callee) : nil
     }
 
     /// Checked-cast / safe-category helpers whose result IS one of their

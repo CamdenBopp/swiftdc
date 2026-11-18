@@ -110,7 +110,12 @@ private let fpCopyPath = "Fixtures/Sample/libFPCopies.dylib"
                     let body = engine.disassemble(Data(bytes), address: 0x1000).map {
                         Instruction(address: $0.address, text: $0.text, annotation: nil,
                             controlFlow: $0.controlFlow, branchTarget: $0.branchTarget, detail: $0.detail,
-                            callee: .kept($0.controlFlow == .call ? "memcpy" : nil))
+                            callee: .kept($0.controlFlow == .call ? "memcpy" : nil), facts: { isCall in
+                    // This positive fixture supplies the verified libc contract.
+                    var facts = Instruction.Facts()
+                    facts.namedABIContract = isCall
+                    return facts
+                }($0.controlFlow == .call))
                     }
                     let function = DisassembledFunction(symbol: "copy", demangledName: nil, startAddress: 0x1000,
                                                         instructions: body, source: .symbol)

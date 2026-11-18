@@ -268,9 +268,13 @@ private func textPathFunction(_ words: [UInt32], undetailed: Set<Int> = []) thro
     // bl +0x100; mov x26, x0; cmp w26, #1; b.ne +12; ...
     func render(_ callee: String) throws -> String {
         let function = try textPathFunction([0x94000040, 0xaa0003fa, 0x7100075f, 0x54000061] + tail)
+        // The runtime case models its verified provider, not only its name.
+        // fallbackWordResultChecksRequireTheRuntimeBinding covers the unbound case.
+        var callFacts = Instruction.Facts()
+        callFacts.namedABIContract = callee == "swift_getEnumCaseMultiPayload"
         let instructions = function.instructions.enumerated().map { index, insn in
             index == 0 ? Instruction(address: insn.address, text: insn.text, controlFlow: insn.controlFlow,
-                                     branchTarget: insn.branchTarget, detail: insn.detail, callee: .kept(callee))
+                                     branchTarget: insn.branchTarget, detail: insn.detail, callee: .kept(callee), facts: callFacts)
                 : insn
         }
         return DisassembledFunction(symbol: function.symbol, demangledName: nil, startAddress: function.startAddress,

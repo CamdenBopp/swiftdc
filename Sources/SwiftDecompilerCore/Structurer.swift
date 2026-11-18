@@ -1158,8 +1158,7 @@ struct ControlFlowStructure {
         for earlier in stride(from: index - 1, through: 0, by: -1) {
             let instruction = block.instructions[earlier]
             if instruction.controlFlow == .call {
-                guard let callee = DisassembledFunction.calleeName(of: instruction) else { return false }
-                return DisassembledFunction.resultFitsInWord(callee)
+                return DisassembledFunction.resultFitsInWord(instruction)
             }
             guard let detail = instruction.detail else { return false }
             if detail.writtenRegisterKeys.contains("x0") { return false }

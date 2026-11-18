@@ -64,6 +64,12 @@ struct RuntimeFunctionReference: Sendable, Equatable {
         return NonThrowingABIProviders.permits(callee, from: libraryName)
     }
 
+    /// Exact symbol/provider agreement. A consumer still needs its matching
+    /// declaration before claiming any parameter, result or effect.
+    func permitsNamedABI(named callee: String) -> Bool {
+        permitsNonThrowingABI(named: callee)
+    }
+
     func permitsARCIdentity(named callee: String) -> Bool {
         let name = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
         let symbol = rawSymbol.hasPrefix("_") ? String(rawSymbol.dropFirst()) : rawSymbol

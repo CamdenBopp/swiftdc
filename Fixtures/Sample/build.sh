@@ -346,7 +346,9 @@ echo "==> LSE and RCpc atomics on a plain arm64 slice (atomics.c, -O2)"
 $CLANG -O2 -dynamiclib atomics.c -o libAtomics.dylib
 
 echo "==> calls of SDK C functions laid out from their declarations (c_prototypes.c, -O2)"
-$CLANG -O2 -dynamiclib -framework OpenGL -undefined dynamic_lookup c_prototypes.c -o libCPrototypes.dylib
+$CLANG -O2 -dynamiclib -framework CoreGraphics -framework OpenGL -undefined dynamic_lookup c_prototypes.c -o libCPrototypes.dylib
+echo "==> unbound SDK spellings must not donate C prototypes (c_prototypes.c, -O2, dynamic lookup)"
+$CLANG -O2 -dynamiclib -framework OpenGL -undefined dynamic_lookup c_prototypes.c -o libCPrototypes.unbound.dylib
 
 echo "==> a Swift @objc getter thunk returning an untracked ivar (objc_thunk_return.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name ObjCThunkReturn objc_thunk_return.swift -o libObjCThunkReturn.dylib
@@ -500,7 +502,11 @@ xcrun swiftc -O -parse-as-library -emit-library mixedself.swift -module-name Mix
 
 echo "==> key path intrinsics with live registers past their arguments (keypathintrinsics.swift, -O)"
 xcrun swiftc -O -parse-as-library -emit-library keypathintrinsics.swift -module-name KeyPathIntrinsics -o libKeyPathIntrinsics.dylib
-$CLANG -arch arm64 -dynamiclib -undefined dynamic_lookup keypathintrinsics.s -o libKeyPathIntrinsicsAsm.dylib
+echo "==> key path assembly with an explicit Swift runtime provider (keypathintrinsics.s)"
+keypath_runtime_sdk=$(xcrun --sdk macosx --show-sdk-path)
+$CLANG -arch arm64 -dynamiclib -L "$keypath_runtime_sdk/usr/lib/swift" -lswiftCore keypathintrinsics.s -o libKeyPathIntrinsicsAsm.dylib
+echo "==> unbound key path spellings decline the runtime prototype (keypathintrinsics.s, dynamic lookup)"
+$CLANG -arch arm64 -dynamiclib -undefined dynamic_lookup keypathintrinsics.s -o libKeyPathIntrinsicsAsm.unbound.dylib
 
 echo "==> a signed conversion of an unsigned argument (signedfloat.swift, -O)"
 xcrun swiftc -O -parse-as-library -emit-library signedfloat.swift -module-name SignedFloat -o libSignedFloat.dylib
@@ -1244,3 +1250,9 @@ for COMPARE_BRANCH_LEVEL in O0 O2 Os; do
         -L. -lCompareBranchWidth.$COMPARE_BRANCH_LEVEL -Wl,-rpath,@executable_path \
         -o compare-branch-width-$COMPARE_BRANCH_LEVEL-oracle
 done
+
+echo "==> named C prototypes need their real ABI provider (named_abi_*, -Onone/-O/-Osize)"
+python3 build-named-abi-contracts.py
+
+echo "==> named result conventions need provider evidence (named_buffer_*, all Swift levels)"
+python3 build-named-result-buffers.py

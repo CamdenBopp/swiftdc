@@ -25,6 +25,7 @@ private func analyzeKnownScalarSend(type: String = "d", aggregateTail: Bool = fa
                                     aliases: [String] = [], otherClassAggregate: Bool = false,
                                     otherClassAggregateIsClass: Bool? = nil,
                                     sendCallee: String = "objc_msgSend$scale",
+                                    consumerHasBinding: Bool = true,
                                     preset: DemanglePreset = .simplified) async throws -> DisassembledFunction {
     let file = FileManager.default.temporaryDirectory.appendingPathComponent("objc-scale-\(UUID().uuidString).o")
     let header: [UInt32] = [0xfeedfacf, 0x0100000c, 0, 1, 0, 0, 0, 0]
@@ -47,7 +48,18 @@ private func analyzeKnownScalarSend(type: String = "d", aggregateTail: Bool = fa
         }
         let index = ObjCMetadataIndex(methods: [0x1000: [caller], 0x3000: callees], fieldMaps: [:])
         #expect(SDKSelectorReturns.table["scale"] == "h")
-        let resolver = Disassembler.ReferenceResolver(names: [:], stringRanges: [], machO: machO, demangleSymbol: { _ in nil })
+        let consumer = aggregateTail ? "CGRectInset" : type == "f" ? "glVertex2f" : "glVertex2d"
+        let provider = !consumerHasBinding ? "@rpath/libForeignScalarConsumer.dylib" : aggregateTail
+            ? "/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics"
+            : "/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL"
+        let reference = RuntimeFunctionReference(rawSymbol: "_" + consumer, libraryName: provider)
+        #expect(reference.permitsNamedABI(named: consumer) == consumerHasBinding)
+        // The synthetic C consumer supplies its exact provider independently
+        // of the indexed Objective-C method declaration being tested.
+        let consumerTarget = UInt64(0x1000 + 4 * receiver.prefix.count + (aggregateTail ? 12 : 8) + 0x2000)
+        let resolver = Disassembler.ReferenceResolver(names: [:], stringRanges: [], machO: machO,
+            demangleSymbol: { _ in nil },
+            nonThrowingABIFunctions: scalarWordReturn ? [:] : [consumerTarget: reference])
         let context = Disassembler.PerFunctionContext(resolver: resolver, swiftTargets: [], objcIndex: index,
             fieldMaps: [:], selfIndex: SelfTypeIndex(bindings: [:]), vtableIndex: VTableIndex(),
             enumCaseIndex: EnumCaseIndex(), payloadEnumIndex: PayloadEnumCaseIndex(), classTypeIndex: ClassTypeIndex(),
@@ -178,6 +190,22 @@ private func analyzeKnownScalarSend(type: String = "d", aggregateTail: Bool = fa
         for output in [function.renderPseudo(), function.renderStructured()] {
             #expect(output.contains("return ?"), Comment(rawValue: "\(name)\n\(output)"))
             #expect(output.components(separatedBy: " scale]").count == 2, Comment(rawValue: "\(name)\n\(output)"))
+        }
+    }
+}
+
+@Test func foreignCConsumersDoNotBorrowKnownScalarSendLayouts() async throws {
+    for preset in DemanglePreset.allCases {
+        for aggregate in [false, true] {
+            let function = try await analyzeKnownScalarSend(aggregateTail: aggregate,
+                consumerHasBinding: false, preset: preset)
+            let name = aggregate ? "CGRectInset" : "glVertex2d"
+            for text in [function.renderPseudo(), function.renderStructured()] {
+                let context = Comment(rawValue: text)
+                #expect(text.contains(name + "(…)"), context)
+                #expect(text.components(separatedBy: name + "(").count == 2, context)
+                #expect(!text.contains("return " + name + "("), context)
+            }
         }
     }
 }

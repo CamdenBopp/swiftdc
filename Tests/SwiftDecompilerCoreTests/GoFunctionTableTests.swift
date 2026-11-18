@@ -176,7 +176,21 @@ private func symbols() -> [UInt64: String]? {
     func text(_ name: String) throws -> String {
         try #require(functions.first { $0.displayName == name }, "no \(name)").renderStructured()
     }
-    #expect(try text("_runtime.walltime_trampoline.abi0").contains("clock_gettime(0, arg0)"))
+    // The internal linker supplies names but no two-level provider binding.
+    // Keep the exact import target and raw input values without borrowing
+    // clock_gettime's SDK source prototype from its spelling.
+    let image = try BinaryLoader.load(path: full)
+    #expect(!image.header.flags.contains(.twolevel))
+    let clock = try #require(functions.first { $0.displayName == "_runtime.walltime_trampoline.abi0" })
+    let calls = clock.instructions.filter { $0.controlFlow == .call }
+    let call = try #require(calls.first)
+    #expect(calls.count == 1)
+    #expect(DisassembledFunction.calleeName(of: call) == "clock_gettime")
+    #expect(!call.facts.namedABIContract)
+    let analysis = ValueTracer().analyze(clock, entry: .swiftFunction(scalarArguments: ["x0": 0]))
+    let site = try #require(analysis.callSites[call.address])
+    #expect(Array(site.arguments.prefix(2)) == [.immediate(0), .argument(0)])
+    #expect(try text("_runtime.walltime_trampoline.abi0").contains("clock_gettime(…)"))
     #expect(try text("_runtime.exit_trampoline.abi0").contains("_exit("))
     #expect(try text("_runtime.mmap_trampoline.abi0").contains("mmap("))
     #expect(try text("_runtime.usleep_trampoline.abi0").contains("usleep("))

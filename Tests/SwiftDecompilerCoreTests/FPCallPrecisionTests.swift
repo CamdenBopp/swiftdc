@@ -133,7 +133,12 @@ private func fpCallView(_ call: String, source: Int, result: Int) -> String {
         let bytes = Data(words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } })
         let instructions = engine.disassemble(bytes, address: 0x1000).map {
             Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
-                branchTarget: $0.branchTarget, detail: $0.detail, callee: .kept($0.controlFlow == .call ? name : nil))
+                branchTarget: $0.branchTarget, detail: $0.detail, callee: .kept($0.controlFlow == .call ? name : nil), facts: {
+                    var facts = Instruction.Facts()
+                    // Only the external C controls supply the SDK contract.
+                    facts.namedABIContract = !inImage && ["cosf", "cos"].contains(name)
+                    return facts
+                }())
         }
         let function = DisassembledFunction(symbol: "probe", demangledName: nil, startAddress: 0x1000, instructions: instructions, source: .symbol)
         var tracer = ValueTracer()

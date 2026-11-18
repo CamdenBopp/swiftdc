@@ -91,7 +91,7 @@ private func outlinedResultPipelines(_ path: String, filter: String = "OutlinedR
 }
 #endif
 
-private func outlinedResultBody(_ words: [UInt32], callee: String = "unknown") throws -> DisassembledFunction {
+private func outlinedResultBody(_ words: [UInt32], callee: String = "unknown", namedABI: Bool = false) throws -> DisassembledFunction {
     let engine = try #require(CapstoneEngine())
     let bytes = Data(words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } })
     let decoded = engine.disassemble(bytes, address: 0x1000)
@@ -100,7 +100,11 @@ private func outlinedResultBody(_ words: [UInt32], callee: String = "unknown") t
         instructions: decoded.map {
             Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow,
                 branchTarget: $0.branchTarget, detail: $0.detail,
-                callee: .kept($0.controlFlow == .call ? callee : nil))
+                callee: .kept($0.controlFlow == .call ? callee : nil), facts: {
+                    var facts = Instruction.Facts()
+                    facts.namedABIContract = namedABI
+                    return facts
+                }())
         }, source: .address)
 }
 
@@ -122,7 +126,7 @@ private func outlinedResultBody(_ words: [UInt32], callee: String = "unknown") t
     // A C declaration also owns its result bank. These are analysis-only
     // contract controls; the native fixture uses no borrowed C API names.
     for name in ["memcmp", "cosf"] {
-        let declared = try outlinedResultBody([0x94000800, 0xd65f03c0], callee: name)
+        let declared = try outlinedResultBody([0x94000800, 0xd65f03c0], callee: name, namedABI: true)
         var tracer = ValueTracer()
         tracer.entryFloatWidths = ["v0":16]
         tracer.calleeUnwrittenResults[0x3000] = both

@@ -152,7 +152,10 @@ final class CacheSymbolResolver {
     }
 
     func nonThrowingABIContract(forCallTarget address: UInt64, named callee: String) -> Bool {
-        guard ValueTracer.hasKnownNonThrowingABIName(callee) else { return false }
+        ValueTracer.hasKnownNonThrowingABIName(callee) && namedABIContract(forCallTarget: address, named: callee)
+    }
+
+    func namedABIContract(forCallTarget address: UInt64, named callee: String) -> Bool {
         let target: UInt64
         if symbol(at: address) != nil { target = address }
         else if let resolved = arcStubTarget(at: address) { target = resolved }

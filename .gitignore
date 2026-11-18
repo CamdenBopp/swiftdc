@@ -72,3 +72,9 @@ Fixtures/Sample/plain-error-abi-*.ll
 Fixtures/Sample/.plain-error-abi-*/
 
 Fixtures/Sample/compare-branch-width-*-oracle
+Fixtures/Sample/named-abi-*-oracle
+Fixtures/Sample/named-abi-*.ll
+Fixtures/Sample/.named-abi-contracts-*/
+Fixtures/Sample/named-buffer-*-oracle
+Fixtures/Sample/named-buffer-*.ll
+Fixtures/Sample/.named-buffer-*/
