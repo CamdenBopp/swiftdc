@@ -6,7 +6,7 @@ its commit, its denominator and the command that reproduces it. The long
 history is [PRODUCTION-READINESS.md](PRODUCTION-READINESS.md); this page
 is what to quote.
 
-Updated 2026-11-17. Each measurement names its commit; the benchmark
+Updated 2026-11-18. Each measurement names its commit; the benchmark
 tables retain their original measurements.
 
 ## What to report, and what not to
@@ -90,6 +90,57 @@ Reproduce: `Tools/ghidra-compare/interface_oracle.py <swiftdc>
 cover results, bodies, or Objective-C methods (4 matched).
 
 ## Latest local verification
+
+At `3af60f8`, catalogued SDK/runtime declarations require an exact
+symbol/provider binding before supplying argument layout, result-bank,
+memory-helper or result-buffer facts. A foreign Swift function named
+`getpid`, `sqrt`, `free`, `CGRectInset`, `printf` or `malloc` cannot borrow
+the SDK declaration. Language conventions remain independent, and ARC
+retains its stronger identity requirement. Late binding refreshes the
+analysis when needed; a stack-probe replay is omitted only when the initial
+trace already used that exact GOT slot's special transfer.
+
+All **338 existing Swift test files and declaration counts remain**;
+**330 files are byte-identical**. Seven files supply binding evidence to
+positive controls; one Go expectation retires an unproven prototype while
+checking the exact call and raw inputs. **27 tests are added**, including
+25 regression tests observed failing under independently compiled faults
+and two independent native/declaration controls. **34 faults** compile and
+fail their intended assertions. Own-source fixtures at Onone/O/Osize, named
+and locally stripped, pass **672 native observations**, **30 import checks**
+and **45 lowered declaration/definition checks**. The buffer native control
+reads the first field; decompiler assertions inspect all five stored words.
+The rebuilt fixture-enforced **1,942 tests / 43 suites** pass
+(993.561 s).
+
+Against `1635cbc`, **648 inputs in four views plus four SDK workloads** give
+**2,596 paired cost rows**: instructions **+0.08%**, summed per-run physical
+peaks **+0.54%**. Every default budget passes without override. All changed
+fixture fields and lines are reviewed; serialized raw-instruction and
+control-flow DTOs match. The corpus includes **35 identical independently
+checked preflight-decline pairs**, which are not successful decompilations.
+Four guarded SDK rerenders match the measured hashes; both whole-SDK
+structured and xrefs output pairs are unchanged. All **1,248 CLI invocations**
+pass, with every delta classified. Ten guarded renders of the five original
+apps pass (maximum sampled **203 MB** under a **2,000 MB** guard). All
+**84,833 function headers and their order** remain; all **1,674 changed
+diff-side lines / 391 functions** are reviewed. This is an output-reliability
+comparison, not source-grounded app accuracy. Production and fixture bytes
+are unchanged since those CLI/SDK/app runs; an added synthetic late-probe
+test prompted a fresh full suite and cost comparison.
+
+Publication through the original integration gate is pending. The last
+observed hosted run remains
+[44219380730](https://github.com/CamdenBopp/swiftdc/actions/runs/44219380730)
+at `1635cbc`, which failed Toolchain before fixtures/build/tests. It supplies
+no hosted test result. General/transitive incoming-x8 ownership, narrow C
+widths, other name-only call-effect models, RET/fallthrough reconstruction
+and values across awaits remain open. No pinned Ghidra/entry benchmark or
+readiness/coverage percentage is recomputed. See the
+[engineering record](https://github.com/CamdenBopp/swiftdc/commit/3af60f82f0652308f834a534b21b1dd8c0237c17)
+and [readiness follow-up](PRODUCTION-READINESS.md#2026-11-18-qualify-named-declaration-contracts-by-provider).
+
+The compare-and-branch follow-up below is historical evidence.
 
 At `86054a1`, the tracer reads `cbz`/`cbnz` operands at their encoded
 width. A test of `w0` previously used the entire tracked `x0`: with a

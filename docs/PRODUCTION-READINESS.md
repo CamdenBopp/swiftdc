@@ -13272,3 +13272,132 @@ build and enforcing suite skipped; it supplies no hosted test result.
 runtime contracts, general RET/fallthrough reconstruction and values carried
 across awaits. No readiness/coverage percentage or pinned benchmark is
 recomputed. This is a bounded machine-width correction.
+
+## 2026-11-18: qualify named declaration contracts by provider
+
+**FIXED (3af60f82f0652308f834a534b21b1dd8c0237c17), within the catalogued declaration consumers.**
+`1635cbc` borrowed the SDK's zero-formal `getpid` declaration for an own-source
+foreign Swiftcc `getpid(Double) throws -> Double`. Related reductions named
+`sqrt`, `free`, `CGRectInset` and `printf` demonstrate distinct GP/FP,
+non-void, aggregate and variadic conventions. Require exact strong
+symbol/provider evidence before applying named arity, prototype placement,
+no-stack-argument, memory-helper, result-bank, word-result and scalar-tail
+facts. Independent body/error-register proofs do not establish a declaration;
+ARC retains its stronger identity evidence, and language entities retain
+their separate contracts. Facts survive instruction copies, summaries,
+cache keys/values and reanalysis. Unbound declarations retain unknown extent.
+
+Apply the same boundary to result-buffer conventions. A foreign Swift
+`malloc` writes five words through x8, invalidating the caller's preceding
+stores; decline the old fabricated five-word constructor. A genuine SDK
+GOT `malloc`/`free` pair does not receive that result buffer, so refresh its
+late-bound direct convention and replay before folding the unchanged stores.
+ObjC dispatch does not declare the selected method's result convention.
+The exact manual-arity switch labels add **19 names / 231 symbol-provider
+pairs** to the SDK provider catalogue without removing entries or changing
+its **263 library indices**; arity membership alone adds no error-register
+preservation fact. Positive CoreGraphics and Swift-intrinsic fixture controls
+now link their providers; their former dynamic-lookup recipes remain as
+explicit unbound controls.
+
+**Verification.** All **338 original Swift test files and declaration
+counts remain**, with **330 files byte-identical**. Seven files add binding
+evidence to positive setups while retaining their result/register predicates;
+one Go expectation replaces its unproven fixed `clock_gettime` argument list
+with unknown extent and checks the exact target, single call and raw inputs.
+There are **27 added tests**: 25 regressions observed red under separately
+compiled faults, plus two independent native/declaration controls.
+**34 faults** (31 product, three generator) compile and fail their intended
+tests, recording **5,761 assertion issues**. Restoration is byte-exact;
+rebuild and **30 selected tests** pass before the rebuilt full
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build` passes
+**1,942 tests / 43 suites (993.561 s)**. All **1,064 public input hashes**
+and **788 fixture product hashes** remain fixed throughout qualification.
+
+Own-source Onone/O/Osize providers, callers, native drivers and independent
+IR/import checks pass **672 native observations**: 342 plain-name/error,
+258 GP/FP/void/aggregate/variadic and 72 result-buffer observations. These are
+observations, not distinct semantic cases. **30 import inspections** and
+**45 lowered declaration/definition checks** distinguish custom and genuine
+SDK entries. The buffer native control reads the first field; the decompiler
+assertions inspect all five stored words. Named and locally stripped products
+cover all five analysis APIs.
+
+`Tools/blast-radius.sh <base> <new> <out> --real --perf` compares matched frozen
+releases against `1635cbc`: **648 inputs in four views plus four SDK workloads**,
+**2,596 paired cost rows**, **7,507.3G -> 7,513.5G instructions (+0.08%)** and
+**23,673 -> 23,801 MB summed per-run physical peaks (+0.54%)**. Every default
+budget passes without override. The corpus includes **35 identical,
+independently raw-header-checked preflight-decline pairs**; these are not
+successful decompilations. All four whole-SDK structured/xrefs output pairs
+are unchanged; four guarded structured rerenders match measured hashes.
+Release SHA256:
+`952376415826f920024d73266f29b23db67cea8e09ee78dded2e14d5d1faa4ae`.
+
+Every fixture delta is reviewed: structured **53 inputs / 894 diff-side lines**,
+pseudo **53 / 890**, listing **58 / 1,552**, JSON **58 / 4,902**. JSON changes
+**1,951 fields across 565 functions**: 776 annotations, 695 argument lists,
+480 statements. Serialized instruction text/addresses/targets/control-flow
+and function/block/CFG metadata match; JSON does not serialize typed callees
+or raw bytes. Deltas retire unbound formals and declaration-specific result
+facts, preserve displaced producer evaluations, decline the foreign five-word
+constructor and fold the genuine SDK control. Argument-transforming wrappers
+keep unknown extent. A local handwritten os_log-name helper uses x9: retiring
+the borrowed six C formals to an existing body-read projection is not proof
+of zero machine inputs or zero source formals. Listing lines match classified
+annotations; structured/pseudo lines match classified statements and four
+consistent temporary-condition renamings.
+
+All **1,248 CLI invocations** pass: 48 inputs, thirteen commands, two binaries.
+All **624 stderr pairs**, **240 metadata/xrefs pairs**, **384 measured whole
+views**, **192 filtered-body comparisons** and **96 analyze/lab raw/header/entry
+checks** match their expected counterparts. Each changed semantic line is
+classified, including opaque result snapshots tied to the same producer
+addresses; no concrete equivalence between GP and FP result banks is claimed.
+
+Ten guarded Clarc/GoodLinks/Terminal/TextEdit/Chess pseudo renders pass,
+maximum sampled **203 MB** under a **2,000 MB** footprint guard. All **84,833
+function headers and their order** remain. All **1,674 changed diff-side
+lines across 391 functions** are reviewed: 346 functions only retire
+unsupported declarations, conservatively project arguments, remove unused
+bindings and rename temporaries; 30 preserve 36 producer evaluations exposed
+from retired arguments; eight hide now-unused runtime uniqueness bookkeeping
+while independent strong imports and Lab confirm the machine calls remain.
+Five Terminal functions gain receivers, integer-field loads, a dynamic stack
+buffer or a saved handler, all checked against independent LLVM instructions
+and ObjC ivar metadata. Two Chess sites retire one unknown recovered prefix
+at unchanged unresolved authenticated calls, retaining unknown extent.
+Fifteen supplemental guarded Lab runs support these checks. This establishes
+output reliability, not source-grounded app accuracy. Private bodies,
+strings and reports remain ignored; only app names and aggregates are public.
+A final synthetic late-probe test changed no production or fixture bytes;
+strict binary/source/input hashes retain these completed CLI/SDK/app runs,
+with a fresh full suite, release and default-cost comparison.
+
+**Performance and DEAD END.** The first soundness candidate failed default
+cost limits (**+9.85% total instructions**, SDK workloads roughly +12–14%).
+A release profile identified repeated declaration work. Reject absent binding
+bits/non-transfers before parsing and memoize immutable per-site decisions.
+A remaining fixture outlier still cost about +13–14% because newly bound
+stack-probe bits alone retriggered two function analyses. Omit replay only
+when the first trace already used the exact registered GOT slot's special
+transfer; three alternating pairs give **+0.39% median instructions** with
+identical output. All 2,596 fixture/SDK output/exit pairs remain byte-exact to
+the original soundness candidate. A late-probe regression independently
+requires replay where no earlier slot model existed. Moving direct conventions
+earlier was tried and reverted: **+13.35% versus baseline**, about **-0.12%**
+versus the prior outlier candidate, no material improvement. Only experiment-added
+assertions were reverted with that dead end; no pre-existing test was removed.
+
+**Publication pending:** the original `Tools/integration-gate.sh --push` must
+independently qualify the committed head before publication. The last observed
+hosted [run 44219380730](https://github.com/CamdenBopp/swiftdc/actions/runs/44219380730)
+at `1635cbc` failed Toolchain on Swift 6.2.4 / Xcode 26.3 before fixtures,
+build and tests; it supplies no hosted test result.
+
+**OPEN:** general/transitive incoming-x8 ownership through in-image helpers,
+narrow C parameter/result widths, other name-only call-effect models,
+general RET/fallthrough reconstruction and values carried across awaits.
+This fixes named declaration provenance and its listed consumers, not all C
+ABI recovery. Pinned Ghidra/entry benchmarks and readiness/coverage estimates
+are not recomputed.
