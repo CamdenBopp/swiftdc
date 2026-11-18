@@ -803,6 +803,9 @@ public struct ValueTracer: Sendable {
         case probedAllocation
         case contextEscaped(Int64)
         case calleeContextEscaped
+        /// Latent MAY origin of an opaque call result, not an escaped address.
+        /// Payload: a signed lower bound's bits, or explicit unknown for all.
+        case projectedFrameOrigin(UInt64)
 
         init(_ register: PhysReg) {
             switch register.kind {
@@ -859,6 +862,7 @@ public struct ValueTracer: Sendable {
             case .probedAllocation: "stack.probed-allocation"
             case .contextEscaped(let k): "context.escaped@\(k)"
             case .calleeContextEscaped: "callee-context.escaped"
+            case .projectedFrameOrigin(let site): "projection-frame@\(String(site, radix: 16))"
             }
         }
 
@@ -876,6 +880,39 @@ public struct ValueTracer: Sendable {
             switch self {
             case .x, .v: true
             default: false
+            }
+        }
+    }
+
+    /// A projection can return its container or a payload at a nonnegative
+    /// offset from its first word. This is a MAY write footprint, never a
+    /// source value or an identity-return/arity contract.
+    enum ProjectedFrameOrigin: Equatable {
+        case atOrAbove(Int64), whole
+
+        init?(_ payload: AbstractValue?) {
+            switch payload {
+            case .immediate(let bits)?: self = .atOrAbove(Int64(bitPattern: bits))
+            case .unknown?: self = .whole
+            default: return nil
+            }
+        }
+        var payload: AbstractValue {
+            switch self {
+            case .atOrAbove(let lower): .immediate(UInt64(bitPattern: lower))
+            case .whole: .unknown
+            }
+        }
+        func union(_ other: Self) -> Self {
+            switch (self, other) {
+            case (.whole, _), (_, .whole): .whole
+            case (.atOrAbove(let a), .atOrAbove(let b)): .atOrAbove(min(a, b))
+            }
+        }
+        var writeEffect: FrameMemoryEffect {
+            switch self {
+            case .atOrAbove(let lower): FrameMemoryEffect(.atOrAbove(lower), arithmetic: .checked)
+            case .whole: FrameMemoryEffect(arithmetic: .checked, everything: true)
             }
         }
     }
@@ -939,6 +976,12 @@ public struct ValueTracer: Sendable {
                 else if key.isMachineRegister { registerFacts[key] = newValue }
                 else { other[key] = newValue }
             }
+        }
+        func projectedOrigin(at site: UInt64) -> ProjectedFrameOrigin? {
+            ProjectedFrameOrigin(self[.projectedFrameOrigin(site)])
+        }
+        mutating func keepProjectedOrigin(_ origin: ProjectedFrameOrigin, at site: UInt64) {
+            self[.projectedFrameOrigin(site)] = (projectedOrigin(at: site)?.union(origin) ?? origin).payload
         }
         var count: Int { other.count + registerFacts.exactCount + frame.componentCount + reach.logicalCount }
         var isEmpty: Bool { count == 0 }
@@ -1833,6 +1876,13 @@ public struct ValueTracer: Sendable {
             let incomingX0 = registers[.x(0)] ?? .unknown
             let beforeCall = registers
             let bodyEffect = insn.branchTarget.flatMap { calleeMemoryEffects[$0] }
+            if insn.facts.bodyProjectsBoxedExistential,
+               let origin = Self.projectionResultOrigin(container: incomingX0, before: beforeCall) {
+                registers.keepProjectedOrigin(origin, at: insn.address)
+            }
+            // A fully decoded literal-store body cannot save an input pointer
+            // into memory. Its explicit writes are invalidated separately.
+            let keepsProjectedInputs = Self.hasLiteralProjectionFootprint(bodyEffect)
             if let effect = bodyEffect,
                let plan = completeCallPlan(effect, at: insn.address, call: call, before: beforeCall) {
                 applyCompleteCall(plan, at: insn.address, before: beforeCall, into: &registers,
@@ -1941,7 +1991,7 @@ public struct ValueTracer: Sendable {
                         // result buffer forwarded to its producer. Other
                         // argument/context aliases can escape independently.
                         if location == .x(8), Self.isResultPointer(value) { continue }
-                        Self.markEscape(value, into: &registers)
+                        Self.markEscape(value, into: &registers, keepingProjected: keepsProjectedInputs)
                     }
                 }
                 // A complete body can read nonstandard entry registers (or
@@ -1952,7 +2002,7 @@ public struct ValueTracer: Sendable {
                     for input in inputs where !(input.kind == .gpr && input.number == 30) {
                         let location = Location(input)
                         if !call.passedRegisters.contains(location), let value = beforeCall[location] {
-                            Self.markEscape(value, into: &registers)
+                            Self.markEscape(value, into: &registers, keepingProjected: keepsProjectedInputs)
                         }
                     }
                 }
@@ -1967,7 +2017,7 @@ public struct ValueTracer: Sendable {
                 // the context it points at.
                 if let target = insn.branchTarget, contextRegisterUsers.contains(target),
                    let context = registers[.x(22)] {
-                    Self.markEscape(context, into: &registers)
+                    Self.markEscape(context, into: &registers, keepingProjected: keepsProjectedInputs)
                 }
                 // Stack arguments are the words stored upward from sp at the
                 // call (`snapshot`); only a callee that can take any reads them,
@@ -1977,12 +2027,12 @@ public struct ValueTracer: Sendable {
                         let offset = base + Int64(slot * 8)
                         guard !facts.frame.saveSlots.contains(offset), let value = registers.frame[offset, .outgoing]
                         else { break }
-                        Self.markEscape(value, into: &registers)
+                        Self.markEscape(value, into: &registers, keepingProjected: keepsProjectedInputs)
                     }
                 }
                 if let memory {
                     for input in memory.inputs {
-                        if let value = beforeCall[Location(input)] { Self.markEscape(value, into: &registers) }
+                        if let value = beforeCall[Location(input)] { Self.markEscape(value, into: &registers, keepingProjected: keepsProjectedInputs) }
                     }
                     // These stores have no memory inputs; apply their proved
                     // literals in body order using the ordinary frame owner.
@@ -2173,6 +2223,26 @@ public struct ValueTracer: Sendable {
             if let keptFPResult {
                 registers.registerFacts.installCopy(keptFPResult, at: .v(0), fallback: .unknown)
             }
+            // A literal body may physically preserve a pointer even where a
+            // logical result convention erases its register value. Retain MAY
+            // reach when that transport fell out of what this trace follows.
+            if keepsProjectedInputs, case .literalStores(_, _, let outputs?) = bodyEffect {
+                for (key, value) in beforeCall.registerFacts.exactValues
+                where Self.projectedOrigin(of: value, in: beforeCall) != nil {
+                    let overwritten = outputs.contains { Location($0.destination) == key }
+                    if !overwritten, Self.projectedOrigin(of: registers[key] ?? .unknown, in: registers) == nil,
+                       !Self.containsFrame(registers[key] ?? .unknown) {
+                        if key == .x(0), registers[key] == .callResult(insn.address),
+                           let origin = Self.projectedOrigin(of: value, in: beforeCall) {
+                            // A new logical producer can carry the same physical
+                            // bits. Keep MAY reach without substituting its value.
+                            registers.keepProjectedOrigin(origin, at: insn.address)
+                        } else {
+                            registers[Self.frameEscapeAllKey] = .immediate(1)
+                        }
+                    }
+                }
+            }
             registers[Self.selfFreshKey] = nil
             // AAPCS64 does not preserve NZCV across a call.
             registers[Self.flagsKey] = nil
@@ -2206,7 +2276,9 @@ public struct ValueTracer: Sendable {
         // arithmetic still points where it did, at an offset nothing tracks.
         if inputs.frame || inputs.context, let detail = insn.detail {
             let written = detail.writtenRegisterKeys.map { Location(key: $0).flatMap { registers[$0] } }
-            if inputs.frame, written.contains(where: { $0.map { !Self.containsFrame($0) } ?? true }) {
+            if inputs.frame, written.contains(where: {
+                $0.map { !Self.containsFrame($0) && Self.projectedOrigin(of: $0, in: registers) == nil } ?? true
+            }) {
                 registers[Self.frameEscapeAllKey] = .immediate(1)
             }
             if inputs.context, written.contains(where: { $0.map { !Self.containsContext($0) } ?? true }) {
@@ -2366,7 +2438,7 @@ public struct ValueTracer: Sendable {
         }
     }
 
-    private static func meet(_ states: [State]) -> State {
+    static func meet(_ states: [State]) -> State {
         guard var accumulator = states.first else { return [:] }
         for state in states.dropFirst() {
             accumulator = accumulator.intersecting(with: state)
@@ -2379,6 +2451,13 @@ public struct ValueTracer: Sendable {
         // one the join drops from a register or slot is no longer followed:
         // it escapes. Copies (`.outgoing`), widths and the awaited callee's
         // parent header are not places this function keeps its pointers.
+        for state in states {
+            for (key, payload) in state.nonRegisterEntries {
+                if case .projectedFrameOrigin(let site) = key, let origin = ProjectedFrameOrigin(payload) {
+                    accumulator.keepProjectedOrigin(origin, at: site)
+                }
+            }
+        }
         var dropped: [AbstractValue] = []
         var unsizedSlots: [Int64] = []
         var unsizedFlags = false
@@ -2387,7 +2466,7 @@ public struct ValueTracer: Sendable {
             // not in the earlier raw must intersection/self-isa phase.
             accumulator.reach.formUnion(state.reach)
             state.registerFacts.forEachLostExact(comparedWith: accumulator.registerFacts) { key, value in
-                if holdsValue(key), containsFrame(value) || containsContext(value) || isResultPointer(value) { dropped.append(value) }
+                if holdsValue(key), containsFrame(value) || projectedOrigin(of: value, in: state) != nil || containsContext(value) || isResultPointer(value) { dropped.append(value) }
             }
             for (key, value) in state.nonRegisterEntries {
                 if isEscapeMarker(key) {
@@ -2395,7 +2474,7 @@ public struct ValueTracer: Sendable {
                 } else if accumulator[key] != value {
                     if key == .flagsWidth {
                         unsizedFlags = true
-                    } else if holdsValue(key), containsFrame(value) || containsContext(value) || isResultPointer(value) {
+                    } else if holdsValue(key), containsFrame(value) || projectedOrigin(of: value, in: state) != nil || containsContext(value) || isResultPointer(value) {
                         dropped.append(value)
                     }
                 }
@@ -2406,7 +2485,7 @@ public struct ValueTracer: Sendable {
                 offset, _, _ in unsizedSlots.append(offset)
             }
             state.frame.forEachLostValue(comparedWith: accumulator.frame) { value in
-                if containsFrame(value) || containsContext(value) || isResultPointer(value) { dropped.append(value) }
+                if containsFrame(value) || projectedOrigin(of: value, in: state) != nil || containsContext(value) || isResultPointer(value) { dropped.append(value) }
             }
         }
         // A slot is known only at the width stored to it. Where the paths
@@ -2780,6 +2859,11 @@ public struct ValueTracer: Sendable {
                     : FrameMemoryEffect(arithmetic: .checked, everything: true)
                 Self.forgetFrame(in: &registers, effect: write)
             } else {
+                if let input, let origin = Self.projectedOrigin(of: input, in: before) {
+                    let writes = store.offset == 0 && store.bytes > 0
+                        ? origin.writeEffect : ProjectedFrameOrigin.whole.writeEffect
+                    Self.forgetFrame(in: &registers, effect: writes)
+                }
                 target = Self.failedCallContextTarget(input, offset: store.offset, bytes: store.bytes)
             }
             let bytes = Int(exactly: store.bytes)
@@ -6389,7 +6473,11 @@ public struct ValueTracer: Sendable {
 
     /// A value leaves what the tracer follows: a result alias poisons its
     /// buffer; a frame address or async context pointer escapes.
-    private static func markEscape(_ value: AbstractValue, into registers: inout State) {
+    private static func markEscape(_ value: AbstractValue, into registers: inout State, keepingProjected: Bool = false) {
+        if !keepingProjected, projectedOrigin(of: value, in: registers) != nil {
+            registers[frameEscapeAllKey] = .immediate(1)
+            if hasResultContents(registers) { poisonResult(&registers) }
+        }
         // A pointer lost from a reachable frame slot or a CFG join can still
         // be used through that memory. Forgetting its exact alias must not
         // leave a whole-result claim that a later unknown call can overwrite.
@@ -6402,6 +6490,71 @@ public struct ValueTracer: Sendable {
         }
         if contains(.asyncCalleeContext, in: value) { registers[calleeContextEscapeKey] = .immediate(1) }
         markFrameEscape(value, into: &registers)
+    }
+
+    private static func hasLiteralProjectionFootprint(_ effect: CalleeMemoryEffect?) -> Bool {
+        guard case .literalStores(let stores, _, let outputs?)? = effect,
+              stores.allSatisfy({ $0.offset == 0 && [1, 2, 4, 8].contains($0.bytes) }) else { return false }
+        return outputs.allSatisfy {
+            switch $0.value {
+            case .literal, .vector128: true
+            case .input, .unknown: false
+            }
+        }
+    }
+
+    /// Sources are latent metadata for the original producer. Copies and
+    /// spills retain that producer; arithmetic/load transformations widen MAY
+    /// reach rather than turning the result into a precise frame address.
+    static func projectedOrigin(of value: AbstractValue, in state: State) -> ProjectedFrameOrigin? {
+        switch value {
+        case .callResult(let site): return state.projectedOrigin(at: site)
+        case .select(_, let a, let b):
+            let left = projectedOrigin(of: a, in: state), right = projectedOrigin(of: b, in: state)
+            return left.flatMap { l in right.map(l.union) } ?? left ?? right
+        case .aggregate(let values):
+            return values.compactMap { projectedOrigin(of: $0, in: state) }.reduce(nil as ProjectedFrameOrigin?) {
+                $0?.union($1) ?? $1
+            }
+        case .binary(_, let a, let b):
+            return projectedOrigin(of: a, in: state) != nil || projectedOrigin(of: b, in: state) != nil ? .whole : nil
+        case .unary(_, let operand), .loadedFrom(let operand, _):
+            return projectedOrigin(of: operand, in: state) != nil ? .whole : nil
+        default: return nil
+        }
+    }
+
+    private static func projectionSourceOrigin(_ value: AbstractValue, in state: State) -> ProjectedFrameOrigin? {
+        if case .frame(let offset) = value {
+            // The boxed alignment adjustment is nonnegative and at most 256.
+            return offset <= Int64.max - 256 ? .atOrAbove(offset) : .whole
+        }
+        return containsFrame(value) || projectedOrigin(of: value, in: state) != nil ? .whole : nil
+    }
+
+    private static func projectionResultOrigin(container: AbstractValue, before: State) -> ProjectedFrameOrigin? {
+        var origin = projectionSourceOrigin(container, in: before)
+        guard case .frame(let start) = container else { return origin }
+        let (end, overflow) = start.addingReportingOverflow(8)
+        guard !overflow else { return .whole }
+        let word = FrameMemoryEffect(.finite(lower: start, upper: end), arithmetic: .checked)
+        for (offset, value) in before.frame {
+            let width: Int64
+            if case .immediate(let bytes)? = before.frame[offset, .width], let known = Int64(exactly: bytes), known > 0 {
+                width = known
+            } else { width = Int64.max }
+            guard word.mayInvalidate(FrameMemoryExtent(start: offset, bytes: width)),
+                  let payload = projectionSourceOrigin(value, in: before) else { continue }
+            let captured: ProjectedFrameOrigin
+            if offset == start && width == 8, case .atOrAbove(let base) = payload {
+                // (16 + mask) & ~mask is at least 16. The first word is the
+                // box header's address, not the payload address itself.
+                let (lower, overflow) = base.addingReportingOverflow(16)
+                captured = overflow ? .whole : .atOrAbove(lower)
+            } else { captured = .whole }
+            origin = origin?.union(captured) ?? captured
+        }
+        return origin
     }
 
     static func containsFrame(_ value: AbstractValue) -> Bool {
@@ -6712,7 +6865,7 @@ public struct ValueTracer: Sendable {
         // each input independently for escape transactions below.
         let valueInputs = registers.registerFacts.selected(inputKeys).lazy.compactMap { $0.value }
         let reads = (frame: registers.registerFacts.containsSelected(inputKeys) { _, value in
-                         value.map(Self.containsFrame) ?? false
+                         value.map { Self.containsFrame($0) || Self.projectedOrigin(of: $0, in: registers) != nil } ?? false
                      }, context: valueInputs.contains(where: Self.containsContext))
         guard let memory, !Self.readOnlyMemoryIDs.contains(detail.id.rawValue) else { return reads }
         let target = memoryTarget(detail, in: registers)
@@ -6759,6 +6912,11 @@ public struct ValueTracer: Sendable {
         case nil, .throughStaticPointer?, .throughValue?:
             let base = memory.base.flatMap { registers[Location($0)] }
             let indexed = memory.index != nil
+            if let base, let origin = Self.projectedOrigin(of: base, in: registers) {
+                let writes = !indexed && memory.displacement == 0 && (Self.accessBytes(detail) ?? 0) > 0
+                    ? origin.writeEffect : ProjectedFrameOrigin.whole.writeEffect
+                Self.forgetFrame(in: &registers, effect: writes)
+            }
             if let base, Self.containsFrame(base) {
                 // Inside a dynamic allocation below k, a write at a constant
                 // displacement stays below k plus its extent.

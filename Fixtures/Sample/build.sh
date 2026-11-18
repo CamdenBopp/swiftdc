@@ -1259,3 +1259,6 @@ python3 build-named-result-buffers.py
 
 echo "==> projection effects require actual helper bodies (boxed_projection_*, C drivers -O0/-O2/-Os)"
 python3 build-boxed-projection-contracts.py
+
+echo "==> projection results retain caller-memory aliases (projection_return_alias_*, C drivers -O0/-O2/-Os)"
+python3 build-projection-return-alias.py
