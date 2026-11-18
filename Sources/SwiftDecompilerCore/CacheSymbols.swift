@@ -83,6 +83,7 @@ final class CacheSymbolResolver {
     private var textSegments: [Range<UInt64>] = []
     private var exportsByImage: [Int: [UInt64: String]] = [:]
     private var arcExportsByImage: [Int: [UInt64: Set<String>]] = [:]
+    private var nonThrowingABIExportsByImage: [Int: [UInt64: Set<String>]] = [:]
     private var resolved: [UInt64: String?] = [:]
 
     /// Nil unless `machO` is a shared-cache image (there is nothing to resolve
@@ -148,6 +149,37 @@ final class CacheSymbolResolver {
         }
         let name = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
         return arcExportsByImage[index]?[target]?.contains(name) == true
+    }
+
+    func nonThrowingABIContract(forCallTarget address: UInt64, named callee: String) -> Bool {
+        guard ValueTracer.hasKnownNonThrowingABIName(callee) else { return false }
+        let target: UInt64
+        if symbol(at: address) != nil { target = address }
+        else if let resolved = arcStubTarget(at: address) { target = resolved }
+        else { return false }
+        guard let index = imageIndex(containing: target) else { return false }
+        if nonThrowingABIExportsByImage[index] == nil {
+            let image = images[index]
+            nonThrowingABIExportsByImage[index] = Self.nonThrowingABIExports(
+                image.image.exportedSymbols, imagePath: image.image.imagePath, base: image.base, text: image.range)
+        }
+        return nonThrowingABIExportsByImage[index]?[target]?.contains(callee) == true
+    }
+
+    static func nonThrowingABIExports(_ exports: [ExportedSymbol], imagePath: String, base: UInt64,
+                                     text: Range<UInt64>) -> [UInt64: Set<String>] {
+        guard RuntimeFunctionReference.isNonThrowingABIImage(imagePath) else { return [:] }
+        var table: [UInt64: Set<String>] = [:]
+        for symbol in exports {
+            guard RuntimeFunctionReference.isDirectFunctionExport(symbol),
+                  let offset = symbol.offset, offset >= 0 else { continue }
+            let reference = RuntimeFunctionReference(rawSymbol: symbol.name, libraryName: imagePath)
+            let (location, overflow) = base.addingReportingOverflow(UInt64(offset))
+            guard !overflow, text.contains(location),
+                  reference.permitsNonThrowingABI(named: reference.symbolName) else { continue }
+            table[location, default: []].insert(reference.symbolName)
+        }
+        return table
     }
 
     /// The exact owning-image export proof, also exercised with conflicting

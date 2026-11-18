@@ -299,8 +299,41 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// supplies only an uncertain extent, never positive parameter/width facts.
     var mayReadFloatArguments: UInt8 = 0
     private var hasInputProofEntry = false
-    private var inputForwardKind: InputForwardKind = .none
+    // Pack the input-forwarder shape and independent error/return proof
+    // state without widening the summary table.
+    private var inputForwardFlags: UInt8 = 4
+    private var inputForwardKind: InputForwardKind {
+        get { InputForwardKind(rawValue: inputForwardFlags & 3) ?? .none }
+        set { inputForwardFlags = (inputForwardFlags & ~3) | newValue.rawValue }
+    }
     var needsEntryPreservation = false
+    /// Every reachable exit retains the caller's return-address origin
+    /// under the carried effects. Positive error-register facts additionally
+    /// require the strict transitive preservation closure in `finish`.
+    var hasProvenReturnTargets: Bool {
+        get { inputForwardFlags & 8 != 0 }
+        set {
+            if newValue { inputForwardFlags |= 8 }
+            else { inputForwardFlags &= ~8 }
+        }
+    }
+    /// A return address carried across a call needs direct MUST clobbers.
+    var needsReturnPreservation: Bool {
+        get { inputForwardFlags & 16 != 0 }
+        set {
+            if newValue { inputForwardFlags |= 16 }
+            else { inputForwardFlags &= ~16 }
+        }
+    }
+    /// Some outgoing transfer has no exact direct target in `callees`.
+    /// Opaque ABI preservation cannot establish an error-register proof.
+    var hasUnresolvedSwiftErrorCall: Bool {
+        get { inputForwardFlags & 4 != 0 }
+        set {
+            if newValue { inputForwardFlags |= 4 }
+            else { inputForwardFlags &= ~4 }
+        }
+    }
 
     init(
         argumentReads: RegisterSet, provenArgumentReads: RegisterSet = [], provenFloatArgumentReads: RegisterSet = [],
@@ -312,7 +345,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         definitelyClobbered: Set<String> = [], restoredFrom: [String: Int64] = [:], callees: [UInt64] = [],
         outgoingCalls: [OutgoingCall] = [], storesOnlyToStack: Bool = false, writesNoFields: Bool = false,
         memoryEffect: CalleeMemoryEffect = .unknown, inputProofEntry: UInt64? = nil, pureTailTarget: UInt64? = nil,
-        framedCallTarget: UInt64? = nil, hasOpaqueInputTransfer: Bool = false
+        framedCallTarget: UInt64? = nil, hasOpaqueInputTransfer: Bool = false,
+        hasProvenReturnTargets: Bool = false, needsReturnPreservation: Bool = false,
+        hasUnresolvedSwiftErrorCall: Bool = true
     ) {
         self.floatArgumentWidths = floatArgumentWidths
         self.resultReads = resultReads
@@ -346,6 +381,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         self.pureTailTarget = pureTailTarget
         self.framedCallTarget = framedCallTarget
         self.hasOpaqueInputTransfer = hasOpaqueInputTransfer
+        self.hasProvenReturnTargets = hasProvenReturnTargets
+        self.needsReturnPreservation = needsReturnPreservation
+        self.hasUnresolvedSwiftErrorCall = hasUnresolvedSwiftErrorCall
     }
 
     /// Each call once, indirect calls first, then by target.
@@ -623,9 +661,14 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         var callees = Set(preservedFacts?.callees ?? [])
         var outgoingCalls: [OutgoingCall] = preservedFacts?.outgoingCalls ?? []
         var storesOnlyToStack = preservedFacts?.storesOnlyToStack ?? true
+        var hasUnmodelledFallthrough = false
         var writesResult = preservedFacts?.mayWriteResult ?? false
         for insn in preservedFacts == nil ? instructions : [] {
             guard let detail = insn.detail else { return nil }
+            if insn.controlFlow != .return && insn.controlFlow != .branch {
+                let (next, overflow) = insn.address.addingReportingOverflow(4)
+                if overflow || !addresses.contains(next) { hasUnmodelledFallthrough = true }
+            }
             if detail.writtenRegisterKeys.contains("x0")
                 || insn.controlFlow == .call
                 || ((insn.controlFlow == .branch || insn.controlFlow == .conditionalBranch)
@@ -718,7 +761,11 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         var clobbered = preservedFacts?.clobberedCalleeSaved ?? Set<String>()
         var restoredFrom: [String: Int64] = preservedFacts?.restoredFrom ?? [:]
         var allocationSites = preservedFacts?.provenAllocationSites ?? []
-        if !writtenCalleeSaved.isEmpty {
+        let returnProof = Preservation.ReturnAddressProof()
+        var hasProvenReturnTargets = preservedFacts?.hasProvenReturnTargets ?? true
+        var needsReturnPreservation = preservedFacts?.needsReturnPreservation ?? false
+        let traceReturnTargets = preservedFacts == nil && Preservation.requiresReturnAddressTrace(instructions)
+        if !writtenCalleeSaved.isEmpty || traceReturnTargets {
             // Every visit to an sp move must prove its allocation.
             var stackMoves: [UInt64: Bool] = [:]
             let exits = Preservation.exitValues(
@@ -734,7 +781,10 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 // every save the caller made, and a method one call up lost
                 // `self` across a call it never passed self to.
                 clobbersMayAliasStack: false,
-                onStackMove: { site, proven in stackMoves[site] = (stackMoves[site] ?? true) && proven })
+                onStackMove: { site, proven in stackMoves[site] = (stackMoves[site] ?? true) && proven },
+                returnAddressProof: returnProof)
+            hasProvenReturnTargets = exits != nil && returnProof.acceptsExits
+            needsReturnPreservation = returnProof.needsPreservedRegisters
             allocationSites = exits == nil ? [] : stackMoves.filter(\.value).keys.sorted()
             if let exits {
                 for values in exits.values {
@@ -778,7 +828,13 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             memoryEffect: readFacts?.memoryEffect ?? CalleeMemoryEffect.discover(in: function),
             inputProofEntry: readFacts?.inputProofEntry ?? instructions.first?.address,
             pureTailTarget: readFacts?.pureTailTarget ?? pureTailTarget(of: function, isFunction: isFunction),
-            framedCallTarget: readFacts?.framedCallTarget ?? framedCallTarget(of: function, isFunction: isFunction))
+            framedCallTarget: readFacts?.framedCallTarget ?? framedCallTarget(of: function, isFunction: isFunction),
+            hasProvenReturnTargets: hasProvenReturnTargets, needsReturnPreservation: needsReturnPreservation)
+        summary.hasUnresolvedSwiftErrorCall = preservedFacts?.hasUnresolvedSwiftErrorCall
+            ?? (hasUnmodelledFallthrough || outgoingCalls.contains { call in
+                guard let target = call.target else { return true }
+                return !callees.contains(target)
+            })
         summary.provenAllocationSites = allocationSites
         summary.readsIncomingStack = Self.readsIncomingStack(instructions)
         summary.hasOpaqueInputTransfer = readFacts?.hasOpaqueInputTransfer ?? instructions.contains { insn in
@@ -980,7 +1036,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             readsFramePointer: readsFramePointer,
             readsContextRegister: readsContextRegister, clobberedCalleeSaved: Self.calleeSavedKeys,
             definitelyClobbered: Self.calleeSavedKeys, callees: callees, memoryEffect: memoryEffect,
-            inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget, framedCallTarget: framedCallTarget, hasOpaqueInputTransfer: hasOpaqueInputTransfer)
+            inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget, framedCallTarget: framedCallTarget, hasOpaqueInputTransfer: hasOpaqueInputTransfer, hasUnresolvedSwiftErrorCall: hasUnresolvedSwiftErrorCall)
             .keepingReadRegisters(mayReadRegisters, readsIncomingStack: readsIncomingStack)
     }
 
@@ -1234,7 +1290,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             clobberedCalleeSaved: clobberedCalleeSaved,
             definitelyClobbered: definitelyClobbered, restoredFrom: restoredFrom, callees: callees,
             outgoingCalls: outgoingCalls, storesOnlyToStack: storesOnlyToStack, memoryEffect: memoryEffect,
-            inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget, framedCallTarget: framedCallTarget)
+            inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget, framedCallTarget: framedCallTarget,
+            hasProvenReturnTargets: hasProvenReturnTargets, needsReturnPreservation: needsReturnPreservation,
+            hasUnresolvedSwiftErrorCall: hasUnresolvedSwiftErrorCall)
         summary.mayWriteResult = mayWriteResult
         summary.resultReads = resultReads
         summary.provenAllocationSites = provenAllocationSites
@@ -1345,6 +1403,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         var needsPreservation = Set(starts.filter { start in
             summaries[start]?.callees.contains {
                 summaries[$0]?.definitelyClobbered.isEmpty == false || summaries[$0]?.readsFramePointer == true
+                    || (summaries[start]?.needsReturnPreservation == true && summaries[$0]?.clobberedCalleeSaved.isEmpty == false)
             } == true
         })
         var worklist = starts.filter { start in
@@ -1411,7 +1470,10 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 callees: old.callees,
                 outgoingCalls: old.outgoingCalls,
                 storesOnlyToStack: old.storesOnlyToStack, memoryEffect: old.memoryEffect,
-                inputProofEntry: old.inputProofEntry, pureTailTarget: old.pureTailTarget, framedCallTarget: old.framedCallTarget, hasOpaqueInputTransfer: old.hasOpaqueInputTransfer)
+                inputProofEntry: old.inputProofEntry, pureTailTarget: old.pureTailTarget, framedCallTarget: old.framedCallTarget,
+                hasOpaqueInputTransfer: old.hasOpaqueInputTransfer,
+                hasProvenReturnTargets: rebuilt.hasProvenReturnTargets, needsReturnPreservation: rebuilt.needsReturnPreservation,
+                hasUnresolvedSwiftErrorCall: old.hasUnresolvedSwiftErrorCall)
             // The sites change no other summary, so they take no part in
             // the fixpoint's comparison: a change to them alone updates in
             // place.
@@ -1430,9 +1492,14 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             var oldCarriedEffect = old.effect
             newCarriedEffect.entryValueClobbers = nil
             oldCarriedEffect.entryValueClobbers = nil
+            let directClobbersChanged = new.clobberedCalleeSaved != old.clobberedCalleeSaved
             guard newCarriedEffect != oldCarriedEffect
-                || (rebuildingEntryRoles && new.effect != old.effect) else { continue }
+                || (rebuildingEntryRoles && new.effect != old.effect)
+                || directClobbersChanged else { continue }
             for caller in callers[start] ?? [] {
+                let returnDependencyChanged = directClobbersChanged && summaries[caller]?.needsReturnPreservation == true
+                if returnDependencyChanged { needsPreservation.insert(caller) }
+                if newCarriedEffect == oldCarriedEffect && !returnDependencyChanged && !rebuildingEntryRoles { continue }
                 // Promote a pending role refresh too: it may already be in
                 // the queue when this callee first exposes a carried clobber
                 // or changes an outlined reload's offset.
@@ -1486,6 +1553,7 @@ enum Preservation {
     }
 
     enum Value: Hashable {
+        case returnAddress
         case entry(String)
         case stack(Int64)
         /// The eight bytes at entry sp + k, as they were at entry.
@@ -1505,6 +1573,44 @@ enum Preservation {
         case sizePlus15(UInt64)
         case sizeRounded(UInt64)
         case unknown
+    }
+
+    /// A per-analysis MUST result, not a log: one unproved reachable exit
+    /// invalidates the return-origin proof, including across later visits.
+    final class ReturnAddressProof {
+        var acceptsExits = true
+        var needsPreservedRegisters = false
+
+        func observeExit(_ instruction: Instruction, state: State) {
+            let key: String?
+            if instruction.controlFlow == .return { key = Preservation.returnRegister(instruction) }
+            else { key = "x30" }
+            if key.map({ state.value($0) == .returnAddress }) != true { acceptsExits = false }
+        }
+    }
+
+    static func returnRegister(_ instruction: Instruction) -> String? {
+        guard let detail = instruction.detail else { return nil }
+        if detail.id == AARCH64_INS_RETAA || detail.id == AARCH64_INS_RETAB {
+            return detail.operands.isEmpty ? "x30" : nil
+        }
+        guard detail.id == AARCH64_INS_RET else { return nil }
+        if detail.operands.isEmpty { return "x30" }
+        guard detail.operands.count == 1, let register = detail.operands[0].operand.register,
+              register.kind == .gpr, register.widthBits == 64 else { return nil }
+        return register.key
+    }
+
+    static func requiresReturnAddressTrace(_ instructions: [Instruction]) -> Bool {
+        instructions.contains { instruction in
+            guard let detail = instruction.detail else { return true }
+            if instruction.controlFlow == .call { return true }
+            if instruction.controlFlow == .return,
+               detail.id != AARCH64_INS_RET || returnRegister(instruction) != "x30" { return true }
+            return detail.writtenRegisterKeys.contains("x30") || detail.operands.contains {
+                ($0.isWritten || $0.access == 0) && $0.operand.register?.key == "x30"
+            }
+        }
     }
 
     /// The frame addresses a register may hold: these offsets, or any
@@ -1847,11 +1953,13 @@ enum Preservation {
         exitEffect: (Instruction) -> CalleeEffect = { _ in CalleeEffect() },
         callInputs: (Instruction) -> Set<String>? = { _ in nil },
         clobbersMayAliasStack: Bool = true,
-        onStackMove: ((UInt64, Bool) -> Void)? = nil
+        onStackMove: ((UInt64, Bool) -> Void)? = nil,
+        returnAddressProof: ReturnAddressProof? = nil
     ) -> [UInt64: [String: Value]]? {
         let calleeSaved = calleeSavedKeys
         var initial = State(registers: ["sp": .stack(0)], slots: [:])
         for key in calleeSaved { initial.registers[key] = .entry(key) }
+        if returnAddressProof != nil { initial.registers["x30"] = .returnAddress }
         let blockAt = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
         var inState: [UInt64: State] = [entry: initial]
         // States only shrink, so the last visit of an exit is the smallest;
@@ -1863,16 +1971,24 @@ enum Preservation {
             visits += 1
             guard visits <= 64 * max(blocks.count, 1) else {
                 Probe.record(.summaryCap, at: entry, ["pass": .label("preservation")])
+                returnAddressProof?.acceptsExits = false
                 return nil
             }
-            guard let block = blockAt[start], var state = inState[start] else { return nil }
+            guard let block = blockAt[start], var state = inState[start] else {
+                returnAddressProof?.acceptsExits = false
+                return nil
+            }
             for insn in block.instructions {
-                guard let detail = insn.detail else { return nil }
+                guard let detail = insn.detail else {
+                    returnAddressProof?.acceptsExits = false
+                    return nil
+                }
                 let internalBranch = insn.branchTarget.map(addresses.contains) == true
                 let isExit = insn.controlFlow == .return
                     || ((insn.controlFlow == .branch || insn.controlFlow == .conditionalBranch)
                         && !internalBranch && block.switchCases == nil)
                 if isExit {
+                    returnAddressProof?.observeExit(insn, state: state)
                     var exitState = state
                     let effect = exitEffect(insn)
                     exitState.apply(
@@ -1883,8 +1999,17 @@ enum Preservation {
                     continue
                 }
                 if insn.controlFlow == .call {
+                    var effect = callEffect(insn)
+                    if let proof = returnAddressProof {
+                        for key in calleeSaved where state.value(key) == .returnAddress {
+                            proof.needsPreservedRegisters = true
+                            if effect.entryValueClobbers?.contains(key) == true, effect.restores[key] == nil {
+                                effect.clobbers.insert(key)
+                            }
+                        }
+                    }
                     applyCall(
-                        callEffect(insn), inputs: callInputs(insn), to: &state,
+                        effect, inputs: callInputs(insn), to: &state,
                         clobbersMayAliasStack: clobbersMayAliasStack)
                     continue
                 }

@@ -66,3 +66,7 @@ Fixtures/Sample/x8-entry-*-oracle
 Fixtures/Sample/x8entry.abi.json
 
 Fixtures/Sample/bl-call-input-*-oracle
+
+Fixtures/Sample/plain-error-abi-*-oracle
+Fixtures/Sample/plain-error-abi-*.ll
+Fixtures/Sample/.plain-error-abi-*/

@@ -156,6 +156,9 @@ python3 build-unknown-callee-store.py
 echo "==> x8 scratch entries and genuine Swift/ObjC result ABIs (x8_entry*, all levels)"
 python3 build-x8-entry.py
 
+echo "==> plain-name Swift error ABI and real system C controls (plain_error_*, all levels)"
+python3 build-plain-error-abi.py
+
 echo "==> GP/FP inputs forwarded through ordinary BL wrappers (call_forward_inputs.s, native O0/O2/Os)"
 $CLANG -arch arm64 -dynamiclib call_forward_inputs.s -o libCallForwardInputs.dylib
 cp libCallForwardInputs.dylib libCallForwardInputs.stripped.dylib

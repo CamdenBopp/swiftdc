@@ -48,6 +48,22 @@ struct RuntimeFunctionReference: Sendable, Equatable {
          "/usr/lib/libobjc.A.dylib", "/usr/lib/libobjc.dylib"].contains(name)
     }
 
+    /// One Mach-O prefix, not an arbitrary spelling normalization.
+    var symbolName: String { rawSymbol.hasPrefix("_") ? String(rawSymbol.dropFirst()) : rawSymbol }
+
+    /// SDK C declarations and the checked runtime tables establish an ABI
+    /// without a Swift error result only for their actual system provider.
+    /// A user library may export the same spelling with a Swift error ABI.
+    static func isNonThrowingABIImage(_ path: String) -> Bool {
+        Self.isARCRuntimeImage(path) || NonThrowingABIProviders.containsLibrary(path)
+    }
+
+    func permitsNonThrowingABI(named callee: String) -> Bool {
+        guard callee == symbolName else { return false }
+        if DisassembledFunction.isARCReferenceHelper(callee) { return permitsARCIdentity(named: callee) }
+        return NonThrowingABIProviders.permits(callee, from: libraryName)
+    }
+
     func permitsARCIdentity(named callee: String) -> Bool {
         let name = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
         let symbol = rawSymbol.hasPrefix("_") ? String(rawSymbol.dropFirst()) : rawSymbol

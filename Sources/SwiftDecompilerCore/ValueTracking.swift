@@ -1040,12 +1040,14 @@ public struct ValueTracer: Sendable {
 
         init(_ insn: Instruction) {
             self.init(callee: DisassembledFunction.calleeName(of: insn) ?? "",
-                      arcIdentityContract: insn.facts.arcIdentityContract)
+                      arcIdentityContract: insn.facts.arcIdentityContract, bodyPreservesSwiftError: insn.facts.bodyPreservesSwiftError,
+                      nonThrowingABIContract: insn.facts.nonThrowingABIContract)
         }
 
         /// `knownArityApplies` is false for a call to an in-image function,
         /// whose name may be a library function's without its arity.
-        init(callee: String, knownArityApplies: Bool = true, arcIdentityContract: Bool = false) {
+        init(callee: String, knownArityApplies: Bool = true, arcIdentityContract: Bool = false, bodyPreservesSwiftError: Bool = false,
+             nonThrowingABIContract: Bool = false) {
             self.callee = callee
             let applies = knownArityApplies
                 && (!DisassembledFunction.isARCReferenceHelper(callee) || arcIdentityContract)
@@ -1058,8 +1060,10 @@ public struct ValueTracer: Sendable {
             } ?? [.x(0), .x(1), .x(2), .x(3), .x(4), .x(5), .x(6), .x(7), .x(8), .x(20)]
             passesNoStackArguments = applies && ValueTracer.passesNoStackArguments(callee)
             throwsByName = callee.contains(" throws")
-            provablyDoesNotThrow = (!DisassembledFunction.isARCReferenceHelper(callee) || arcIdentityContract)
-                && ValueTracer.provablyDoesNotThrow(callee)
+            provablyDoesNotThrow = bodyPreservesSwiftError || ((!DisassembledFunction.isARCReferenceHelper(callee) || arcIdentityContract)
+                && (ValueTracer.hasNonThrowingLanguageContract(callee)
+                    || ((nonThrowingABIContract || arcIdentityContract)
+                        && ValueTracer.hasKnownNonThrowingABIName(callee))))
             let runtimeName = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
             returnsArgument = applies && arcIdentityContract && DisassembledFunction.returnsItsArgument(callee)
             retainedRegister = applies && arcIdentityContract ? ValueTracer.retainedRegister(runtimeName) : nil
@@ -1096,7 +1100,7 @@ public struct ValueTracer: Sendable {
     /// r1 : …)` with `r1 = swift_willThrow(r0)` (`throwselect.swift`).
     static let voidRuntimeCalls: Set<String> = ["swift_willThrow", "swift_willThrowTypedImpl", "swift_job_run"]
 
-    /// `CallFacts` per callee name and ARC contract for one run. A trusted
+    /// `CallFacts` per callee name and ABI provenance for one run. A trusted
     /// runtime call must never donate its facts to a same-named foreign call.
     /// A few thousand names serve a hundred thousand calls
     /// (Clarc: 5,636 for 103,776).
@@ -1104,13 +1108,18 @@ public struct ValueTracer: Sendable {
         private struct Key: Hashable {
             let callee: String
             let arcIdentityContract: Bool
+            let bodyPreservesSwiftError: Bool
+            let nonThrowingABIContract: Bool
         }
         private let store = Mutex<[Key: CallFacts]>([:])
 
-        func facts(for callee: String, arcIdentityContract: Bool = false) -> CallFacts {
-            let key = Key(callee: callee, arcIdentityContract: arcIdentityContract)
+        func facts(for callee: String, arcIdentityContract: Bool = false, bodyPreservesSwiftError: Bool = false,
+                   nonThrowingABIContract: Bool = false) -> CallFacts {
+            let key = Key(callee: callee, arcIdentityContract: arcIdentityContract, bodyPreservesSwiftError: bodyPreservesSwiftError,
+                          nonThrowingABIContract: nonThrowingABIContract)
             if let hit = store.withLock({ $0[key] }) { return hit }
-            let facts = CallFacts(callee: callee, arcIdentityContract: arcIdentityContract)
+            let facts = CallFacts(callee: callee, arcIdentityContract: arcIdentityContract, bodyPreservesSwiftError: bodyPreservesSwiftError,
+                                  nonThrowingABIContract: nonThrowingABIContract)
             store.withLock { $0[key] = facts }
             return facts
         }
@@ -1135,9 +1144,11 @@ public struct ValueTracer: Sendable {
                 let callee = DisassembledFunction.calleeName(of: insn) ?? ""
                 if let target = insn.branchTarget, inImageTargets.contains(target) {
                     calls[insn.address] = CallFacts(callee: callee, knownArityApplies: false,
-                                                  arcIdentityContract: insn.facts.arcIdentityContract)
+                                                  arcIdentityContract: insn.facts.arcIdentityContract, bodyPreservesSwiftError: insn.facts.bodyPreservesSwiftError,
+                                                  nonThrowingABIContract: insn.facts.nonThrowingABIContract)
                 } else {
-                    calls[insn.address] = cache?.facts(for: callee, arcIdentityContract: insn.facts.arcIdentityContract)
+                    calls[insn.address] = cache?.facts(for: callee, arcIdentityContract: insn.facts.arcIdentityContract, bodyPreservesSwiftError: insn.facts.bodyPreservesSwiftError,
+                                                       nonThrowingABIContract: insn.facts.nonThrowingABIContract)
                         ?? CallFacts(insn)
                 }
             }
@@ -1712,9 +1723,9 @@ public struct ValueTracer: Sendable {
         return false
     }
 
-    /// Whether a call cannot return a Swift error in x21: a C-level symbol (no
-    /// `.` in its name: libc, the ObjC and Swift runtimes), or a demangled
-    /// Swift function signature without `throws`. Everything else may throw:
+    /// Whether a call cannot return a Swift error in x21: an independently
+    /// identified ABI contract, or a demangled Swift signature without
+    /// `throws`. A symbol's spelling alone does not identify its ABI:
     /// an unnamed callee (`sub_`, an indirect `blr`), a metadata-derived label
     /// with no signature (`Module.Type.method`), and an accessor, whose
     /// demangling never shows `throws` (`T.p.getter : Swift.Int` is printed
@@ -1735,22 +1746,40 @@ public struct ValueTracer: Sendable {
     ]
 
     static func provablyDoesNotThrow(_ insn: Instruction) -> Bool {
-        guard let callee = DisassembledFunction.calleeName(of: insn) else { return false }
-        return (!DisassembledFunction.isARCReferenceHelper(callee) || insn.facts.arcIdentityContract)
-            && provablyDoesNotThrow(callee)
+        if insn.facts.bodyPreservesSwiftError { return true }
+        guard let callee = DisassembledFunction.calleeName(of: insn),
+              !DisassembledFunction.isARCReferenceHelper(callee) || insn.facts.arcIdentityContract
+        else { return false }
+        return hasNonThrowingLanguageContract(callee)
+            || ((insn.facts.nonThrowingABIContract || insn.facts.arcIdentityContract)
+                && hasKnownNonThrowingABIName(callee))
     }
 
+    /// A name can select a known contract; call sites still have to prove
+    /// its provider. In particular, a dotless name need not be a C entry.
     static func provablyDoesNotThrow(_ callee: String) -> Bool {
+        hasNonThrowingLanguageContract(callee) || hasKnownNonThrowingABIName(callee)
+    }
+
+    static func hasNonThrowingLanguageContract(_ callee: String) -> Bool {
         guard !callee.isEmpty, !callee.hasPrefix("sub_") else { return false }
-        guard callee.contains(".") else { return true }
         if nonThrowingHelperPrefixes.contains(where: callee.hasPrefix) { return true }
-        // A storage entity prints `name.getter : Type`. When the type is a
-        // function type its arrow belongs to the type, and reads as a
-        // signature without `throws`: `S.subscript.getter : (Swift.Int,
-        // Swift.Int) -> Swift.Int` is printed the same for `get throws`.
         if DisassembledFunction.isStorageEntityName(callee) { return false }
         guard let signature = DisassembledFunction.splitSignature(callee) else { return false }
         return !signature.isThrowing
+    }
+
+    static func isObjCMessageEntry(_ callee: String) -> Bool {
+        ["objc_msgSend", "objc_msgSendSuper", "objc_msgSendSuper2",
+         "objc_msgSend_stret", "objc_msgSendSuper_stret", "objc_msgSendSuper2_stret",
+         "objc_msgSend_fpret", "objc_msgSend_fp2ret"].contains(callee)
+    }
+
+    static func hasKnownNonThrowingABIName(_ callee: String) -> Bool {
+        guard !callee.isEmpty, !callee.hasPrefix("sub_") else { return false }
+        return DisassembledFunction.isARCReferenceHelper(callee) || isObjCMessageEntry(callee)
+            || SDKCPrototypes.entry(callee) != nil || SwiftRuntimeSignatures.table[callee] != nil
+            || SwiftIntrinsicSignatures.table[callee] != nil
     }
 
     /// The abstract value in the register an indirect `blr`/`br`/pointer-auth
@@ -2057,7 +2086,9 @@ public struct ValueTracer: Sendable {
             // to a throwing callee (the demangled name carries ` throws`), so a C
             // or Objective-C call, where x21 is an ordinary callee-saved register
             // carrying a live value across the call, is untouched.
-            if call.throwsByName {
+            // A declared throws signature does not defeat an exact proof
+            // that this particular body hands the error register back.
+            if call.throwsByName && !call.provablyDoesNotThrow {
                 registers[.x(21)] = .unknown
             }
             // The same convention when the name cannot say. Zeroing x21 right
