@@ -115,7 +115,15 @@ Bool returns and two saved allocation pointers. All **468 CLI invocations**,
 four guarded SDK rerenders and ten five-app renders pass; paired app outputs
 are identical (maximum sampled 196 MB under a 2,000 MB guard).
 
-The original integration gate and publication are pending for this commit.
+The original integration gate independently rebuilt `23d7bb1`, passed the
+same **1,911 tests / 43 suites (959.261 s)** and pushed it and code `e0b608c`
+to `origin/dev`. Every reviewed output matches: **601 inputs in four views
+plus four SDK workloads**. Gate costs are **+1.48% instructions / +1.04%
+summed per-run physical peaks**, with every default budget passing without
+override. A fresh fetch confirms local dev and origin/dev agree.
+Hosted [run 44209378717](https://github.com/CamdenBopp/swiftdc/actions/runs/44209378717)
+at `23d7bb1` failed Toolchain (Swift 6.2.4 / Xcode 26.3); fixtures, build
+and the enforcing suite were skipped. This supplies no hosted test result.
 Hosted [baseline run 44124725391](https://github.com/CamdenBopp/swiftdc/actions/runs/44124725391)
 at `c095298` failed Toolchain (Swift 6.2.4 / Xcode 26.3); fixtures, build
 and tests were skipped. This supplies no hosted test result. Foreign C

@@ -13160,7 +13160,19 @@ Verification of the exact frozen source:
 
 Candidate release SHA256:
 `5b28d9206c36969bea5311bbb8f256104097d21de2276d54ec36c74cb8e1123c`.
-The original `Tools/integration-gate.sh --push` is pending for this slice.
+Publication follow-up: the original `Tools/integration-gate.sh --push`
+independently rebuilt `23d7bb192c57843917e1932d1ea64314dcb06375`, passed
+**1,911 tests / 43 suites (959.261 s)** and pushed it and code `e0b608c`
+to `origin/dev`. Independent release SHA256:
+`5224e05fd3c151d000a0687589cf6ce38f365cfca365c1907baaa57282d92339`.
+Every **601 inputs in each of four views** and all four SDK workload hashes
+match the reviewed release. All **2,408 positive cost pairs** pass default
+budgets without override: instructions **7,341.6G -> 7,450.6G (+1.48%)**;
+summed per-run physical peaks **22,439 -> 22,671 MB (+1.04%)**. A fresh
+fetch confirms local dev and origin/dev agree. Hosted
+[run 44209378717](https://github.com/CamdenBopp/swiftdc/actions/runs/44209378717)
+at `23d7bb1` failed Toolchain on Swift 6.2.4 / Xcode 26.3, with fixtures,
+build and enforcing suite skipped; it supplies no hosted test result.
 Hosted [baseline run 44124725391](https://github.com/CamdenBopp/swiftdc/actions/runs/44124725391)
 at `c095298` failed Toolchain (Swift 6.2.4 / Xcode 26.3), with fixtures,
 build and suite skipped; it supplies no hosted test result.
