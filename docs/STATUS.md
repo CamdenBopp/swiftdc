@@ -116,8 +116,16 @@ renders of the five original apps pass. The app changes are **129 line
 pairs / 133 inserted masks**, preserving surrounding calls and control text;
 maximum sampled footprint is **210 MB** under a **2,000 MB** guard.
 
-The original integration gate and publication are pending for this slice.
-The latest hosted [run 44209378717](https://github.com/CamdenBopp/swiftdc/actions/runs/44209378717)
+The original integration gate independently rebuilt `1635cbc`, passed
+**1,915 tests / 43 suites (945.388 s)** and pushed it and code `86054a1`
+to `origin/dev`. All **610 inputs in four views** and all four SDK workload
+hashes match the reviewed release. Gate costs are **+0.07% instructions /
++0.23% summed per-run physical peaks**, with every default budget passing
+without override. A fresh fetch confirmed agreement with origin/dev.
+Hosted [run 44219380730](https://github.com/CamdenBopp/swiftdc/actions/runs/44219380730)
+at `1635cbc` failed Toolchain on Swift 6.2.4 / Xcode 26.3; fixtures, build
+and the enforcing suite were skipped. It supplies no hosted test result.
+Earlier hosted [run 44209378717](https://github.com/CamdenBopp/swiftdc/actions/runs/44209378717)
 at `23d7bb1` failed Toolchain before fixtures/build/tests, so it supplies no
 hosted test result. Foreign C prototypes and other named runtime contracts,
 general RET/fallthrough reconstruction and values across awaits remain open.

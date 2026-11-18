@@ -13253,10 +13253,20 @@ Verification of the exact frozen source:
 
 Candidate release SHA256:
 `ce9529d865ec7c64b0107b1f9aceb7b656eafa8ea0bf4a9e023b6a3a647e06f3`.
-The original `Tools/integration-gate.sh --push` remains pending for this
-slice. Hosted [run 44209378717](https://github.com/CamdenBopp/swiftdc/actions/runs/44209378717)
-at `23d7bb1` failed Toolchain on Swift 6.2.4 / Xcode 26.3, with fixtures,
-build and suite skipped; it supplies no hosted test result for this fix.
+Publication follow-up: the original `Tools/integration-gate.sh --push`
+independently rebuilt `1635cbc32e30a4ded1c548e9ce84ff23b8d25ea0`, passed
+**1,915 tests / 43 suites (945.388 s)** and pushed it and code `86054a1`
+to `origin/dev`. Independent release SHA256:
+`30f595c522c8ad6916926ab8631569de2db3ff4e27c03cd55ade900a8269be39`.
+All **610 inputs in each of four views** and all four SDK workload hashes
+match the reviewed candidate. Structured SDK output retains the six reviewed
+store changes; both xrefs outputs remain unchanged against baseline. All
+**2,444 positive cost pairs** pass default budgets without override:
+instructions **7,453.8G -> 7,459.2G (+0.07%)**, summed per-run physical peaks
+**22,786 -> 22,838 MB (+0.23%)**. A fresh fetch confirmed agreement with
+origin/dev. Hosted [run 44219380730](https://github.com/CamdenBopp/swiftdc/actions/runs/44219380730)
+at `1635cbc` failed Toolchain on Swift 6.2.4 / Xcode 26.3, with fixtures,
+build and enforcing suite skipped; it supplies no hosted test result.
 
 **OPEN:** foreign C prototype arity/order/results/ownership and other named
 runtime contracts, general RET/fallthrough reconstruction and values carried
