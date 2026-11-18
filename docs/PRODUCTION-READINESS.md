@@ -13618,9 +13618,22 @@ the complete compiled fault/test matrix and each output-change class.
 Reviewed release SHA256:
 `7f5c2d078b9155d1dfbfdc32393dd667ae50c9af50f6c3c0745e825c1790e202`.
 
-**Publication pending:** the original integration gate must independently rebuild,
-test and compare this committed head before pushing. The previous projection-body
-gate and hosted toolchain failure remain historical evidence. **OPEN:** general
+The original integration gate independently rebuilt `877e613`, passed
+**1,966 tests / 43 suites (983.799 s)** and pushed it and code `3a51ab8` to
+`origin/dev`. Every output/exit pair across **663 inputs in four views** and
+all four SDK workload hashes matches the reviewed release. Gate costs are
+**7,583.6G -> 7,591.5G instructions (+0.10%)** and **24,040 -> 24,076 MB summed
+per-run physical peaks (+0.15%)**; all **2,656 paired cost rows** meet every
+default budget without override. Complete **1,075 public source / 802 product
+hash inventories** agree in main and gate, and a fresh fetch confirms the
+published head. Independent gate release SHA256:
+`6396b0d83af266954f1a3ea8f81dcbde98536ccab1b1cd4fe997ad1e74065b78`.
+Hosted [run 44320110986](https://github.com/CamdenBopp/swiftdc/actions/runs/44320110986)
+failed **Toolchain** on **Swift 6.2.4 / Xcode 26.3**. Fixtures, build and the
+enforcing suite were skipped; it supplies no hosted test result.
+The earlier projection-body gate and hosted toolchain failure remain historical.
+
+**OPEN:** general
 readonly/noncapture summaries, unknown receiver/layout recovery, other name-only
 call effects, general source ABI and incoming-x8 ownership, C widths,
 RET/fallthrough and values across awaits. Pinned Ghidra/entry measurements and

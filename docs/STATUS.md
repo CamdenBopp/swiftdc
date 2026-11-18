@@ -132,10 +132,20 @@ precision losses; Terminal, TextEdit and Chess are byte-identical. Maximum
 sampled footprint is **201 MB** under a **2,000 MB** guard. These checks measure
 vendor-binary output/reliability; app accuracy remains unmeasured.
 
-**Publication pending:** the original integration gate must independently rebuild,
-test and compare the committed head before pushing. The earlier gate and hosted
-CI outcome below remain historical. Pinned Ghidra/entry measurements and
-readiness/coverage percentages are unchanged. See the
+The original integration gate independently rebuilt `877e613`, passed
+**1,966 tests / 43 suites (983.799 s)** and pushed it with code `3a51ab8`
+to `origin/dev`. All **663 inputs in four views** and all four SDK workload
+hashes match the reviewed release. All **2,656 paired cost rows** meet every
+default budget without override: **+0.10% instructions / +0.15% summed physical
+peaks**. All **1,075 source / 802 product hashes** agree between main and gate;
+a fresh fetch confirmed remote agreement. Gate release SHA256:
+`6396b0d83af266954f1a3ea8f81dcbde98536ccab1b1cd4fe997ad1e74065b78`.
+Hosted [run 44320110986](https://github.com/CamdenBopp/swiftdc/actions/runs/44320110986)
+failed **Toolchain** on **Swift 6.2.4 / Xcode 26.3**. Fixtures, build and the
+enforcing suite were skipped; it supplies no hosted test result.
+The prior gate and hosted toolchain failure below remain historical. Pinned
+Ghidra/entry measurements and readiness/coverage percentages are unchanged.
+See the
 [engineering record](https://github.com/CamdenBopp/swiftdc/commit/3a51ab8f414ea2c80c3c8f4f4e1a10e4a55d455f)
 and [readiness follow-up](PRODUCTION-READINESS.md#2026-11-18-retain-frame-origins-of-projection-results).
 
