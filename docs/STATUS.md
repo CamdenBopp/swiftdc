@@ -89,7 +89,7 @@ Reproduce: `Tools/ghidra-compare/interface_oracle.py <swiftdc>
 <built-corpus>`. It covers symbols the compiler emits IR for; it does not
 cover results, bodies, or Objective-C methods (4 matched).
 
-## Hosted CI configuration: local verification
+## Hosted CI configuration and hosted verification
 
 At `7fb855dec2047b1e2c4d1dfa2375f22f7e1349dd`, hosted CI requests the documented `xcode-27`
 ARM64 preview image and explicitly selects the tested Xcode 27.1. The
@@ -117,13 +117,16 @@ The rebuilt release is byte-identical to the published baseline, SHA256
 The **1,152 public input / 862 fixture product hashes** match both clean
 trees, and an independent remote-head check confirms the push.
 
-**OPEN:** hosted fixture/build/enforcing-suite outcome. Actual
+**VERIFIED hosted execution at published `d69fff8`:** completed
 [run 44411756483](https://github.com/CamdenBopp/swiftdc/actions/runs/44411756483)
-acquired an `xcode-27` hosted runner; Select the tested Xcode and Toolchain
-passed; Fixtures and Build also passed. Enforcing suite is running.
-Completed logs and the full job result remain required; this is no hosted
-test pass. See [CI setup and image sources](CI.md). No decompilation result,
-pinned benchmark or readiness percentage changes.
+and its decoded job logs confirm **1,993 tests / 43 suites passing
+(2,253.679 s)** with fixture presence enforced. The `xcode-27` runner selected
+**Xcode 27.1 / Swift 6.4** on **arm64 macOS 27.0.1**, with **Go 1.27.4,
+7 GB memory and 36 GB free disk**. Toolchain, Fixtures, Build and Enforcing
+suite all completed successfully. This covers that published revision; the
+new 2,000-test candidate still requires its own publication gate and hosted
+result. See [CI setup and image sources](CI.md). No decompilation benchmark
+or readiness percentage changes.
 
 ## Latest local verification
 
@@ -179,11 +182,13 @@ with `Tools/blast-radius.sh <base> <new> <out> --real --perf`. The **1,159
 public input / 874 fixture product hashes** remained pinned throughout
 qualification. Reviewed release SHA256:
 `a302e4b9e1715beac48449094ef2ed92257237a453506f1da07f0e7ea977c01b`.
-The original integration gate and publication are pending. The existing
+The original integration gate and publication are pending. Completed
 hosted [run 44411756483](https://github.com/CamdenBopp/swiftdc/actions/runs/44411756483)
-at published `d69fff8` passed Toolchain, Fixtures and Build and is running
-its enforcing suite; it tests the prior 1,993-test revision, not this candidate.
-Publication waits for that run to finish because a newer push would cancel it.
+at published `d69fff8` passed **1,993 tests / 43 suites (2,253.679 s)** on
+**Xcode 27.1 / Swift 6.4**; the job and decoded logs were checked. That hosted
+result covers the prior revision. The current 2,000-test candidate requires
+its own publication gate and subsequent hosted result. The earlier run is
+finished, so publication can proceed without canceling it.
 
 Still open: other tail-result conversions (including differing widths and
 64-bit sign views), general Swift argument/entry/RET/fallthrough cases,

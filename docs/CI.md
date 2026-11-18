@@ -27,12 +27,14 @@ all 1,993 tests / 43 suites before that push; it is not a hosted CI pass.
 An earlier `macos-26` job remained queued without a runner for 50 minutes
 on 2026-11-13. The new
 [run 44411756483 at published d69fff8](https://github.com/CamdenBopp/swiftdc/actions/runs/44411756483)
-acquired an `xcode-27` runner. Select the tested Xcode and Toolchain passed;
-Fixtures and Build passed; Enforcing suite is running. The completed
-logs and full hosted job result still require observation. The original
-local integration gate independently passed 1,993 tests / 43 suites before
-this push, with all fixture/SDK outputs and all 2,896 paired cost rows
-unchanged. That local result does not replace the pending hosted tests.
+completed successfully. The decoded job logs confirm an `xcode-27` runner
+with Xcode 27.1 / Swift 6.4, arm64 macOS 27.0.1, Go 1.27.4, 7 GB memory and
+36 GB free disk. Toolchain, Fixtures and Build passed, followed by the full
+fixture-enforced **1,993 tests / 43 suites (2,253.679 s)**. Both the terminal
+job state and the logs were checked. The original local gate independently
+passed the same suite before pushing, with unchanged fixture/SDK outputs and
+all 2,896 paired cost rows. This hosted result covers published `d69fff8`;
+later revisions require their own run results.
 
 ## The environment
 
