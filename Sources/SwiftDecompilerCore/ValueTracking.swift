@@ -5346,6 +5346,12 @@ public struct ValueTracer: Sendable {
         return .binary(op, lhs, rhs)
     }
 
+    /// These are computed word values, not a source Bool atom whose incoming
+    /// upper bits may be unspecified. Consumers can read the complete 0/1.
+    static func isCompleteBooleanWord(_ value: AbstractValue) -> Bool {
+        fitsLowMask(value, mask: 1)
+    }
+
     /// A local range proof keeps width normalization idempotent without
     /// discarding masks on unconstrained arguments or arithmetic results.
     private static func fitsLowMask(_ value: AbstractValue, mask: UInt64) -> Bool {

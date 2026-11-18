@@ -1262,3 +1262,6 @@ python3 build-boxed-projection-contracts.py
 
 echo "==> projection results retain caller-memory aliases (projection_return_alias_*, C drivers -O0/-O2/-Os)"
 python3 build-projection-return-alias.py
+
+echo "==> C integer formals consume their declared bits (c_narrow_arguments.swift, -Onone/-O/-Osize)"
+python3 build-c-narrow-arguments.py

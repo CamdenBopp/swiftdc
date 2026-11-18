@@ -7993,7 +7993,7 @@ public struct Disassembler: Sendable {
     /// the function returns 0x47. An argument or call result is that type
     /// already, and an expression already masked (or sign-extended) to the
     /// width is left as it is.
-    static func narrowedResult(_ value: AbstractValue, type: String) -> AbstractValue {
+    static func narrowedResult(_ value: AbstractValue, type: String, includingAtoms: Bool = false) -> AbstractValue {
         let widths: [String: (bits: Int, signed: Bool)] = [
             "Swift.Int8": (8, true), "Swift.Int16": (16, true), "Swift.Int32": (32, true),
             "Swift.UInt8": (8, false), "Swift.UInt16": (16, false), "Swift.UInt32": (32, false),
@@ -8001,7 +8001,7 @@ public struct Disassembler: Sendable {
         guard let (bits, signed) = widths[type] else { return value }
         switch value {
         case .binary, .unary: break
-        default: return value
+        default: if !includingAtoms { return value }
         }
         let mask = (UInt64(1) << UInt64(bits)) - 1
         let shift = UInt64(64 - bits)
@@ -8019,6 +8019,75 @@ public struct Disassembler: Sendable {
         }
         if case .binary(.bitAnd, _, .immediate(let existing)) = value, existing <= mask { return value }
         return .binary(.bitAnd, inner, .immediate(mask))
+    }
+
+    /// A C integer formal reads only its declared low bits. A source atom
+    /// wider than that formal still needs truncation; an already typed atom
+    /// of the same width and signedness does not. Unproved physical bits
+    /// decline before producer-use collection, preserving the call itself.
+    static func cIntegerArgumentValue(
+        _ value: AbstractValue, type: String, arguments: [Int: ValueType]
+    ) -> AbstractValue {
+        let bits: Int
+        let signed: Bool
+        switch type {
+        case "Swift.Int8": (bits, signed) = (8, true)
+        case "Swift.Int16": (bits, signed) = (16, true)
+        case "Swift.Int32": (bits, signed) = (32, true)
+        case "Swift.UInt8": (bits, signed) = (8, false)
+        case "Swift.UInt16": (bits, signed) = (16, false)
+        case "Swift.UInt32": (bits, signed) = (32, false)
+        default: return value
+        }
+        // A computed comparison is a complete 0/1 word, as the tracer's
+        // width normalization and range proof also require. Its operands may
+        // remain opaque; that does not leave garbage above the result bit.
+        // A bare source Bool argument has no such physical-word guarantee.
+        if ValueTracer.isCompleteBooleanWord(value) { return value }
+        // Constants retain the typed literal path, including negative spelling.
+        if case .immediate = value { return value }
+        if case .argument(let index) = value,
+           arguments[index] == (signed ? .signedInteger(bits) : .unsignedInteger(bits)) {
+            return value
+        }
+        func knowsLowBits(_ value: AbstractValue, _ needed: Int, depth: Int = 0) -> Bool {
+            if needed == 0 { return true }
+            guard depth < 8 else { return false }
+            func knows(_ operand: AbstractValue, _ width: Int) -> Bool {
+                knowsLowBits(operand, width, depth: depth + 1)
+            }
+            switch value {
+            case .immediate: return true
+            case .argument(let index):
+                guard let type = arguments[index], type.category == .integer,
+                      let width = type.width else { return false }
+                return width >= needed
+            case .binary(let operation, _, _) where operation.isComparison:
+                return true // a computed 0/1 word also remains complete inside a mask or select
+            case .binary(.bitAnd, let inner, .immediate(let mask)):
+                let used = mask & (needed == 64 ? UInt64.max : (UInt64(1) << needed) - 1)
+                return knows(inner, 64 - used.leadingZeroBitCount)
+            case .binary(let op, let lhs, let rhs):
+                switch op {
+                case .add, .subtract, .multiply, .bitAnd, .bitOr, .bitXor:
+                    return knows(lhs, needed) && knows(rhs, needed)
+                case .shiftLeft, .shiftRight, .arithmeticShiftRight:
+                    guard case .immediate(let shift) = rhs, shift < 64 else { return false }
+                    return knows(lhs, op == .shiftLeft ? max(0, needed - Int(shift)) : min(64, needed + Int(shift)))
+                default: return false
+                }
+            case .unary(.negate, let inner), .unary(.bitwiseNot, let inner):
+                return knows(inner, needed)
+            case .select(let condition, let yes, let no):
+                return knows(condition, 64) && knows(yes, needed) && knows(no, needed)
+            default:
+                // In particular, a call's logical result does not prove its
+                // register's upper bits. C result widths remain independent.
+                return false
+            }
+        }
+        guard knowsLowBits(value, bits) else { return .unknown }
+        return narrowedResult(value, type: type, includingAtoms: true)
     }
 
     /// ABI precision applies only to already-proven SIMD seeds. It never
@@ -9747,6 +9816,7 @@ public struct Disassembler: Sendable {
         var argumentsByAddress: [UInt64: [AbstractValue]] = [:]
         /// Parameter types of the sites laid out from a signature.
         var laidOutTypes: [UInt64: [String]] = [:]
+        var cIntegerArgumentSites: Set<UInt64> = []
         /// Variadic sends whose variadic argument count is not provable: their
         /// fixed arguments render, followed by `…`.
         var unprovenVariadicSites: Set<UInt64> = []
@@ -10108,6 +10178,7 @@ public struct Disassembler: Sendable {
                 if !(laidOut + unplaced + following).isEmpty {
                     argumentsByAddress[address] = (laidOut + unplaced).map(sanitizeValue) + following
                     laidOutTypes[address] = slots.map(\.type) + unplaced.map { _ in "" } + followingTypes
+                    if cLayout != nil { cIntegerArgumentSites.insert(address) }
                 }
                 strategy = hasAsyncIsolationPrefix ? "async-signature-consensus"
                     : leadingSlots != nil ? "swift-leading" : cLayout == nil ? "swift-signature" : "c-declaration"
@@ -10209,6 +10280,7 @@ public struct Disassembler: Sendable {
                         $0 < values.count ? sanitizeValue(values[$0]) : .unknown
                     }
                     laidOutTypes[address] = types
+                    cIntegerArgumentSites.insert(address)
                     unprovenVariadicSites.insert(address)
                     strategy = "c-variadic"
                     continue
@@ -10532,6 +10604,8 @@ public struct Disassembler: Sendable {
         for (address, types) in laidOutTypes {
             guard let values = argumentsByAddress[address], values.count == types.count else { continue }
             argumentsByAddress[address] = zip(values, types).map { value, type in
+                let value = cIntegerArgumentSites.contains(address)
+                    ? Self.cIntegerArgumentValue(value, type: type, arguments: argumentTypes) : value
                 // Literal spelling is already supplied by the typed renderer;
                 // an immediate has no producer to consume here.
                 if case .immediate = value { return value }

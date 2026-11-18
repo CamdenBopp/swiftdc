@@ -80,3 +80,4 @@ Fixtures/Sample/named-buffer-*.ll
 Fixtures/Sample/.named-buffer-*/
 Fixtures/Sample/boxed-projection-*-oracle
 Fixtures/Sample/projection-return-alias-*-oracle
+Fixtures/Sample/c-narrow-arguments-*-oracle
