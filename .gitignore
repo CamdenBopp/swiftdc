@@ -70,3 +70,5 @@ Fixtures/Sample/bl-call-input-*-oracle
 Fixtures/Sample/plain-error-abi-*-oracle
 Fixtures/Sample/plain-error-abi-*.ll
 Fixtures/Sample/.plain-error-abi-*/
+
+Fixtures/Sample/compare-branch-width-*-oracle

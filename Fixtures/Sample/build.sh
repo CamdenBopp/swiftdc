@@ -1231,3 +1231,16 @@ $SWIFTC -Onone -parse-as-library -emit-library -module-name ImportedSelf importe
 $SWIFTC -O -parse-as-library -emit-library -module-name ImportedSelf imported_receiver.swift "$IMPORTED_RECEIVER_TMP/entry.o" -o libImportedReceiver.opt.dylib
 $SWIFTC -Osize -parse-as-library -emit-library -module-name ImportedSelf imported_receiver.swift "$IMPORTED_RECEIVER_TMP/entry.o" -o libImportedReceiver.size.dylib
 rm -rf "$IMPORTED_RECEIVER_TMP"
+
+
+echo "==> compare-and-branch reads w/x views of full-width results (compare_branch_width.s, C oracle -O0/-O2/-Os)"
+for COMPARE_BRANCH_LEVEL in O0 O2 Os; do
+    $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib compare_branch_width.s \
+        -Wl,-install_name,@rpath/libCompareBranchWidth.$COMPARE_BRANCH_LEVEL.dylib \
+        -o libCompareBranchWidth.$COMPARE_BRANCH_LEVEL.dylib
+    cp libCompareBranchWidth.$COMPARE_BRANCH_LEVEL.dylib libCompareBranchWidth.$COMPARE_BRANCH_LEVEL.stripped.dylib
+    strip -x libCompareBranchWidth.$COMPARE_BRANCH_LEVEL.stripped.dylib
+    $CLANG -arch arm64 -mmacosx-version-min=15.0 -$COMPARE_BRANCH_LEVEL compare_branch_width_native.c \
+        -L. -lCompareBranchWidth.$COMPARE_BRANCH_LEVEL -Wl,-rpath,@executable_path \
+        -o compare-branch-width-$COMPARE_BRANCH_LEVEL-oracle
+done

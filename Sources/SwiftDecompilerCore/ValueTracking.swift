@@ -3683,10 +3683,18 @@ public struct ValueTracer: Sendable {
             return value == .unknown ? nil : value
         }
         switch detail.id {
-        case AARCH64_INS_CBZ:
-            return operandValue(0).map { .binary(.equal, $0, .immediate(0)) }
-        case AARCH64_INS_CBNZ:
-            return operandValue(0).map { .binary(.notEqual, $0, .immediate(0)) }
+        case AARCH64_INS_CBZ, AARCH64_INS_CBNZ:
+            guard let operand = detail.operands.first,
+                  let register = operand.operand.register,
+                  register.kind == .gpr || register.kind == .zero,
+                  register.widthBits == 32 || register.widthBits == 64
+            else { return nil }
+            // A w operand tests only the low word of the tracked x register.
+            // Preserve that view in both published conditions and selects;
+            // reading the register map directly invents a whole-value test.
+            let value = source(operand, in: registers)
+            guard value != .unknown else { return nil }
+            return .binary(detail.id == AARCH64_INS_CBZ ? .equal : .notEqual, value, .immediate(0))
         case AARCH64_INS_TBZ, AARCH64_INS_TBNZ:
             guard let value = operandValue(0), detail.operands.count >= 2,
                   let bit = detail.operands[1].operand.immediateValue,

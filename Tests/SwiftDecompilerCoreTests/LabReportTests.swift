@@ -20,7 +20,9 @@ import Testing
         let probe = try await withStableDependencies { try await LabReport.report(path: consumed, function: "probeLevel") }
         #expect(probe.contains("→ sysctl  ; call x0=arg0 x1=2 x2=0 x3=0 x4=0 x5=0  ; layout c-declaration(6)"),
                 Comment(rawValue: probe))
-        #expect(probe.contains("cond (r@0x53c == 0)") || probe.contains("cond (r@"), Comment(rawValue: probe))
+        // The machine tests w0, so the report must retain its low-word view.
+        #expect(probe.range(of: #"cond \(\(r@0x[0-9a-f]+ & 0xffffffff\) == 0\)"#,
+                            options: .regularExpression) != nil, Comment(rawValue: probe))
     }
     let none = try await withStableDependencies { try await LabReport.report(path: path, function: "no such function zz") }
     #expect(none == "No function matches \"no such function zz\".\n")
