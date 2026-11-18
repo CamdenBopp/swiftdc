@@ -340,8 +340,11 @@ shape it excludes.
 - **A callee's async context is private to it.** Its caller allocates it but
   keeps no pointer into it, as an argument or anywhere else, so its slots
   change only through the callee's own stores and pointers the callee hands
-  out. `incomingLeaf` (async_call_effects.s) passes an Int that is a pointer
-  to the callee's slot 16 and renders `observe(7)` against native 11.
+  out. The original `incomingLeaf` counterexample (async_call_effects.s)
+  passes an Int pointing to the callee's slot 16: it rendered `observe(7)`
+  against native 11. `774ed5` now retains `observe(?)` instead of that stale
+  value (rechecked with this revision's frozen release); general context-slot
+  transport and opaque context identities remain open.
 - **Unescaped negative save slots are the function's own.** A store through
   an incoming pointer cannot reach them unless the frame's address escaped.
 - **Outlined code saves x21 where it writes it.** A chain of fragments
@@ -13876,7 +13879,77 @@ trees, and an independent remote-head check confirms the push.
 **OPEN:** hosted fixture/build/enforcing-suite outcome. Actual
 [run 44411756483](https://github.com/CamdenBopp/swiftdc/actions/runs/44411756483)
 acquired an `xcode-27` hosted runner; Select the tested Xcode and Toolchain
-passed, and Fixtures is running. Build and Enforcing suite are pending.
+passed; Fixtures and Build also passed. Enforcing suite is running.
 Completed logs and the full job result remain required; this is no hosted
 test pass. See [CI setup and image sources](CI.md). No decompilation result,
 pinned benchmark or readiness percentage changes.
+
+
+### 2026-11-18: retain converted integer results at Swift tail branches
+
+**FIXED locally for completeness; original gate/publication pending.**
+
+At `3385323e011e675f1c5bc97078b96110ead2a17e`, an ordinary Swift function or getter tail can retain
+its return when caller and callee use opposite signedness at the same
+8/16/32-bit width. The previous exact-type-spelling check omitted those
+returns. The existing physical-bit proof supplies the explicit mask or
+signed view; branch arguments never become the result, and no ABI,
+frame/context slot or extension seed is added.
+
+Own-source evidence at -Onone/-O/-Osize covers **120 selected unique
+export/nlist/function-start/raw-byte frames**, **six libraries and six native
+drivers**, and **3,846 native observations including controls**. All **24
+omitted optimized returns** now have explicit views; all **36 existing-return
+wrapper controls** remain byte-identical. Different-width ordinary call/RET
+wrappers are controls. Each selected wrapper is checked through all five
+public analysis APIs. All **344 existing test files and assertions remain
+byte-identical**; two files add seven test declarations. Six separate source
+faults compile and fail their intended regressions, with unaffected tests and
+controls green; exact restoration/rebuild is followed by **2,000 tests / 43
+suites passing (907.926 s)** with fixture presence enforced.
+
+Matched frozen releases cover **735 inputs x four views** and four SDK
+workloads. The complete delta is **48 fields in 24 functions across four
+new libraries**: 24 return annotations and 24 converted return statements.
+Structured/pseudo/listing each change 48 diff-side lines; JSON changes 96.
+Every changed JSON and text/listing output is reconstructed exactly from
+those approved fields and return insertions. All raw instructions, arguments,
+CFGs and function metadata remain fixed. Every other corpus output matches;
+all **5,880 render exits** match, including 35 header-checked preflight-decline
+pairs, and all eight SDK exits are zero. All four SDK hashes are unchanged.
+
+All **2,944 positive paired cost rows** meet every default cap without
+override: **7,796,073,720,617 -> 7,787,964,732,650 instructions (-0.104014%)**;
+**27,428,898,136 -> 27,280,790,520 bytes summed per-run physical peaks
+(-0.539969%)**. These qualify the cost budget; they are no speed/memory claim.
+All **572 CLI runs** pass (22 inputs x 13 paths x two releases): all new and
+changed inputs, legacy and named/stripped SDK controls. All 110 metadata/xrefs,
+286 diagnostic and 22 Lab pairs match. All 176 whole views match measurements,
+all 88 filtered comparisons match whole bodies, and Analyze/filtered changes
+map to approved fields. Four guarded SDK rerenders match measured hashes.
+Ten guarded renders of the original five apps retain all **84,833 function
+headers, bodies and order byte-for-byte**; source/diagnostic hashes match,
+maximum sampled footprint **211 MB under a 2,000 MB guard**. No source-grounded
+app/SDK accuracy claim or readiness percentage follows.
+
+Reproduce: `python3 build-swift-integer-tail-results.py`
+from `Fixtures/Sample` (or `Tools/fixtures.sh` for the complete cache);
+execute the six `Fixtures/Sample/narrow-integer-return-TailResults.*-oracle`
+and `…TailGetters.*-oracle` products; `swift build --build-tests`, then
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`. Compare frozen releases
+with `Tools/blast-radius.sh <base> <new> <out> --real --perf`. The **1,159
+public input / 874 fixture product hashes** remained pinned throughout
+qualification. Reviewed release SHA256:
+`a302e4b9e1715beac48449094ef2ed92257237a453506f1da07f0e7ea977c01b`.
+The original integration gate and publication are pending. The existing
+hosted [run 44411756483](https://github.com/CamdenBopp/swiftdc/actions/runs/44411756483)
+at published `d69fff8` passed Toolchain, Fixtures and Build and is running
+its enforcing suite; it tests the prior 1,993-test revision, not this candidate.
+Publication waits for that run to finish because a newer push would cancel it.
+
+Still open: other tail-result conversions (including differing widths and
+64-bit sign views), general Swift argument/entry/RET/fallthrough cases,
+C result widths, enum-bit qualification and values carried across awaits.
+Pinned scoring tables are not recomputed. The
+[engineering record](https://github.com/CamdenBopp/swiftdc/commit/3385323e011e675f1c5bc97078b96110ead2a17e)
+names each separately compiled fault and the regression seen red under it.

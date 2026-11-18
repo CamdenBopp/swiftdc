@@ -28,7 +28,7 @@ An earlier `macos-26` job remained queued without a runner for 50 minutes
 on 2026-11-13. The new
 [run 44411756483 at published d69fff8](https://github.com/CamdenBopp/swiftdc/actions/runs/44411756483)
 acquired an `xcode-27` runner. Select the tested Xcode and Toolchain passed;
-Fixtures is running, with Build and Enforcing suite pending. The completed
+Fixtures and Build passed; Enforcing suite is running. The completed
 logs and full hosted job result still require observation. The original
 local integration gate independently passed 1,993 tests / 43 suites before
 this push, with all fixture/SDK outputs and all 2,896 paired cost rows
