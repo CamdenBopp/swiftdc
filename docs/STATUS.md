@@ -125,16 +125,35 @@ five original apps pass with **byte-identical output**, retaining all
 **84,833 function headers and their order**; maximum sampled
 footprint is **195 MB** under a **2,000 MB** guard. This is output
 reliability, not source-grounded app accuracy. The final rebuilt release is
-byte-identical to the reviewed candidate. The original integration gate
-remains the publication check; this local record supplies no new hosted CI
-result.
+byte-identical to the reviewed candidate.
+
+The original integration gate independently rebuilt `7a7f43f`, passed
+**1,955 tests / 43 suites (994.975 s)** and pushed it and code
+`c0429a1` to `origin/dev`. All **658 inputs in four views** and all four
+SDK workload hashes match the reviewed release. Gate costs are
+**+0.71% instructions / +0.38% summed physical peaks**; all
+**2,636 paired cost rows** meet every default budget without override.
+All **1,071 source / 797 product hashes** agree in main and gate checkouts;
+a fresh fetch confirmed remote agreement. The independent gate release
+SHA256 is `dca3dbdd1d4728ddf053b558a8dc573da780ff2d4244ce7dfd41a4218175e1a4`.
+Hosted [run 44289424221](https://github.com/CamdenBopp/swiftdc/actions/runs/44289424221)
+failed Toolchain on **Swift 6.2.4 / Xcode 26.3**. Fixtures, build and the
+enforcing suite were skipped; it supplies no hosted test result.
+
+A historical check against Claude's `ff0e782` retains all **318 original
+Swift test files** and their named function declarations. **293 files are
+byte-identical**; the other **25** have reviewed setup/expectation changes,
+including explicit declines, FP views and positive binding/body evidence.
+No `@Test` or `@Suite` annotations were removed. Inspect the original-file
+changes with `git diff --diff-filter=M ff0e782..7a7f43f -- Tests`.
 
 The in-image near-shape helper's existing two-GP body-read projection is
 not a full source-formal ABI proof: its handwritten x9 input remains
-outside that projection. Other name-only call effects, general source ABI
-and incoming-x8 ownership, C widths, RET/fallthrough and values across
-awaits remain open. Pinned Ghidra/entry benchmarks and readiness/coverage
-percentages are not recomputed. See the
+outside that projection. Returned projection-pointer aliasing, other
+name-only call effects, general source ABI and incoming-x8 ownership, C
+widths, RET/fallthrough and values across awaits remain open. Pinned
+Ghidra/entry benchmarks and readiness/coverage percentages are not recomputed.
+See the
 [engineering record](https://github.com/CamdenBopp/swiftdc/commit/c0429a16395044d146ce382658186c73e59581d3)
 and [readiness follow-up](PRODUCTION-READINESS.md#2026-11-18-require-body-proof-for-boxed-existential-projection-effects).
 

@@ -13457,9 +13457,27 @@ five original apps pass with **byte-identical output**, retaining all
 **84,833 function headers and their order**; maximum sampled
 footprint is **195 MB** under a **2,000 MB** guard. This is output
 reliability, not source-grounded app accuracy. The final rebuilt release is
-byte-identical to the reviewed candidate. The original integration gate
-remains the publication check; this local record supplies no new hosted CI
-result.
+byte-identical to the reviewed candidate.
+
+The original integration gate independently rebuilt `7a7f43f`, passed
+**1,955 tests / 43 suites (994.975 s)** and pushed it and code
+`c0429a1` to `origin/dev`. All **658 inputs in four views** and all four
+SDK workload hashes match the reviewed release. Gate costs are
+**+0.71% instructions / +0.38% summed physical peaks**; all
+**2,636 paired cost rows** meet every default budget without override.
+All **1,071 source / 797 product hashes** agree in main and gate checkouts;
+a fresh fetch confirmed remote agreement. The independent gate release
+SHA256 is `dca3dbdd1d4728ddf053b558a8dc573da780ff2d4244ce7dfd41a4218175e1a4`.
+Hosted [run 44289424221](https://github.com/CamdenBopp/swiftdc/actions/runs/44289424221)
+failed Toolchain on **Swift 6.2.4 / Xcode 26.3**. Fixtures, build and the
+enforcing suite were skipped; it supplies no hosted test result.
+
+A historical check against Claude's `ff0e782` retains all **318 original
+Swift test files** and their named function declarations. **293 files are
+byte-identical**; the other **25** have reviewed setup/expectation changes,
+including explicit declines, FP views and positive binding/body evidence.
+No `@Test` or `@Suite` annotations were removed. Inspect the original-file
+changes with `git diff --diff-filter=M ff0e782..7a7f43f -- Tests`.
 
 **Corpus provenance:** the fresh fixture cache adds ten built products;
 an old auxiliary Python bytecode file is absent. 179 existing product hashes
@@ -13480,7 +13498,10 @@ Reviewed release SHA256: `aa1e2d858ea6a23d4459965bf37bc2add37a2107255b838513024f
 
 **OPEN:** the near-shape helper's unchanged two-GP body-read prefix is not
 full source ABI recovery; raw x9=41 supplies an additional nonstandard
-input. General source ABI and incoming-x8 ownership, other name-only call
-effects, C widths, RET/fallthrough and values across awaits remain open.
+input. Returned projection-pointer aliasing also remains open: readonly
+effects do not prove returned-pointer provenance. General source ABI and
+incoming-x8 ownership, other name-only call effects, C widths,
+RET/fallthrough and values across awaits remain open.
 Pinned Ghidra/entry measurements and readiness/coverage percentages are
-not recomputed. Publication and hosted CI must be recorded separately.
+not recomputed. The published local gate and hosted toolchain failure are recorded
+separately above.
