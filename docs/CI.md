@@ -25,9 +25,14 @@ and failed Toolchain before any fixtures, build or tests ran. The completed
 confirms this in its job logs. The original local integration gate passed
 all 1,993 tests / 43 suites before that push; it is not a hosted CI pass.
 An earlier `macos-26` job remained queued without a runner for 50 minutes
-on 2026-11-13. The `xcode-27` image and version selection are a new route;
-its actual scheduling, toolchain and suite result must be recorded after
-publication.
+on 2026-11-13. The new
+[run 44411756483 at published d69fff8](https://github.com/CamdenBopp/swiftdc/actions/runs/44411756483)
+acquired an `xcode-27` runner. Select the tested Xcode and Toolchain passed;
+Fixtures is running, with Build and Enforcing suite pending. The completed
+logs and full hosted job result still require observation. The original
+local integration gate independently passed 1,993 tests / 43 suites before
+this push, with all fixture/SDK outputs and all 2,896 paired cost rows
+unchanged. That local result does not replace the pending hosted tests.
 
 ## The environment
 

@@ -107,12 +107,23 @@ passes **1,993 tests / 43 suites (954.812 s)**. All **344 tracked test files**
 and all executable, fixture and package sources are unchanged. The **1,152
 public input hashes** remained fixed throughout that local qualification.
 
-**OPEN:** actual hosted runner acquisition, selected toolchain, fixture build
-and enforcing-suite outcome. The documented preview image and offline checks
-do not prove a hosted CI pass. The original integration gate is pending for
-this configuration commit; earlier local gate results remain historical.
-See [CI setup and image sources](CI.md). No decompilation result, pinned
-benchmark or readiness percentage changes.
+The original integration gate independently rebuilt and pushed `d69fff8`,
+passing **1,993 tests / 43 suites (939.996 s)**. All **723 inputs x four views**
+and four SDK workloads are unchanged. All **2,896 paired cost rows** pass the
+default caps without override: **7,717,056,592,175 instructions** and
+**27,034,322,280 bytes summed per-run physical peaks** on each side (0% change).
+The rebuilt release is byte-identical to the published baseline, SHA256
+`a37b9db488cf42e29251286de2eb001ac3652f883b5798b60f5bfbb6324fd717`.
+The **1,152 public input / 862 fixture product hashes** match both clean
+trees, and an independent remote-head check confirms the push.
+
+**OPEN:** hosted fixture/build/enforcing-suite outcome. Actual
+[run 44411756483](https://github.com/CamdenBopp/swiftdc/actions/runs/44411756483)
+acquired an `xcode-27` hosted runner; Select the tested Xcode and Toolchain
+passed, and Fixtures is running. Build and Enforcing suite are pending.
+Completed logs and the full job result remain required; this is no hosted
+test pass. See [CI setup and image sources](CI.md). No decompilation result,
+pinned benchmark or readiness percentage changes.
 
 ## Latest local verification
 
