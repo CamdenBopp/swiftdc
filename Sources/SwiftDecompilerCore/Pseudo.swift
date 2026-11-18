@@ -183,7 +183,7 @@ public extension DisassembledFunction {
         // first.
         if hideRuntime, let cast = swiftCastIdiom(callee: callee, arguments: rawArguments) { return cast }
         if hideRuntime, let literal = arrayLiteralPlaceholder(callee: callee) { return literal }
-        if hideRuntime, isRuntimeNoise(insn) || isGenericPlumbingCallee(callee) { return nil }
+        if hideRuntime, isRuntimeNoise(insn) || isGenericPlumbingCallee(insn) { return nil }
         let arguments = hideRuntime ? strippingGenericPlumbing(rawArguments) : rawArguments
         if let send = MessageSend(callee: callee, arguments: arguments, takesCommand: !insn.isDirectObjCMethod) {
             return send.rendered
@@ -1350,6 +1350,20 @@ public extension DisassembledFunction {
                 "outlined assign with copy of ", "outlined assign with take of ",
                 "outlined enum tag store of ", "__swift_assign_boxed_opaque_existential",
         ].contains(where: name.hasPrefix)
+    }
+
+    static func isBoxedExistentialProjectionName(_ callee: String) -> Bool {
+        callee.contains("project_boxed_opaque_existential")
+    }
+
+    static func isGenericPlumbingCallee(_ insn: Instruction) -> Bool {
+        guard let callee = calleeName(of: insn) else { return false }
+        return isGenericPlumbingCallee(callee, bodyProjectsBoxedExistential: insn.facts.bodyProjectsBoxedExistential)
+    }
+
+    static func isGenericPlumbingCallee(_ callee: String, bodyProjectsBoxedExistential: Bool) -> Bool {
+        if isBoxedExistentialProjectionName(callee) && !bodyProjectsBoxedExistential { return false }
+        return isGenericPlumbingCallee(callee)
     }
 
     static func isGenericPlumbingCallee(_ callee: String) -> Bool {

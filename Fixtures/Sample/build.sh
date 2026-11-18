@@ -1256,3 +1256,6 @@ python3 build-named-abi-contracts.py
 
 echo "==> named result conventions need provider evidence (named_buffer_*, all Swift levels)"
 python3 build-named-result-buffers.py
+
+echo "==> projection effects require actual helper bodies (boxed_projection_*, C drivers -O0/-O2/-Os)"
+python3 build-boxed-projection-contracts.py

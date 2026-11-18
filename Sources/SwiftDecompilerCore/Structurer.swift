@@ -1419,7 +1419,7 @@ struct ControlFlowStructure {
             return "isKnownUniquelyReferenced(\(rawArguments.first ?? "?"))"
         }
         if DisassembledFunction.isRuntimeNoise(insn)
-            || DisassembledFunction.isGenericPlumbingCallee(callee) { return nil }
+            || DisassembledFunction.isGenericPlumbingCallee(insn) { return nil }
         let arguments = DisassembledFunction.strippingGenericPlumbing(rawArguments)
         if let send = DisassembledFunction.MessageSend(
             callee: callee, arguments: arguments, takesCommand: !insn.isDirectObjCMethod) {

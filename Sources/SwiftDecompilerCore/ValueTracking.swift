@@ -998,7 +998,7 @@ public struct ValueTracer: Sendable {
         var values: Values { Values(state: self) }
     }
 
-    /// What a call's callee name proves, whatever the register state. The
+    /// What a call's immutable contracts prove, whatever the register state. The
     /// tracer revisits each call on every fixpoint lap and in every later
     /// pass; parsing the name out of the annotation each time was a quarter
     /// of call transfer on Clarc, so `analyze` builds these once per call.
@@ -1042,20 +1042,20 @@ public struct ValueTracer: Sendable {
         init(_ insn: Instruction) {
             self.init(callee: DisassembledFunction.calleeName(of: insn) ?? "",
                       arcIdentityContract: insn.facts.arcIdentityContract, bodyPreservesSwiftError: insn.facts.bodyPreservesSwiftError,
-                      nonThrowingABIContract: insn.facts.nonThrowingABIContract, namedABIContract: insn.facts.namedABIContract)
+                      nonThrowingABIContract: insn.facts.nonThrowingABIContract, namedABIContract: insn.facts.namedABIContract, bodyProjectsBoxedExistential: insn.facts.bodyProjectsBoxedExistential)
         }
 
         /// `knownArityApplies` is false for a call to an in-image function,
         /// whose name may be a library function's without its arity.
         init(callee: String, knownArityApplies: Bool = true, arcIdentityContract: Bool = false, bodyPreservesSwiftError: Bool = false,
-             nonThrowingABIContract: Bool = false, namedABIContract: Bool = false) {
+             nonThrowingABIContract: Bool = false, namedABIContract: Bool = false, bodyProjectsBoxedExistential: Bool = false) {
             self.callee = callee
             let applies = knownArityApplies
                 && (!DisassembledFunction.isARCReferenceHelper(callee) || arcIdentityContract)
             self.knownArityApplies = applies
             let namedABI = DisassembledFunction.isARCReferenceHelper(callee) ? arcIdentityContract : namedABIContract
             self.namedABIContract = namedABI
-            readsOnly = applies && ValueTracer.readOnlyPointerCallees.contains { callee.hasPrefix($0) }
+            readsOnly = bodyProjectsBoxedExistential
             let knownArity = applies ? DisassembledFunction.knownCArity(of: callee, namedABIContract: namedABI) : nil
             passedRegisters = knownArity.map { arity in
                 (0..<arity).map { Location.x($0) }
@@ -1070,8 +1070,8 @@ public struct ValueTracer: Sendable {
             let runtimeName = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
             returnsArgument = applies && arcIdentityContract && DisassembledFunction.returnsItsArgument(callee)
             retainedRegister = applies && arcIdentityContract ? ValueTracer.retainedRegister(runtimeName) : nil
-            writesNoFields = applies && (readsOnly || retainedRegister != nil
-                || ValueTracer.fieldPreservingRuntimeCalls.contains(runtimeName))
+            writesNoFields = readsOnly || (applies && (retainedRegister != nil
+                || ValueTracer.fieldPreservingRuntimeCalls.contains(runtimeName)))
             allocatesArray = callee.contains("_allocateUninitializedArray")
             returnsVoidByName = DisassembledFunction.splitSignature(callee)?.result == "()"
                 || DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == false
@@ -1114,16 +1114,17 @@ public struct ValueTracer: Sendable {
             let bodyPreservesSwiftError: Bool
             let nonThrowingABIContract: Bool
             let namedABIContract: Bool
+            let bodyProjectsBoxedExistential: Bool
         }
         private let store = Mutex<[Key: CallFacts]>([:])
 
         func facts(for callee: String, arcIdentityContract: Bool = false, bodyPreservesSwiftError: Bool = false,
-                   nonThrowingABIContract: Bool = false, namedABIContract: Bool = false) -> CallFacts {
+                   nonThrowingABIContract: Bool = false, namedABIContract: Bool = false, bodyProjectsBoxedExistential: Bool = false) -> CallFacts {
             let key = Key(callee: callee, arcIdentityContract: arcIdentityContract, bodyPreservesSwiftError: bodyPreservesSwiftError,
-                          nonThrowingABIContract: nonThrowingABIContract, namedABIContract: namedABIContract)
+                          nonThrowingABIContract: nonThrowingABIContract, namedABIContract: namedABIContract, bodyProjectsBoxedExistential: bodyProjectsBoxedExistential)
             if let hit = store.withLock({ $0[key] }) { return hit }
             let facts = CallFacts(callee: callee, arcIdentityContract: arcIdentityContract, bodyPreservesSwiftError: bodyPreservesSwiftError,
-                                  nonThrowingABIContract: nonThrowingABIContract, namedABIContract: namedABIContract)
+                                  nonThrowingABIContract: nonThrowingABIContract, namedABIContract: namedABIContract, bodyProjectsBoxedExistential: bodyProjectsBoxedExistential)
             store.withLock { $0[key] = facts }
             return facts
         }
@@ -1149,10 +1150,10 @@ public struct ValueTracer: Sendable {
                 if let target = insn.branchTarget, inImageTargets.contains(target), !DisassembledFunction.hasNamedABIContract(insn) {
                     calls[insn.address] = CallFacts(callee: callee, knownArityApplies: false,
                                                   arcIdentityContract: insn.facts.arcIdentityContract, bodyPreservesSwiftError: insn.facts.bodyPreservesSwiftError,
-                                                  nonThrowingABIContract: insn.facts.nonThrowingABIContract, namedABIContract: insn.facts.namedABIContract)
+                                                  nonThrowingABIContract: insn.facts.nonThrowingABIContract, namedABIContract: insn.facts.namedABIContract, bodyProjectsBoxedExistential: insn.facts.bodyProjectsBoxedExistential)
                 } else {
                     calls[insn.address] = cache?.facts(for: callee, arcIdentityContract: insn.facts.arcIdentityContract, bodyPreservesSwiftError: insn.facts.bodyPreservesSwiftError,
-                                                       nonThrowingABIContract: insn.facts.nonThrowingABIContract, namedABIContract: insn.facts.namedABIContract)
+                                                       nonThrowingABIContract: insn.facts.nonThrowingABIContract, namedABIContract: insn.facts.namedABIContract, bodyProjectsBoxedExistential: insn.facts.bodyProjectsBoxedExistential)
                         ?? CallFacts(insn)
                 }
             }
@@ -1736,14 +1737,6 @@ public struct ValueTracer: Sendable {
     /// the same for `get throws(E)`). Compiler-emitted value-witness helpers
     /// (`outlined copy of`, `outlined destroy of`, …) and metadata accessors
     /// cannot throw.
-    /// Callees that read through the frame addresses they receive and never
-    /// write them, by name prefix: the projection serves every witness-table
-    /// count (`…_existential_0`, `_1`, `_1Tm`), and recognised by its body in
-    /// a stripped binary it is `__swift_project_boxed_opaque_existential`.
-    private static let readOnlyPointerCallees: [String] = [
-        "__swift_project_boxed_opaque_existential",
-    ]
-
     private static let nonThrowingHelperPrefixes = [
         "outlined ", "merged outlined ", "type metadata accessor for ",
         "lazy protocol witness table accessor for ",

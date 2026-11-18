@@ -78,3 +78,4 @@ Fixtures/Sample/.named-abi-contracts-*/
 Fixtures/Sample/named-buffer-*-oracle
 Fixtures/Sample/named-buffer-*.ll
 Fixtures/Sample/.named-buffer-*/
+Fixtures/Sample/boxed-projection-*-oracle

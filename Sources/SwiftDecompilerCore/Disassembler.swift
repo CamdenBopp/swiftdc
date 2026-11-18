@@ -201,6 +201,9 @@ public struct Instruction: Sendable {
         /// The exact in-image body preserves x21, including every outgoing
         /// transfer. No source ABI, arity or memory contract is implied.
         var bodyPreservesSwiftError: Bool = false
+        /// The exact target body matches a load-only boxed-existential
+        /// projection. Its spelling or provider supplies no memory proof.
+        var bodyProjectsBoxedExistential: Bool = false
 
         public init(
             exit: Exit? = nil,
@@ -950,7 +953,8 @@ public struct Disassembler: Sendable {
             metadataNames = metadata.unique
             Self.mergeMetadataFolds(metadata.folded, into: &foldedByAddress, labels: labelByAddress)
         }
-        metadataNames.merge(recognizedHelperNames(in: machO, boundaries: boundaries, labels: labelByAddress)) { a, _ in a }
+        let helpers = recognizedHelpers(in: machO, boundaries: boundaries, labels: labelByAddress)
+        metadataNames.merge(helpers.names) { a, _ in a }
         let foldSuspects = self.foldSuspects(in: machO, labels: labelByAddress, metadataNames: metadataNames,
                                              folded: foldedByAddress, objcIndex: objcIndex)
         let referenceFolds = foldedByAddress.merging(foldSuspects) { a, _ in a }
@@ -1105,6 +1109,7 @@ public struct Disassembler: Sendable {
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
             arcFunctions: arcFunctionReferences(in: machO),
             nonThrowingABIFunctions: namedABIReferences,
+            boxedExistentialProjectionBodies: helpers.boxedExistentialProjections,
             fileRanges: fileRanges,
             foldedCandidates: referenceFolds,
             witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
@@ -1425,7 +1430,8 @@ public struct Disassembler: Sendable {
             metadataFolds = metadata.folded
         }
         let sortedBoundaries = boundaries.sorted()
-        metadataNames.merge(recognizedHelperNames(in: machO, boundaries: sortedBoundaries, labels: labelByAddress)) { a, _ in a }
+        let helpers = recognizedHelpers(in: machO, boundaries: sortedBoundaries, labels: labelByAddress)
+        metadataNames.merge(helpers.names) { a, _ in a }
         var foldedByAddress = foldedSymbolAddresses(in: machO)
         Self.mergeMetadataFolds(metadataFolds, into: &foldedByAddress, labels: labelByAddress)
         let foldSuspects = self.foldSuspects(in: machO, labels: labelByAddress, metadataNames: metadataNames,
@@ -1494,6 +1500,7 @@ public struct Disassembler: Sendable {
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
             arcFunctions: arcFunctionReferences(in: machO),
             nonThrowingABIFunctions: nonThrowingABIFunctionReferences(in: machO),
+            boxedExistentialProjectionBodies: helpers.boxedExistentialProjections,
             fileRanges: FileBackedRanges(standalone: machO),
             foldedCandidates: referenceFolds,
             witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
@@ -1721,7 +1728,8 @@ public struct Disassembler: Sendable {
             metadataNames = metadata.unique
             metadataFolds = metadata.folded
         }
-        metadataNames.merge(recognizedHelperNames(in: machO, boundaries: boundaries.sorted(), labels: labelByAddress)) { a, _ in a }
+        let helpers = recognizedHelpers(in: machO, boundaries: boundaries.sorted(), labels: labelByAddress)
+        metadataNames.merge(helpers.names) { a, _ in a }
 
         // Addresses the linker folded multiple distinct symbols onto (see
         // `foldedSymbolAddresses`): computed from the symbol table, so it is the
@@ -1767,6 +1775,7 @@ public struct Disassembler: Sendable {
             cacheReader: machO.fullCache.map { CacheReader(full: $0) },
             arcFunctions: arcFunctionReferences(in: machO),
             nonThrowingABIFunctions: nonThrowingABIFunctionReferences(in: machO),
+            boxedExistentialProjectionBodies: helpers.boxedExistentialProjections,
             fileRanges: FileBackedRanges(standalone: machO),
             foldedCandidates: referenceFolds,
             witnessTables: foldedByAddress.isEmpty ? [] : witnessTables(in: machO),
@@ -3572,16 +3581,25 @@ public struct Disassembler: Sendable {
         }
     }
 
-    /// Unnamed in-image functions whose whole body is one of `helperShapes`,
-    /// by start address. Only spans of a shape's length are decoded.
-    func recognizedHelperNames(
+    struct RecognizedHelpers {
+        var names: [UInt64: String] = [:]
+        var boxedExistentialProjections: Set<UInt64> = []
+    }
+
+    /// Names remain a fallback for unnamed bodies. A projection's memory
+    /// contract also checks named candidates: a symbol is not that proof.
+    func recognizedHelpers(
         in machO: MachOFile, boundaries: [UInt64], labels: [UInt64: String]
-    ) -> [UInt64: String] {
+    ) -> RecognizedHelpers {
         let byLength = Dictionary(grouping: Self.helperShapes, by: { UInt64($0.body.count * 4) })
         let stubs = symbolStubNames(in: machO)
         let sections = codeSections(in: machO)
-        var names: [UInt64: String] = [:]
-        for (index, start) in boundaries.enumerated() where labels[start] == nil {
+        var result = RecognizedHelpers()
+        for (index, start) in boundaries.enumerated() {
+            let namedProjection = labels[start].map {
+                Self.stripLeadingUnderscore($0).hasPrefix("__swift_project_boxed_opaque_existential")
+            } ?? false
+            guard labels[start] == nil || namedProjection else { continue }
             guard let section = CodeSection.containing(start, in: sections) else { continue }
             let stop = min(index + 1 < boundaries.count ? boundaries[index + 1] : section.range.upperBound,
                            section.range.upperBound)
@@ -3589,10 +3607,22 @@ public struct Disassembler: Sendable {
             for (length, shapes) in byLength where stop - start >= length && stop - start < length + 16 {
                 let body = Self.normalizedBody(
                     capstoneInstructions(in: machO, span: (start, start + length)), start: start, stubs: stubs)
-                if let shape = shapes.first(where: { $0.body == body }) { names[start] = shape.name }
+                if let shape = shapes.first(where: { $0.body == body }) {
+                    if labels[start] == nil { result.names[start] = shape.name }
+                    if shape.name == "__swift_project_boxed_opaque_existential" {
+                        result.boxedExistentialProjections.insert(start)
+                    }
+                }
             }
         }
-        return names
+        return result
+    }
+
+    /// Presentation names are still added only where no symbol names the body.
+    func recognizedHelperNames(
+        in machO: MachOFile, boundaries: [UInt64], labels: [UInt64: String]
+    ) -> [UInt64: String] {
+        recognizedHelpers(in: machO, boundaries: boundaries, labels: labels).names
     }
 
     static func mergeMetadataFolds(
@@ -4432,6 +4462,7 @@ public struct Disassembler: Sendable {
                 resolver.arcIdentityContract(at: $0, named: callee)
             } ?? false
             facts.bodyPreservesSwiftError = insn.branchTarget.map(resolver.bodyPreservesSwiftError(at:)) ?? false
+            facts.bodyProjectsBoxedExistential = insn.branchTarget.map(resolver.bodyProjectsBoxedExistential(at:)) ?? false
             facts.namedABIContract = insn.branchTarget.map {
                 resolver.namedABIContract(at: $0, named: callee)
             } ?? false
@@ -4814,6 +4845,7 @@ public struct Disassembler: Sendable {
             facts.namedABIContract = resolver.namedABIContract(for: value, named: resolved.name)
             facts.nonThrowingABIContract = ValueTracer.hasKnownNonThrowingABIName(resolved.name) && facts.namedABIContract
             facts.bodyPreservesSwiftError = resolver.bodyPreservesSwiftError(for: value)
+            facts.bodyProjectsBoxedExistential = resolver.bodyProjectsBoxedExistential(for: value)
             let protocolWitness = protocolWitnessCall(value, site: insn.address)
             if let witness = protocolWitness, witness.name == resolved.name, let signature = witness.signature {
                 facts.witnessRequirement = signature
@@ -4873,12 +4905,22 @@ public struct Disassembler: Sendable {
         var arcFunctions: [UInt64: RuntimeFunctionReference] = [:]
         /// Validated import identities for the no-Swift-error ABI proof.
         var nonThrowingABIFunctions: [UInt64: RuntimeFunctionReference] = [:]
+        /// Exact entry addresses whose complete projection body was checked.
+        var boxedExistentialProjectionBodies: Set<UInt64> = []
         private var swiftErrorPreservingBodies: Set<UInt64> = []
 
         func withSwiftErrorBodyProofs(_ facts: [UInt64: CalleeRegisterFacts]) -> Self {
             var resolver = self
             resolver.swiftErrorPreservingBodies = Set(facts.compactMap { $0.value.bodyPreservesSwiftError ? $0.key : nil })
             return resolver
+        }
+
+        func bodyProjectsBoxedExistential(at target: UInt64) -> Bool {
+            boxedExistentialProjectionBodies.contains(target)
+        }
+
+        func bodyProjectsBoxedExistential(for value: AbstractValue) -> Bool {
+            fixedFunctionTarget(for: value).map(bodyProjectsBoxedExistential(at:)) ?? false
         }
 
         func bodyPreservesSwiftError(at target: UInt64) -> Bool {
@@ -8859,6 +8901,7 @@ public struct Disassembler: Sendable {
         let originalNonThrowingABIContracts = Set(function.instructions.filter { $0.facts.nonThrowingABIContract }.map(\.address))
         let originalNamedABIContracts = Set(function.instructions.filter { DisassembledFunction.hasNamedABIContract($0) }.map(\.address))
         let originalSwiftErrorBodyProofs = Set(function.instructions.filter { $0.facts.bodyPreservesSwiftError }.map(\.address))
+        let originalProjectionBodyProofs = Set(function.instructions.filter { $0.facts.bodyProjectsBoxedExistential }.map(\.address))
         let resolvedControlFlow = annotateIndirectControlFlowTargets(
             in: function, targets: analysis.indirectControlFlowTargets,
             resolver: resolver, selfTypeName: selfTypeName, vtableIndex: vtableIndex,
@@ -8928,6 +8971,7 @@ public struct Disassembler: Sendable {
         let resolvedNonThrowingABIContracts = Set(function.instructions.filter { $0.facts.nonThrowingABIContract }.map(\.address))
         let resolvedNamedABIContracts = Set(function.instructions.filter { DisassembledFunction.hasNamedABIContract($0) }.map(\.address))
         let resolvedSwiftErrorBodyProofs = Set(function.instructions.filter { $0.facts.bodyPreservesSwiftError }.map(\.address))
+        let resolvedProjectionBodyProofs = Set(function.instructions.filter { $0.facts.bodyProjectsBoxedExistential }.map(\.address))
         var resolvedNamedABIChanges = resolvedNamedABIContracts.symmetricDifference(originalNamedABIContracts)
         if !resolvedNamedABIChanges.isEmpty, !tracer.stackProbeSlots.isEmpty {
             // The first trace already used these GOT slots' special stack-probe
@@ -8955,6 +8999,7 @@ public struct Disassembler: Sendable {
         }
         if !resolvedVoidCalls.isEmpty || resolvedARCCalls || resolvedNamedDirectReturns
             || resolvedSwiftErrorBodyProofs != originalSwiftErrorBodyProofs
+            || resolvedProjectionBodyProofs != originalProjectionBodyProofs
             || resolvedNonThrowingABIContracts != originalNonThrowingABIContracts
             || !resolvedNamedABIChanges.isEmpty {
             tracer.voidCallSites = resolvedVoidCalls
@@ -9059,6 +9104,7 @@ public struct Disassembler: Sendable {
         // tracer resolved, which may land on an in-image body (`blr x8`
         // into `twice(long)`), nor an in-image callee with a summary.
         let namedABISites = Set(function.instructions.filter { DisassembledFunction.hasNamedABIContract($0) }.map(\.address))
+        let projectionBodySites = Set(function.instructions.filter { $0.facts.bodyProjectsBoxedExistential }.map(\.address))
         let unprovenARCSites = Set(function.instructions.lazy.filter { insn in
             guard insn.controlFlow == .call || insn.controlFlow == .branch
                     || insn.controlFlow == .conditionalBranch else { return false }
@@ -9076,8 +9122,11 @@ public struct Disassembler: Sendable {
                         || Self.cFormatVariadics[callee] != nil)
                         && DisassembledFunction.knownLanguageArity(of: callee) == nil
                 } == true
+            let unprovenProjection = !projectionBodySites.contains(insn.address) && callTargets[insn.address] == nil
+                && DisassembledFunction.calleeName(of: insn).map(DisassembledFunction.isBoxedExistentialProjectionName) == true
             return (mnemonic == "bl" || mnemonic == "b")
                 && DisassembledFunction.calleeName(of: insn).map(Self.isUndeclaredCSymbol) == true
+                || unprovenProjection
                 || (unboundDeclaration && (insn.controlFlow == .call || insn.controlFlow == .branch
                                           || insn.controlFlow == .conditionalBranch))
                 || (unprovenARCSites.contains(insn.address) && callTargets[insn.address] == nil)
@@ -12537,7 +12586,8 @@ public struct Disassembler: Sendable {
                   // A uniqueness predicate is a value read at this call, not
                   // a fresh query to repeat after a reference-count change.
                   (!isRuntimeNoise(callee, at: site) || DisassembledFunction.isUniquenessCheck(callee)),
-                  !DisassembledFunction.isGenericPlumbingCallee(callee),
+                  !DisassembledFunction.isGenericPlumbingCallee(callee,
+                    bodyProjectsBoxedExistential: projectionBodySites.contains(site)),
                   DisassembledFunction.arrayLiteralPlaceholder(callee: callee) == nil,
                   DisassembledFunction.castPassthroughIndex(of: callee) == nil,
                   // Rendered as `a == b` by renderBoolean before any binding is
