@@ -13841,3 +13841,31 @@ gap; they do not expand the public 702-observation denominator.
 Pinned Ghidra/entry measurements and readiness/coverage percentages stay fixed.
 See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/3ba928e1387e58ad1a4b9c173a78b50e9c51a01b)
 for the exact compiled fault-to-test mapping.
+
+
+### 2026-11-18: select the tested toolchain on the hosted preview image
+
+**FIXED for configuration; hosted execution remains OPEN.**
+
+At `7fb855dec2047b1e2c4d1dfa2375f22f7e1349dd`, hosted CI requests the documented `xcode-27`
+ARM64 preview image and explicitly selects the tested Xcode 27.1. The
+previous `macos-15` route failed Toolchain with Swift 6.2.4 / Xcode 26.3
+in [run 44400919902](https://github.com/CamdenBopp/swiftdc/actions/runs/44400919902),
+so fixtures, build and tests were skipped. The optional self-hosted route,
+Swift 6.4 minimum and all fixture/build/test enforcement remain unchanged.
+
+Local verification: actionlint 1.7.12 passes; executing the actual old/new
+selector commands under isolated mock commands selects 27.2 / 27.1
+respectively. Parsed workflow comparison preserves every other step.
+After `Tools/ci/environment.sh`, `Tools/fixtures.sh` and
+`swift build --build-tests`, `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`
+passes **1,993 tests / 43 suites (954.812 s)**. All **344 tracked test files**
+and all executable, fixture and package sources are unchanged. The **1,152
+public input hashes** remained fixed throughout that local qualification.
+
+**OPEN:** actual hosted runner acquisition, selected toolchain, fixture build
+and enforcing-suite outcome. The documented preview image and offline checks
+do not prove a hosted CI pass. The original integration gate is pending for
+this configuration commit; earlier local gate results remain historical.
+See [CI setup and image sources](CI.md). No decompilation result, pinned
+benchmark or readiness percentage changes.

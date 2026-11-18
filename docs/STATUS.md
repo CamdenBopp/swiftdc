@@ -89,6 +89,31 @@ Reproduce: `Tools/ghidra-compare/interface_oracle.py <swiftdc>
 <built-corpus>`. It covers symbols the compiler emits IR for; it does not
 cover results, bodies, or Objective-C methods (4 matched).
 
+## Hosted CI configuration: local verification
+
+At `7fb855dec2047b1e2c4d1dfa2375f22f7e1349dd`, hosted CI requests the documented `xcode-27`
+ARM64 preview image and explicitly selects the tested Xcode 27.1. The
+previous `macos-15` route failed Toolchain with Swift 6.2.4 / Xcode 26.3
+in [run 44400919902](https://github.com/CamdenBopp/swiftdc/actions/runs/44400919902),
+so fixtures, build and tests were skipped. The optional self-hosted route,
+Swift 6.4 minimum and all fixture/build/test enforcement remain unchanged.
+
+Local verification: actionlint 1.7.12 passes; executing the actual old/new
+selector commands under isolated mock commands selects 27.2 / 27.1
+respectively. Parsed workflow comparison preserves every other step.
+After `Tools/ci/environment.sh`, `Tools/fixtures.sh` and
+`swift build --build-tests`, `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`
+passes **1,993 tests / 43 suites (954.812 s)**. All **344 tracked test files**
+and all executable, fixture and package sources are unchanged. The **1,152
+public input hashes** remained fixed throughout that local qualification.
+
+**OPEN:** actual hosted runner acquisition, selected toolchain, fixture build
+and enforcing-suite outcome. The documented preview image and offline checks
+do not prove a hosted CI pass. The original integration gate is pending for
+this configuration commit; earlier local gate results remain historical.
+See [CI setup and image sources](CI.md). No decompilation result, pinned
+benchmark or readiness percentage changes.
+
 ## Latest local verification
 
 At `3ba928e1387e58ad1a4b9c173a78b50e9c51a01b`, narrow Swift integer returns use their declared signed or
