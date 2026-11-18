@@ -111,6 +111,7 @@ public struct Instruction: Sendable {
     public var thenThrows: Bool { factBox?.facts.thenThrows ?? false }
     /// `facts.statement`.
     public var statement: Statement? { factBox?.facts.statement }
+    var callBeforeReturn: String? { factBox?.facts.callBeforeReturn }
     /// `facts.awaitBinding`.
     public var awaitBinding: String? { factBox?.facts.awaitBinding }
     /// `facts.indirectJumpTarget`.
@@ -136,6 +137,9 @@ public struct Instruction: Sendable {
         /// For an exit: what it does (`return …`, `throw …`,
         /// `swift-exit=…`). Nil for anything that is not an exit.
         public var exit: Exit?
+        /// A tail call still executes when its typed result must decline.
+        /// Spelled beside `call-before-return: …`, before the normal exit.
+        var callBeforeReturn: String? = nil
         /// For a call whose result is named once rather than spelled at
         /// every use: the name and the call as it is spelled (`let r0 = …`).
         public var binding: Binding?
@@ -7990,9 +7994,9 @@ public struct Disassembler: Sendable {
     /// at the type's signedness: the caller reads no more. Rendered whole,
     /// `add16(_ x: UInt16) -> UInt16 { x &+ 72 }` read `return (((arg0 &
     /// 0xffffffff) + 72) & 0xffffffff)`, which is 0x10047 for 0xffff where
-    /// the function returns 0x47. An argument or call result is that type
-    /// already, and an expression already masked (or sign-extended) to the
-    /// width is left as it is.
+    /// the function returns 0x47. Existing masks and sign extensions stay
+    /// idempotent. Legacy callers leave atoms unchanged; ABI-qualified scalar
+    /// views opt into them only after proving the available physical bits.
     static func narrowedResult(_ value: AbstractValue, type: String, includingAtoms: Bool = false) -> AbstractValue {
         let widths: [String: (bits: Int, signed: Bool)] = [
             "Swift.Int8": (8, true), "Swift.Int16": (16, true), "Swift.Int32": (32, true),
@@ -8028,6 +8032,24 @@ public struct Disassembler: Sendable {
     static func cIntegerArgumentValue(
         _ value: AbstractValue, type: String, arguments: [Int: ValueType]
     ) -> AbstractValue {
+        integerScalarValue(value, type: type, arguments: arguments)
+    }
+
+    /// A source scalar view may consume only the physical bits its operands
+    /// prove. Additional atom types must describe the producing ABI, not the
+    /// consumer's desired type; in particular a narrow result has no implied
+    /// extension into the rest of its register.
+    static func integerScalarValue(
+        _ value: AbstractValue, type: String, arguments: [Int: ValueType],
+        atomType: (AbstractValue) -> ValueType? = { _ in nil }
+    ) -> AbstractValue {
+        func knownType(_ atom: AbstractValue) -> ValueType? {
+            switch atom {
+            case .argument(let index): return arguments[index]
+            case .callResult, .awaitResult, .selfFieldValue, .argumentField: return atomType(atom)
+            default: return nil
+            }
+        }
         let bits: Int
         let signed: Bool
         switch type {
@@ -8046,8 +8068,7 @@ public struct Disassembler: Sendable {
         if ValueTracer.isCompleteBooleanWord(value) { return value }
         // Constants retain the typed literal path, including negative spelling.
         if case .immediate = value { return value }
-        if case .argument(let index) = value,
-           arguments[index] == (signed ? .signedInteger(bits) : .unsignedInteger(bits)) {
+        if knownType(value) == (signed ? .signedInteger(bits) : .unsignedInteger(bits)) {
             return value
         }
         func knowsLowBits(_ value: AbstractValue, _ needed: Int, depth: Int = 0) -> Bool {
@@ -8058,8 +8079,8 @@ public struct Disassembler: Sendable {
             }
             switch value {
             case .immediate: return true
-            case .argument(let index):
-                guard let type = arguments[index], type.category == .integer,
+            case .argument, .callResult, .awaitResult, .selfFieldValue, .argumentField:
+                guard let type = knownType(value), type.category == .integer,
                       let width = type.width else { return false }
                 return width >= needed
             case .binary(let operation, _, _) where operation.isComparison:
@@ -8076,6 +8097,11 @@ public struct Disassembler: Sendable {
                     return knows(lhs, op == .shiftLeft ? max(0, needed - Int(shift)) : min(64, needed + Int(shift)))
                 default: return false
                 }
+            case .unary(.bitPattern(let width), _):
+                // The tracer has already projected the FP register to this
+                // exact bit pattern. The integer expression has zero upper
+                // bits even when a narrower physical FP result did not.
+                return [16, 32, 64].contains(width)
             case .unary(.negate, let inner), .unary(.bitwiseNot, let inner):
                 return knows(inner, needed)
             case .select(let condition, let yes, let no):
@@ -11830,10 +11856,97 @@ public struct Disassembler: Sendable {
         // The demangled result type, when it names a no-payload enum whose cases
         // this image publishes — so an immediate tag renders as `Type.case`.
         let returnTypeName: String? = Self.swiftReturnTypeName(of: function)
+        let returnsNarrowInteger: Bool = returnTypeName.map {
+            let type = TypeInference.classify($0)
+            return type.category == .integer && [8, 16, 32].contains(type.width ?? 0)
+        } ?? false
+
+        func integerReturnAtomType(_ value: AbstractValue) -> ValueType? {
+            if case .awaitResult(let ordinal) = value {
+                guard let info = function.asyncFunclet, let parent = info.parent else { return nil }
+                let resumes = info.chain.filter { address in
+                    guard let origin = asyncIndex.funclets[address] else { return false }
+                    return origin.parent == parent && origin.ordinal == ordinal && origin.kind == .awaitReturn
+                }
+                guard resumes.count == 1, let resume = resumes.first,
+                      Self.awaitedResultRegister(into: resume, index: asyncIndex) == "x0",
+                      let callee = asyncIndex.suspension(into: resume)?.1.calleeName,
+                      let type = Self.swiftReturnTypeName(forDemangledName: callee)
+                else { return nil }
+                let classified = TypeInference.classify(type)
+                return classified.category == .integer ? classified : nil
+            }
+            if case .argumentField(let argument, let offset) = value {
+                // These atoms already denote an exact whole load or an
+                // existing by-value entry seed. Partial class loads never
+                // become argumentField atoms in the tracer.
+                guard let map = argumentFieldMaps[argument] ?? classArgumentFieldMaps[argument],
+                      let field = map.fields.first(where: { $0.offset == offset }),
+                      (1...8).contains(field.bytes),
+                      case .success(.whole(let name, let mangled)) = map.lookup(offset: offset, bytes: field.bytes)
+                else { return nil }
+                let type = map.fieldTypeNames[name] ?? (mangled == "Si" ? "Swift.Int" : mangled == "Su" ? "Swift.UInt" : "")
+                let classified = TypeInference.classify(type)
+                guard classified.category == .integer, classified.width == field.bytes * 8 else { return nil }
+                return classified
+            }
+            if case .selfFieldValue(let offset) = value {
+                guard let fieldMap else { return nil }
+                let widths = selfFieldReadWidths[offset] ?? []
+                let width: Int
+                if widths.count == 1, let readWidth = widths.first {
+                    width = readWidth
+                } else if widths.isEmpty, case .swiftValueInstance(let seeds) = entry,
+                          seeds.contains(where: { key, seed in
+                              guard key.hasPrefix("x"), let register = Int(key.dropFirst()) else { return false }
+                              return (0..<8).contains(register) && seed == value
+                          }), let field = fieldMap.fields.first(where: { $0.offset == offset }) {
+                    // The existing entry convention already supplied this exact
+                    // scalar field; do not create a register or a field seed.
+                    width = field.bytes
+                } else {
+                    return nil
+                }
+                guard (1...8).contains(width),
+                      case .success(let hit) = fieldMap.lookup(offset: offset, bytes: width)
+                else { return nil }
+                let name: String, mangled: String, isPart: Bool
+                switch hit {
+                case .whole(let fieldName, let fieldType):
+                    (name, mangled, isPart) = (fieldName, fieldType, false)
+                case .part(let fieldName, let fieldType, _, _):
+                    (name, mangled, isPart) = (fieldName, fieldType, true)
+                case .spans: return nil
+                }
+                let type = fieldMap.fieldTypeNames[name] ?? (mangled == "Si" ? "Swift.Int" : mangled == "Su" ? "Swift.UInt" : "")
+                let classified = TypeInference.classify(type)
+                guard classified.category == .integer,
+                      let field = fieldMap.fields.first(where: { $0.name == name && $0.offset <= offset && offset - $0.offset < $0.bytes }),
+                      classified.width == field.bytes * 8
+                else { return nil }
+                // A partial integer-field read denotes the raw byte slice the
+                // renderer names, not the whole containing integer. Only the
+                // bytes actually read are available to a later conversion.
+                return isPart ? .unsignedInteger(width * 8) : classified
+            }
+            guard case .callResult(let site) = value,
+                  !multiWordResultSites.contains(site), !nonScalarObjCResultSites.contains(site),
+                  let callee = calleeByAddress[site],
+                  Self.callResultBank(of: callee, enumCaseIndex: enumCaseIndex,
+                      classTypeIndex: classTypeIndex, cache: callResultBanks) == .integer,
+                  let type = Self.swiftReturnTypeName(forDemangledName: callee)
+            else { return nil }
+            let classified = TypeInference.classify(type)
+            return classified.category == .integer ? classified : nil
+        }
 
         func typedReturnValue(_ rawValue: AbstractValue) -> AbstractValue {
             let value = sanitizeValue(rawValue)
             guard let returnTypeName else { return value }
+            if returnsNarrowInteger {
+                return Self.integerScalarValue(value, type: returnTypeName,
+                    arguments: argumentTypes, atomType: integerReturnAtomType)
+            }
             return Self.narrowedResult(Self.floatingPointValue(value, type: returnTypeName), type: returnTypeName)
         }
 
@@ -11887,12 +12000,13 @@ public struct Disassembler: Sendable {
                         && access.storedValue.map(sanitizeValue) == value
                 }
                 .max(by: { $0.key < $1.key })?.value
-            if let matchingStore,
+            let projected = returnsNarrowInteger ? typedReturnValue(value) : value
+            if let matchingStore, (!returnsNarrowInteger || projected == value),
                let name = fieldName(at: matchingStore.offset, bytes: matchingStore.bytes) {
                 return fieldPath(name)
             }
             if returnTypeName != nil {
-                return renderValue(typedReturnValue(value), depth: 0)
+                return renderValue(returnsNarrowInteger ? projected : typedReturnValue(value), depth: 0)
             }
             return renderValue(value, depth: 0)
         }
@@ -12602,7 +12716,7 @@ public struct Disassembler: Sendable {
                   let register = functionReturnRegister {
             for insn in function.instructions where isReturn(insn) && normalReturnIsProven(at: insn.address) && !throwExits.contains(insn.address) {
                 (register == .floating ? analysis.exitFloatValues : analysis.exitValues)[insn.address]
-                    .map { countDirectUses($0, at: insn.address) }
+                    .map { countDirectUses(returnsNarrowInteger ? typedReturnValue($0) : $0, at: insn.address) }
             }
         }
         // A String returned whole from a call uses that call, so one with an
@@ -12628,7 +12742,9 @@ public struct Disassembler: Sendable {
         }
         for address in asyncReturns where normalReturnIsProven(at: address) && !throwExits.contains(address) {
             let value = asyncReturnRegister == .floating ? analysis.exitFloatValues[address] : analysis.exitValues[address]
-            if asyncReturnRegister != nil, let value { countDirectUses(value, at: address) }
+            if asyncReturnRegister != nil, let value {
+                countDirectUses(returnsNarrowInteger ? typedReturnValue(value) : value, at: address)
+            }
         }
         // A single use may inline only inside the same basic block without
         // crossing another call, a memory access, or an unknown instruction.
@@ -12891,6 +13007,7 @@ public struct Disassembler: Sendable {
             // Every other fact is set beside its note. A fact the passes
             // before this one proved (a self dispatch) is kept.
             var facts = insn.facts
+            facts.callBeforeReturn = nil
 
             // A `self` field access: the differentiator. `ldp x19, x20, [x20,
             // #0x20]` inside Dog.breed.getter is a 16-byte read of self.breed.
@@ -12951,9 +13068,20 @@ public struct Disassembler: Sendable {
                 // is there exactly as for a `bl`: `b C.me` from a method of C
                 // is `return me(self: self)`, and without it read
                 // `return C.me()`, a call with no receiver.
-                noteExit(.normal(callExpression(
+                let call = callExpression(
                     callee: callee, values: argumentsByAddress[insn.address] ?? [], site: insn.address,
-                    selfText: selfValueBySite[insn.address].map { renderValue($0, depth: 0) })))
+                    selfText: selfValueBySite[insn.address].map { renderValue($0, depth: 0) })
+                let raw = AbstractValue.callResult(insn.address)
+                let projected = returnsNarrowInteger ? typedReturnValue(raw) : raw
+                if returnsNarrowInteger, projected != raw {
+                    if projected == .unknown {
+                        facts.callBeforeReturn = call
+                        sourceNotes.append("call-before-return: \(call)")
+                    }
+                    noteExit(.normal(renderReturnValue(raw, before: insn.address)))
+                } else {
+                    noteExit(.normal(call))
+                }
             }
             if isObjCNonVoid, insn.controlFlow == .return, let field = twoWordFieldReturn(at: insn.address) {
                 noteExit(.normal(field))

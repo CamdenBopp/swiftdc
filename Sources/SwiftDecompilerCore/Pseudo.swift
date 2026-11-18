@@ -129,10 +129,12 @@ public extension DisassembledFunction {
             return pseudoStatement(of: base, hideRuntime: hideRuntime).map { "\($0)\nthrow ?" } ?? "throw ?"
         }
         if insn.isTrap { return "trap()" }
-        // An exit's statement comes ahead of every note. The only note that
-        // reads as a statement and is noted ahead of an exit is a field
-        // write, which is a store, never an exit.
-        if let exit = insn.exit { return exit.statement }
+        // An unproved tail result still executes its call. Keep that typed
+        // effect before the exit; other exit statements precede ordinary notes.
+        if let exit = insn.exit {
+            if let call = insn.callBeforeReturn { return "\(call)\n\(exit.statement)" }
+            return exit.statement
+        }
         // The statement (a field write, a yield, an executor hop, `self =
         // …`) is noted ahead of the binding, so it wins.
         if let statement = insn.statement { return statement.text }

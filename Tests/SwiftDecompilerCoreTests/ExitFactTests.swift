@@ -96,6 +96,20 @@ private func parsedFieldRead(_ annotation: String?) -> String? {
 /// `pseudoStatement` as it read the notes before the facts, with the notes
 /// split outside literals: the oracle the fact-based one must agree with.
 private func textStatement(of insn: Instruction) -> String? {
+    // Independently read the effect preceding a tail exit. Its typed fact is
+    // checked separately below; it must not supply this text oracle.
+    if let call = parsedNote(insn.annotation, after: "call-before-return: ") {
+        let rest = notes(of: insn.annotation)?.filter { !$0.hasPrefix("call-before-return: ") }.joined(separator: "  ")
+        var facts = insn.facts
+        facts.callBeforeReturn = nil
+        let base = Instruction(
+            address: insn.address, text: insn.text, annotation: rest,
+            controlFlow: insn.controlFlow, branchTarget: insn.branchTarget,
+            callArguments: insn.callArguments, callSelf: insn.callSelf,
+            resultConsumed: insn.resultConsumed, sourceType: insn.sourceType, detail: insn.detail,
+            calleeDisplayName: insn.calleeDisplayName, callee: .kept(insn.callee), facts: facts)
+        return textStatement(of: base).map { "\(call)\n\($0)" }
+    }
     if let notes = notes(of: insn.annotation), notes.contains(DisassembledFunction.thenThrowNote) {
         let rest = notes.filter { $0 != DisassembledFunction.thenThrowNote }.joined(separator: "  ")
         var facts = insn.facts
@@ -141,6 +155,8 @@ private func textStatement(of insn: Instruction) -> String? {
                     if fact != noted { mismatches.append("\(at): \(kind) \(fact), noted \(noted)") }
                 }
                 let annotation = insn.annotation
+                check("callBeforeReturn", insn.callBeforeReturn,
+                      parsedNote(annotation, after: "call-before-return: "), present: insn.callBeforeReturn != nil)
                 check("exit", insn.exit, parsedExit(annotation), present: insn.exit != nil)
                 check("binding", insn.binding, parsedBinding(annotation), present: insn.binding != nil)
                 check("thenThrows", insn.thenThrows,
