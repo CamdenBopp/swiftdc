@@ -91,6 +91,79 @@ cover results, bodies, or Objective-C methods (4 matched).
 
 ## Latest local verification
 
+At `3ba928e1387e58ad1a4b9c173a78b50e9c51a01b`, narrow Swift integer returns use their declared signed or
+unsigned 8/16/32-bit view after proving the available physical bits. Existing
+argument, field, call-result and qualified awaited-result facts supply that
+proof; no new ABI or async-slot seed is created. Unproved C results decline
+while retaining their call, including tail exits.
+
+Own-source evidence covers **45 exported/function-start/raw-byte entries at
+-Onone/-O/-Osize**, **54 fixture products** and **702 native observations**
+(453 conversion observations and 249 controls). Twenty refuted return
+instances now show an explicit view; three refuted signed-to-unsigned C
+wrapper results now decline with their calls retained. Existing getter and
+partial-memory views are controls. The address-only API's existing Osize
+outlined-helper decline remains pinned. This is no general ABI coverage or
+native async correctness claim.
+
+The rebuilt enforcing suite passes **1,993 tests / 43 suites (1,021.366 s)**.
+All **342 original test files remain**: 341 byte-identical, with the annotation
+oracle extended by 16 added lines and no original assertion removed. Sixteen
+new tests include **12 regression guards each observed red under compiled
+faults** and four controls. **27 independently compiled faults** are rejected;
+the four controls stay green throughout. Exact source restoration rebuilds
+and passes all 30 focused tests. All **1,152 public inputs / 862 fixture
+products** stay fixed through qualification and review.
+
+Matched frozen releases over **723 inputs in four views plus four SDK
+workloads** yield **2,896 positive paired cost rows**: **+0.056923% instructions /
++0.198652% summed per-run physical peaks**. Every default limit passes without
+override. All **5,784 render exits** match, including **35 unchanged preflight
+decline pairs independently checked against raw headers**. All eight SDK
+workload runs exit zero. Three SDK workload output pairs are identical; the
+Syntax structured change is one enum getter precision loss, described below.
+
+All **23 changed corpus inputs / 71 functions / 158 JSON fields** are reviewed.
+Candidate JSON and every changed listing, pseudo and structured line
+reconstruct exactly from the classified changes. Raw instructions, arguments,
+blocks and function metadata stay fixed. The costs include 36 C wrapper
+return declines and three SDK unknown-result references; nine SDK witnesses
+gain explicit same-width signed-to-unsigned views. The indirect calls remain
+visible. Independent SDK evidence checks **18 nlist/function-start frames /
+3,007 raw instruction words**. Named/stripped SDK text matches. Separately,
+`CompilerSwiftSyntax.Keyword.rawValue.getter : UInt8` changes `(self & 255)`
+to `?` because enum-self bit width is unproved. This is a precision cost,
+not a refutation of its old value. Independent symbol/start/raw checks bind
+its two instructions (ldrb/ret) to ten guarded filtered/Lab runs; both
+structured bodies match measured output and raw Lab facts stay identical.
+
+All **1,742 CLI runs** pass (67 inputs, 13 commands, two releases). All 335
+metadata/xrefs pairs, 67 Lab pairs and 871 diagnostic pairs match. All 536
+whole views match their measured renders, all 268 filtered comparisons match
+whole bodies, and all Analyze/filtered changes map to approved fields.
+An additional 48 filtered runs cover every changed SDK function. Four guarded
+SDK structured rerenders match measured hashes. Ten guarded renders of
+Clarc/GoodLinks/Terminal/TextEdit/Chess retain all **84,833 function headers,
+bodies and order byte-for-byte**; all original app hashes and diagnostics
+match. Maximum sampled footprint is **211 MB under a 2,000 MB guard**.
+No source-grounded SDK/app accuracy claim or readiness percentage follows.
+
+Reproduce: `Tools/fixtures.sh`; execute the 27
+`Fixtures/Sample/narrow-integer-return-*-oracle` binaries; rebuild with
+`swift build --build-tests`, then
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`. Compare matched frozen
+releases with `Tools/blast-radius.sh <base> <new> <out> --real --perf`.
+Reviewed candidate SHA256:
+`879cd1118b45598489c2209d89bc4463a873fcaecceef583930ce5a27018f81a`.
+The original integration gate and a new hosted CI result remain pending;
+local qualification is not a hosted test result.
+
+Still open: exact C result widths, enum-bit qualification, differing-Swift-result
+tail completeness, general Swift argument/entry/RET/fallthrough cases and
+values carried across awaits. Pinned scoring tables are not recomputed.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/3ba928e1387e58ad1a4b9c173a78b50e9c51a01b)
+for the compiled fault-to-test mapping.
+
 At `9ed9748`, qualified C declaration arguments read their declared signed
 or unsigned 8/16/32-bit value instead of an entire register. Wide Swift scalar
 inputs receive explicit truncation/sign interpretation; unavailable physical

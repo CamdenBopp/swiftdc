@@ -13720,3 +13720,111 @@ argument/RET narrowing, incoming-x8 ownership and values across awaits.
 Pinned Ghidra/entry benchmarks and readiness/coverage percentages are unchanged.
 See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/9ed974813e44b84da368f40adeb8627cabce43bf)
 for the exact compiled fault-to-test mapping.
+
+## 2026-11-18: qualify narrow Swift integer return views
+
+**FIXED in the proved subset (`3ba928e1387e58ad1a4b9c173a78b50e9c51a01b`):** signed/unsigned 8/16/32-bit
+Swift results consume only their declared bits. A bare optimized RET that
+rendered `arg0` for Int64-to-Int8 now exposes the required signed view; stores,
+selects and known producers use the same proof before rendering and producer
+consumption. Field widths come from existing exact reads or entry seeds.
+Already-qualified awaited results retain only their proved result bits; no
+new async frame/context/argument/result seed is added. A result with unproved
+physical bits declines. A C tail result retains its call before `return ?`
+through a typed fact, independent of annotation text.
+
+Own-source fixtures at **-Onone/-O/-Osize** supply **54 products / 45 exported,
+LC_FUNCTION_STARTS-bounded, raw-byte-checked entries / 702 native observations**
+(453 conversion observations and 249 controls). Twenty old return instances
+are refuted and now projected; three old C atomic wrapper views are refuted
+and now decline while preserving their call. Getter and partial-load outputs
+are controls, not newly refuted values. The initial Int64 value-self shape
+had no supported GP entry; the reduced WordBox uses Int and an existing
+proved convention. The address-only Osize outlined-helper decline remains
+unchanged; it is not counted as corrected. Analysis-only seams cover 24
+synchronous/asynchronous call-result cases and 12 qualified awaited-width
+cases. Numeric conversions cover 288 cases. None establishes native async ABI
+coverage or updates the pinned entry/accuracy measurements.
+
+The full rebuilt enforcing suite passes **1,993 tests / 43 suites
+(1,021.366 s)**. All **342 original test files remain**: 341 byte-identical;
+ExitFactTests has 16 added lines for the independent call-before-return
+oracle, retaining every original line/assertion. Two new files add 16 tests:
+**12 regression guards each seen red under compiled faults**, four controls.
+All **27 independently compiled faults** are rejected, the four controls stay
+green in each, and the extended oracle is red under a dropped tail fact.
+Exact source restoration rebuilds and passes all 30 focused tests. All
+**1,152 public inputs and 862 fixture products** remain fixed during review.
+
+Matched releases against the published C-argument behavior use **723 inputs
+x four views plus four SDK workloads = 2,896 positive paired cost rows**.
+Instructions retired: **7,702,334,181,464 -> 7,706,718,572,682 (+0.056923%)**.
+Summed per-run physical peaks: **26,878,893,960 -> 26,932,289,488 bytes
+(+0.198652%)**. Every default per-input/global cap passes without override.
+All **5,784 render exits** match; 35 identical preflight-decline pairs are
+independently checked against raw headers and remain declines. All eight SDK
+workload runs exit zero; three paired hashes match, with one Syntax structured
+precision loss below. All four guarded structured rerenders match their
+individual measured hashes.
+
+The exhaustive public delta review covers **23 inputs / 71 functions / 158
+fields** (74 annotations, 84 statements): 20 native-refuted return views,
+three refuted C views declined with their calls retained, 36 conservative C
+result declines, nine SDK same-width unsigned views, and three SDK unknown
+result references declined while retaining their indirect calls. Applying
+the fields reconstructs candidate JSON exactly. All structured (181), pseudo
+(181), listing (148) and JSON (300) diff-side lines reconstruct from the same
+classification. Raw instructions, arguments, block/CFG/function metadata
+stay fixed. The three empty annotations becoming absent account for six
+listing-side lines. Independent SDK checks cover **18 nlist/function-start
+frames and 3,007 raw instruction words**, including nine direct calls to
+same-width signed producers and three preserved indirect calls. Named and
+stripped SDK text bytes match; no native SDK accuracy correction is claimed.
+
+**OPEN (measured precision cost):** `CompilerSwiftSyntax.Keyword.rawValue.getter
+: Swift.UInt8` changes `(self & 255)` to `?`. The new proof does not qualify
+an enum-self atom's physical integer width. This is not a native refutation
+of the old output. Its symbol, function start and two raw instruction words
+(ldrb/ret) agree with ten guarded filtered/Lab runs. Both structured bodies
+match measured output and raw Lab facts remain identical. Reproduce on the
+installed host `libSwiftSyntax.dylib`:
+`swiftdc disasm <host>/libSwiftSyntax.dylib -f 'Keyword.rawValue.getter' --structured`.
+C result code `i` also lacks exact width/signedness and can mean a pointer;
+no C result type is guessed from its spelling. Existing correct C result
+renders can therefore become explicit declines; recovering those requires
+qualified result-width evidence.
+
+All **1,742 CLI runs** pass (67 inputs x 13 commands x two releases).
+All 335 metadata/xrefs pairs, 67 Lab pairs and 871 stderr pairs match;
+536 whole-view outputs match measured renders, 268 filtered comparisons
+match whole bodies, and every Analyze/filtered delta maps to approved fields.
+An additional 48 filtered runs cover all 12 changed SDK functions. All ten
+guarded original-app renders pass with **84,833 function headers, bodies and
+order byte-identical**, unchanged input hashes and matched diagnostics.
+Maximum sampled footprint is **211 MB under a 2,000 MB guard**. No new
+source-grounded app accuracy or readiness claim follows.
+
+Reproduce with `Tools/fixtures.sh`, the 27
+`Fixtures/Sample/narrow-integer-return-*-oracle` executables,
+`swift build --build-tests`, then
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`. Build both releases
+with `swift build -c release --scratch-path .build-release` and compare using
+`Tools/blast-radius.sh <base> <new> <out> --real --perf`.
+Reviewed baseline SHA256:
+`49c17af2630176679118565e82c9a5e6d983e1a5f1dfb7e2c9d893e85b897877`.
+Reviewed candidate SHA256:
+`879cd1118b45598489c2209d89bc4463a873fcaecceef583930ce5a27018f81a`.
+The original integration gate and a new hosted CI result are still pending;
+local qualification supplies no hosted test result.
+
+**OPEN:** differing-Swift-result tails, general Swift argument/entry/RET/
+fallthrough cases, C result widths, enum-bit qualification and values carried
+across awaits. A separate own-source reduction of
+`UInt8(bitPattern: signedProducer(x))` shows a B-only optimized Swift body
+whose old/current output omits the return: `scalarTailReturnSites` still
+requires identical Swift result spellings. The reduced native checks (24)
+and three symbol/start/raw frames corroborate that separate completeness
+gap; they do not expand the public 702-observation denominator.
+Pinned Ghidra/entry measurements and readiness/coverage percentages stay fixed.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/3ba928e1387e58ad1a4b9c173a78b50e9c51a01b)
+for the exact compiled fault-to-test mapping.
