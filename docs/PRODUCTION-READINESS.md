@@ -13498,10 +13498,130 @@ Reviewed release SHA256: `aa1e2d858ea6a23d4459965bf37bc2add37a2107255b838513024f
 
 **OPEN:** the near-shape helper's unchanged two-GP body-read prefix is not
 full source ABI recovery; raw x9=41 supplies an additional nonstandard
-input. Returned projection-pointer aliasing also remains open: readonly
-effects do not prove returned-pointer provenance. General source ABI and
+input. The returned projection-pointer follow-up is recorded below at
+`3a51ab8`; readonly effects alone do not prove returned-pointer provenance.
+General source ABI and
 incoming-x8 ownership, other name-only call effects, C widths,
 RET/fallthrough and values across awaits remain open.
 Pinned Ghidra/entry measurements and readiness/coverage percentages are
 not recomputed. The published local gate and hosted toolchain failure are recorded
 separately above.
+
+
+## 2026-11-18: retain frame origins of projection results
+
+**FIXED (`3a51ab8`):** an exact readonly projection can return its caller's
+container/payload address. A later write through that opaque result left the
+pre-write frame value live: `projectionAliasS1B0M1` rendered
+`projectionAliasConsumeWord(7)` while its native result is 42. The result now
+retains latent MAY origins and the consumer declines the stale value.
+
+The new typed state metadata belongs to the opaque producer. It captures the
+inline container and a frame-backed first-word box header before the call,
+joining possible lower bounds and widening unsupported/partial provenance.
+Canonical alignment adds 16..256 bytes. Copies and spills keep producer
+identity; joins union metadata before handling lost values. Unknown arithmetic
+or a lost alias retains conservative escape reach. Direct writes and decoded
+literal-store calls invalidate the shared frame owner independently of saved
+register boundaries. The fixture includes a boxed payload preceding its
+container with a saved word between header and payload.
+
+A fully decoded literal-store body cannot capture its input pointer. Physical
+transport across a logical result boundary retains MAY reach on the new
+producer, with whole-frame fallback when that transport falls out of the model.
+Exact returned-pointer values, general identity-return contracts and complete
+source arity remain unproved. Ignored results and unrelated getpid calls retain
+unescaped locals; an unrelated word and a different producer stay intact.
+
+The own-source fixture has **48 callers / 144 native observations**, repeated
+at C-driver O0/O2/Os. The fixed assembly bodies exercise two helper shapes;
+these counts do not establish three Swift lowering levels. Named/stripped
+images contain **70 wrong known caller-image results** at the published
+`7a7f43f` baseline; all 70 now decline. **26 correct controls remain unchanged**.
+Independent LLVM evidence checks 840 equal named/stripped instruction-byte
+records, both helper bodies, consumer/identity bodies and the saved-word layout.
+All 256 alignment-byte outcomes lie in 16..256.
+
+All **340 pre-existing Swift test files remain byte-identical**. Add **eleven
+tests**: ten regression tests each observed red under compiled faults, plus
+one native/raw/import control. **22 independently compiled faults** fail while
+the native control stays green. Each batch ends with exact canonical source
+restoration, a rebuild and green tests. One separate whole-frame retagging
+coarsening stays green; it is excluded from rejected-fault evidence and supplies
+no precision proof at that boundary. The fresh fixture-enforced suite passes
+**1,966 tests / 43 suites in 922.508 s**.
+
+Matched frozen releases over **663 inputs in four views plus four SDK workloads**
+give **2,656 paired cost rows**: **7,583.6G -> 7,584.7G instructions (+0.01%)**,
+**24,040 -> 23,929 MB summed per-run physical peaks (-0.46%)**. Every default
+per-input/global budget passes without override. All **5,304 render exits**
+match; the **35 expected preflight-decline pairs** remain identical and are
+independently checked against raw headers. Those declines are kept outside
+successful-decompilation claims.
+
+Every fixture difference is classified: **12 inputs / 80 functions / 436 JSON
+fields** (171 annotations, 150 statements, 99 argument elements, four argument
+arrays and twelve inferred indirect targets). The new fixture accounts for
+210 fields. The other **226 fields in ten existing inputs are conservative
+precision losses** after a projected pointer may escape: metadata/witness
+reloads, vectors, receivers, result aliases and saved returns lose proof. Sample
+variants retire three inferred witness targets each; StrippedFold loses a
+metadata/witness prefix; the existential oracle declines a spilled return after
+destruction; parser diagnostics loses vector/self/result aliases; the debug
+sample keeps raw stores formerly folded into array arguments. These former
+values are not labelled native-refuted errors. Restoring useful precision needs
+stronger readonly/noncapture proofs.
+
+All **342 listing / 288 structured / 286 pseudo / 832 JSON diff-side lines**
+are accounted for. Pseudo suppresses the same builtin string constructor in
+both versions. Applying the 436 fields reconstructs candidate JSON exactly;
+function/block/CFG metadata and other instruction data stay identical, while
+twelve inferred BLR target facts are explicitly retired. Named/stripped raw
+code bytes agree. The current cache has **802 products**, adding five with no
+removals; 181 existing hashes changed on rebuilding. Both releases use the same
+current corpus. The earlier hand-built O0 oracle differs from the qualification
+copy only in UUID/signature bytes; exact qualification products supply the final
+native/raw evidence. All **1,075 source / 802 product hashes** stay fixed through
+qualification and review.
+
+All **858 core CLI/view invocations** pass. Analyze's 342 changed lines match
+reviewed fields; filtered views transfer through 120 exact whole-body matches
+and twelve classified pre-existing extent/address-label variants. Four Sample
+baseline extent discrepancies disappear in the candidate; three SDK addresses
+retain the pre-existing label/hex split. All **168 changed lab records** only
+lose existing call/exit values or target/layout facts; raw instructions and
+headers match. Four xrefs outputs each add three unresolved sites and three
+functions without resolved callers, exactly matching the twelve retired targets;
+the explicit unresolved-dispatch warning remains.
+
+Four guarded SDK rerenders match measured hashes. Whole SwiftSyntax changes
+**six lines in one function**: remove an unused binding wrapper while retaining
+the call, then renumber a later producer. All remaining text matches; the other
+three SDK workload hashes are unchanged. Ten guarded renders of the original
+five apps pass, retaining **84,833 function headers and order**. Clarc changes
+one function and GoodLinks 92 (**930 diff-side lines**), reviewed against raw
+LLVM instructions: **115 newly unresolved PCs / 100 changed store operands**
+match the binary, and write-width/control-statement counts remain. All 93 bodies
+call independently byte-proven projection helpers. Terminal, TextEdit and Chess
+are byte-identical. Maximum sampled footprint is **201 MB** under a **2,000 MB**
+guard. These are vendor-binary reliability/output checks with explicit precision
+costs; source-grounded app accuracy remains unmeasured. Private bodies, strings
+and reports stay outside this repository's public history.
+
+Reproduce: `Tools/fixtures.sh`; run the three built
+`Fixtures/Sample/projection-return-alias-*-oracle` programs. Rebuild tests with
+`swift build --build-tests`, then run
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`. Freeze matched releases
+built with `swift build -c release --scratch-path .build-release`, then run
+`Tools/blast-radius.sh <base> <new> <out> --real --perf`. The code commit records
+the complete compiled fault/test matrix and each output-change class.
+Reviewed release SHA256:
+`7f5c2d078b9155d1dfbfdc32393dd667ae50c9af50f6c3c0745e825c1790e202`.
+
+**Publication pending:** the original integration gate must independently rebuild,
+test and compare this committed head before pushing. The previous projection-body
+gate and hosted toolchain failure remain historical evidence. **OPEN:** general
+readonly/noncapture summaries, unknown receiver/layout recovery, other name-only
+call effects, general source ABI and incoming-x8 ownership, C widths,
+RET/fallthrough and values across awaits. Pinned Ghidra/entry measurements and
+readiness/coverage percentages are not recomputed.

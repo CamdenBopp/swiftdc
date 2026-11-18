@@ -91,6 +91,56 @@ cover results, bodies, or Objective-C methods (4 matched).
 
 ## Latest local verification
 
+At `3a51ab8`, opaque boxed-existential projection results retain possible
+caller-frame origins. A later write through the returned pointer now declines
+a stale local value. The own-source fixture has **48 callers / 144 native
+observations**: **70 known results** across named/stripped images were wrong
+and now decline; **26 correct controls** stay unchanged. The three optimization
+levels apply to the C driver; the two assembly helper bodies are fixed.
+
+All **340 existing Swift test files are byte-identical**. Eleven tests are
+added: ten regression tests each seen red and one native/raw/import control.
+**22 independently compiled faults** fail with the native control green;
+canonical restoration and rebuilt tests pass after every batch. The fresh
+fixture-enforced suite passes **1,966 tests / 43 suites (922.508 s)**.
+
+Against the published `7a7f43f` release, **663 inputs in four views plus four
+SDK workloads** give **2,656 paired cost rows**: **+0.01% instructions /
+-0.46% summed per-run physical peaks**. Every default budget passes without
+override. The **35 identical preflight-decline pairs** are independently
+checked against raw headers and remain declines. Both releases use the same
+**802-product corpus**, with **1,075 public input hashes** pinned throughout.
+The cache adds five products; 181 existing product hashes changed on rebuilding.
+
+Every difference is reviewed: **12 inputs / 80 functions / 436 JSON fields**,
+with 342 listing, 288 structured, 286 pseudo and 832 JSON diff-side lines.
+The 70 new-fixture results account for 210 fields. The remaining 226 fields
+are **precision losses in ten existing inputs** after possible pointer escape:
+metadata, receivers, vectors, result aliases and saved return values decline.
+Twelve inferred indirect targets retire; xrefs reports the additional unresolved
+sites with its existing warning. General readonly/noncapture summaries remain
+open. These precision costs are separate from the 70 native-refuted results.
+
+All **858 core CLI/view invocations** pass; all differences and the pre-existing
+filtered/whole extent or address-label variants are classified. Four guarded
+SDK rerenders match measured hashes. Whole SwiftSyntax changes six lines for
+an unused binding and producer renumbering; the other three SDK workload
+hashes match. Ten guarded renders of the original five apps pass and retain
+all **84,833 function headers and order**. Clarc and GoodLinks change **93
+functions / 930 diff-side lines**, reviewed against raw instructions as further
+precision losses; Terminal, TextEdit and Chess are byte-identical. Maximum
+sampled footprint is **201 MB** under a **2,000 MB** guard. These checks measure
+vendor-binary output/reliability; app accuracy remains unmeasured.
+
+**Publication pending:** the original integration gate must independently rebuild,
+test and compare the committed head before pushing. The earlier gate and hosted
+CI outcome below remain historical. Pinned Ghidra/entry measurements and
+readiness/coverage percentages are unchanged. See the
+[engineering record](https://github.com/CamdenBopp/swiftdc/commit/3a51ab8f414ea2c80c3c8f4f4e1a10e4a55d455f)
+and [readiness follow-up](PRODUCTION-READINESS.md#2026-11-18-retain-frame-origins-of-projection-results).
+
+The earlier body-proof verification follows as historical evidence.
+
 At `c0429a1`, boxed-existential projection memory preservation and call
 hiding require an independently checked complete helper body. A foreign
 import or in-image mutator with that name no longer keeps a stale local
@@ -149,9 +199,9 @@ changes with `git diff --diff-filter=M ff0e782..7a7f43f -- Tests`.
 
 The in-image near-shape helper's existing two-GP body-read projection is
 not a full source-formal ABI proof: its handwritten x9 input remains
-outside that projection. Returned projection-pointer aliasing, other
-name-only call effects, general source ABI and incoming-x8 ownership, C
-widths, RET/fallthrough and values across awaits remain open. Pinned
+outside that projection. Returned projection-pointer aliasing is addressed by
+`3a51ab8` above. Other name-only call effects, general source ABI and incoming-x8
+ownership, C widths, RET/fallthrough and values across awaits remain open. Pinned
 Ghidra/entry benchmarks and readiness/coverage percentages are not recomputed.
 See the
 [engineering record](https://github.com/CamdenBopp/swiftdc/commit/c0429a16395044d146ce382658186c73e59581d3)
