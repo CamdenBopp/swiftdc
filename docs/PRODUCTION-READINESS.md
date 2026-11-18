@@ -874,7 +874,7 @@ shape it excludes.
   `%hd` as Int16, `%hhd` as Int8, `%ld` as Int, and the unsigned
   conversions as the UInt of that width. A Double keeps its own typing.
   Fixture `cformat.c`. Blast radius: one line.
-- **FIXED — a narrow C integer argument rendered its whole register.**
+- **FIXED (constant operands; computed/atom follow-up below) — a narrow C integer argument rendered its whole register.**
   `close(-1)` read `close(0xffffffff)`. The caller writes `mov w0, #-1`,
   and the SDK table recorded only that an `int` travels in an x register.
   The generator now records a parameter narrower than a register by width
@@ -13638,3 +13638,72 @@ readonly/noncapture summaries, unknown receiver/layout recovery, other name-only
 call effects, general source ABI and incoming-x8 ownership, C widths,
 RET/fallthrough and values across awaits. Pinned Ghidra/entry measurements and
 readiness/coverage percentages are not recomputed.
+
+## 2026-11-18: read C arguments at their declared widths
+
+**FIXED (`9ed9748`):** qualified C declaration arguments read their declared signed
+or unsigned 8/16/32-bit value instead of an entire register. Wide Swift scalar
+inputs receive explicit truncation/sign interpretation; unavailable physical
+bits decline before producer-use collection, retaining the producing call.
+Computed comparisons, literal phis and masks retain their proven complete 0/1
+words. A bare source Bool does not prove the rest of its incoming register.
+
+Own-source fixtures cover **12 functions at all three Swift optimization
+levels**, **36 independently bounded exported entries**, **57 native
+observations**, **96 numeric conversions** and **96 computed-word cases**.
+All **341 existing Swift test files remain byte-identical**. Eleven tests are
+added: eight regressions observed red under **ten independently compiled
+faults**, plus three independent controls. Restored tests rebuild green.
+The fixture-enforced suite passes **1,977 tests / 43 suites (960.794 s)**.
+
+Against the prior published behavior (`3a51ab8`), **669 inputs in four views
+plus four SDK workloads** give **2,680 paired cost rows**: **+0.014855%
+instructions / +0.376453% summed per-run physical peaks**. Every default budget
+passes without override. All **5,352 render exits** match, including the
+**35 independently checked preflight-decline pairs**; those remain declines.
+Both releases use the exact same **808-product corpus**. All **1,141 public
+input hashes** remain fixed throughout qualification and review. The cache
+retains every product; 184 product hashes changed during the full rebuild,
+mostly UUID/stabs changes. No cross-slice product-byte equivalence is claimed.
+
+All differences are reviewed: **five inputs / 130 JSON fields**, comprising
+**56 own-source corrected fields, 54 precision fields, ten value-equivalent
+views and ten binding renames**. Every listing (90), structured (87), pseudo
+(87) and JSON (249) diff-side line maps to these fields. Applying the fields
+reconstructs candidate JSON exactly; function/block/CFG metadata and raw
+instruction data match. C result widths remain unproved: getpid/fileno
+producers stay visible while affected consumers lose arguments. The stripped
+SDK strerror_r site also loses an unqualified argument; its named counterpart
+was already unknown. These are explicit precision costs, not native-refuted
+old values. Raw instruction bytes, starts and strong system imports corroborate
+the changed SDK sites.
+
+All **416 CLI/view invocations** pass. Metadata/xrefs and all 16 Lab pairs
+match; whole/filtered outputs and every analyze delta are reviewed. Four
+guarded SDK rerenders match measured hashes; all four SDK workload pairs are
+byte-identical. Ten guarded renders of the original five apps pass and retain
+all **84,833 function headers/order**. **216 changed functions / 874 diff-side
+lines** contain **397 argument precision losses and seven value-equivalent
+views**. All **974 visible catalog calls** retain their exact order/count;
+14 lifted ObjC/Swift producer cases retain complete expressions. Independent
+Mach-O/raw checks cover **33,108 instruction words, 419 direct C consumer
+sites and 74 strong import/provider names**. Memory-write widths and control
+statement counts remain. TextEdit is unchanged. Maximum sampled footprint is
+**336 MB under a 2,000 MB guard**. These checks measure vendor-binary output
+reliability; source-grounded app accuracy remains unmeasured.
+
+Reproduce: `Tools/fixtures.sh`; run the three
+`Fixtures/Sample/c-narrow-arguments-*-oracle` executables; rebuild with
+`swift build --build-tests`, then
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`. Compare matched frozen
+releases using `Tools/blast-radius.sh <base> <new> <out> --real --perf`.
+Reviewed release SHA256:
+`49c17af2630176679118565e82c9a5e6d983e1a5f1dfb7e2c9d893e85b897877`.
+The code is committed locally; integration-gate publication is pending.
+
+**OPEN:** C result widths, fixed integer parameters on special format paths,
+C Bool formals, source widths for fields/call results, general Swift
+argument/RET narrowing, incoming-x8 ownership and values across awaits.
+Pinned Ghidra/entry benchmarks and readiness/coverage percentages are unchanged.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/9ed974813e44b84da368f40adeb8627cabce43bf)
+for the exact compiled fault-to-test mapping.
