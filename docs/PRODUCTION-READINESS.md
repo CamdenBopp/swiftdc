@@ -13083,3 +13083,91 @@ build and suite skipped. This is separate from local gate validation.
 nonstandard and stack transports, complete Go input/result layouts, actual sret
 ownership, `swifttail`/`swiftcoro` and other unmodelled helper effects. This fixes
 uncertainty retention without claiming the full ABI or a new comprehensive audit.
+
+
+## 2026-11-17: qualify callee evidence for Swift error folds
+
+**FIXED in part (e0b608c2873fa4c3a30f0d23bce75d0651fda0cf).** A separate Swift provider exports
+`plain_error_raise` and `getpid` with the Swift error ABI. The baseline
+`c095298` retains pre-call x21=0 merely because the names look like C and
+folds away real catch/forward paths. A declaration name is not a callee ABI
+proof. Require an independent language contract, exact raw symbol/provider
+binding and supported export, or a closed body proof. Validate strong
+two-level imports, complete islands, zero addends, and actual export/reexport
+identity; reject weak, TLS, wrong-provider and unsupported evidence. Provider
+exports are generated from SDK 27.2; ABI declarations remain SDK 27.0.
+Independent regeneration reproduces the table byte-for-byte.
+
+Body proofs close exact entries and outgoing transfers, declining x21 writes,
+unresolved edges and open fallthrough. Track entry return-address origin
+through copies, spills, joins and actual RET operands/authenticated returns.
+A separate temporary strict GP/vector preservation closure rejects transitive
+frame corruption without weakening existing carried MAY effects. Actual
+in-image GP reads and all vector inputs govern alias escape, rather than
+name-based arity; external formal counts do not prove an integer-only bank.
+The existing 144-byte summary bound remains. Additional decoded indirect
+bodies qualify error preservation only; ordinary argument/result and outlining
+facts retain the original requested/direct-dependency boundary.
+
+Native frame-alias reductions expose the strict-proof requirement: a helper
+returns a frame pointer in x19; a later call carries it through d0 or x9 to
+a writer that redirects saved LR to an error helper. Native returns 0; the
+pre-fix debug build renders 1; the fixed build declines the unsupported result.
+
+Verification of the exact frozen source:
+
+- All **335 existing Swift test files** are byte-identical to published HEAD;
+  two new files define **34 tests**. Native controls pass **114 observations
+  per optimization level** (Onone/O/Osize), **342 total observations**, not
+  342 distinct semantic cases. Six provider/caller LLVM pairs and twelve
+  calls explicitly use `swiftcc`/`swifterror`; twelve named/stripped import
+  inspections distinguish the custom provider from libSystem.
+- **95 unique independently compiled semantic-red faults** (91 product,
+  four generator) fail their intended tests with all 342 native controls
+  green under each. Exact restoration, rebuild and 35 selected tests pass
+  (22.247 s). `Tools/fixtures.sh`, `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build` pass **1,911 tests /
+  43 suites (950.578 s)**. All **1,045 public inputs / 24 fixture products**
+  match frozen hashes after verification.
+- `Tools/blast-radius.sh <base> <new> <out> --real --perf` compares frozen
+  releases against `c095298`: **601 inputs in four views + four SDK
+  workloads = 2,408 paired cost rows**. Instructions **7,341.6G -> 7,444.0G
+  (+1.39%)**; summed per-run physical peaks **22,439 -> 22,636 MB (+0.88%)**.
+  Every default budget passes without override. Four whole-SDK outputs match.
+- Every changed line across **14 inputs / 86 functions** is reviewed:
+  structured/pseudo/listing/JSON **218 / 218 / 220 / 470 lines**. All
+  serialized function/block metadata, instruction counts/text/addresses/
+  targets/control-flow DTOs match. JSON omits typed callees and raw bytes.
+  Its **238 changed fields** are 112 statements, 110 annotations and 16
+  arguments. Own-source changes decline false error zeroes/success constants,
+  preserve calls while removing unused bindings or materializing existing
+  producers, make unresolved exits explicit, and recover positive controls.
+  Named own-source producers remain once per function.
+- In two SDK dylibs, six specialized mergeTopRuns/finalizeRuns epilogues
+  recover `true`: raw code sets w0=1 and local primary Sort.swift confirms
+  the legacy Bool return. Two OperatorTable initializers preserve an existing
+  static-object pointer in x21 through a default-argument generator whose
+  owner name contains `throws` but whose body preserves x21. The existing
+  allocation binds once, then the initializer consumes it. Default-generator
+  argument notes redisplay that value; this does not prove source arity.
+- All **468 CLI invocations** pass. dump/layout/interface/objc/xrefs and
+  all stderr are identical; whole views match measured bytes. analyze/lab
+  raw instructions, headers and entry seeds match; filtered deltas share
+  the reviewed fixture semantics. Four guarded SDK rerenders match measured
+  hashes. Ten renders of Clarc, GoodLinks, Terminal, TextEdit and Chess pass
+  with identical paired outputs, maximum sampled **196 MB** under a
+  **2,000 MB** footprint guard. Private bodies/strings/reports stay ignored.
+
+Candidate release SHA256:
+`5b28d9206c36969bea5311bbb8f256104097d21de2276d54ec36c74cb8e1123c`.
+The original `Tools/integration-gate.sh --push` is pending for this slice.
+Hosted [baseline run 44124725391](https://github.com/CamdenBopp/swiftdc/actions/runs/44124725391)
+at `c095298` failed Toolchain (Swift 6.2.4 / Xcode 26.3), with fixtures,
+build and suite skipped; it supplies no hosted test result.
+
+**OPEN:** foreign C prototype arity/order/result width/memory ownership,
+general RET source reconstruction, complete fallthrough input/memory
+reconstruction and values carried across awaits. This qualifies no-error
+folds, not the full Swift/C ABI. No source-grounded app accuracy, readiness
+percentage or ABI coverage percentage is inferred; pinned benchmarks remain
+unchanged.

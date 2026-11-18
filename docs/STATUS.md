@@ -91,6 +91,42 @@ cover results, bodies, or Objective-C methods (4 matched).
 
 ## Latest local verification
 
+At `e0b608c`, Swift error checks require a language contract, exact
+callee ABI binding, or independent body-preservation proof. A plain symbol
+name alone no longer proves that x21 survives. Separate Swift providers named
+`plain_error_raise` and `getpid` previously caused real error paths to fold
+away. Closed body proofs also reject redirected returns, open fallthroughs,
+unresolved transfers and strict transitive frame-alias hazards.
+
+All **335 existing Swift test files are byte-identical** to the previous
+published HEAD; two new files add **34 tests**. **95 independent mutations**
+(91 product, four generator) compile and fail their intended tests; all
+**342 native observations** remain green under each. Six compiler ABI pairs
+and twelve call instructions establish `swiftcc`/`swifterror`; twelve import
+inspections distinguish the custom provider from libSystem. The full
+fixture-enforced **1,911 tests / 43 suites** pass (950.578 s).
+
+Against `c095298`, **601 inputs in four views plus four SDK workloads** give
+**2,408 paired cost rows**: retired instructions **+1.39%**, summed per-run
+physical peaks **+0.88%**. Every default budget passes without override.
+Every delta across **14 inputs / 86 functions** is reviewed; serialized
+instruction and control-flow DTOs match. SDK changes recover six raw-proved
+Bool returns and two saved allocation pointers. All **468 CLI invocations**,
+four guarded SDK rerenders and ten five-app renders pass; paired app outputs
+are identical (maximum sampled 196 MB under a 2,000 MB guard).
+
+The original integration gate and publication are pending for this commit.
+Hosted [baseline run 44124725391](https://github.com/CamdenBopp/swiftdc/actions/runs/44124725391)
+at `c095298` failed Toolchain (Swift 6.2.4 / Xcode 26.3); fixtures, build
+and tests were skipped. This supplies no hosted test result. Foreign C
+prototype arity/order/results/memory ownership, general RET reconstruction
+and values across awaits remain open. No pinned benchmark or readiness
+percentage is recomputed. See the
+[engineering record](https://github.com/CamdenBopp/swiftdc/commit/e0b608c2873fa4c3a30f0d23bce75d0651fda0cf) and
+[readiness follow-up](PRODUCTION-READINESS.md#2026-11-17-qualify-callee-evidence-for-swift-error-folds).
+
+The ordinary-call follow-up below is historical evidence.
+
 At `09324d7`, ordinary BL forwarders retain unknown source inputs even
 when the caller has no tracked argument snapshot. Possible FP inputs close
 through the call graph separately from positive parameter proofs. When GP/FP
