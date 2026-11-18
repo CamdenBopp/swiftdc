@@ -123,10 +123,10 @@ and its decoded job logs confirm **1,993 tests / 43 suites passing
 (2,253.679 s)** with fixture presence enforced. The `xcode-27` runner selected
 **Xcode 27.1 / Swift 6.4** on **arm64 macOS 27.0.1**, with **Go 1.27.4,
 7 GB memory and 36 GB free disk**. Toolchain, Fixtures, Build and Enforcing
-suite all completed successfully. This covers that published revision; the
-new 2,000-test candidate still requires its own publication gate and hosted
-result. See [CI setup and image sources](CI.md). No decompilation benchmark
-or readiness percentage changes.
+suite all completed successfully. This covers that published revision.
+The later `a841357` revision passed its own 2,000-test local gate and has a
+new hosted run pending (below). See [CI setup and image sources](CI.md).
+No decompilation benchmark or readiness percentage changes.
 
 ## Latest local verification
 
@@ -182,13 +182,24 @@ with `Tools/blast-radius.sh <base> <new> <out> --real --perf`. The **1,159
 public input / 874 fixture product hashes** remained pinned throughout
 qualification. Reviewed release SHA256:
 `a302e4b9e1715beac48449094ef2ed92257237a453506f1da07f0e7ea977c01b`.
-The original integration gate and publication are pending. Completed
-hosted [run 44411756483](https://github.com/CamdenBopp/swiftdc/actions/runs/44411756483)
-at published `d69fff8` passed **1,993 tests / 43 suites (2,253.679 s)** on
-**Xcode 27.1 / Swift 6.4**; the job and decoded logs were checked. That hosted
-result covers the prior revision. The current 2,000-test candidate requires
-its own publication gate and subsequent hosted result. The earlier run is
-finished, so publication can proceed without canceling it.
+The original integration gate independently rebuilt and pushed `a841357`
+with code `3385323`, passing **2,000 tests / 43 suites (942.385 s)**. Both
+sides match the reviewed frozen releases across all **735 inputs x four
+views** and four SDK workloads. Every **2,944 paired cost row** meets the
+default caps without override permission or use: **7,796,073,720,617 ->
+7,794,797,509,654 instructions (-0.016370%)**; **27,428,898,136 ->
+27,246,259,528 bytes summed per-run physical peaks (-0.665862%)**.
+The **1,159 public input / 874 fixture product hashes** match both clean
+trees; an independent remote-head check confirms publication. Gate release
+SHA256: `4e16def0eb587925dfe8b73b86dfb2dbb19bef5b2a28784b8f2a9c211dd1a2fc`.
+
+New hosted [run 44423167838](https://github.com/CamdenBopp/swiftdc/actions/runs/44423167838)
+at `a841357` passed Toolchain and Fixtures and is building; its enforcing
+suite is pending. Completed job/logs still need observation. The earlier
+[run 44411756483](https://github.com/CamdenBopp/swiftdc/actions/runs/44411756483)
+at `d69fff8` passed **1,993 tests / 43 suites (2,253.679 s)** on **Xcode 27.1 /
+Swift 6.4**; that job and decoded logs were checked. Its hosted result covers
+the earlier revision; the new 2,000-test hosted result remains pending.
 
 Still open: other tail-result conversions (including differing widths and
 64-bit sign views), general Swift argument/entry/RET/fallthrough cases,

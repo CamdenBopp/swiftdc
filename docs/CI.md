@@ -36,6 +36,12 @@ passed the same suite before pushing, with unchanged fixture/SDK outputs and
 all 2,896 paired cost rows. This hosted result covers published `d69fff8`;
 later revisions require their own run results.
 
+The next published revision, `a841357`, passed its independent local gate
+with **2,000 tests / 43 suites** and all default output/cost checks. Its
+[hosted run 44423167838](https://github.com/CamdenBopp/swiftdc/actions/runs/44423167838)
+passed Toolchain and Fixtures and is building; Enforcing suite is pending.
+The completed job and logs remain required for its hosted test result.
+
 ## The environment
 
 | | Tested with | Required |
