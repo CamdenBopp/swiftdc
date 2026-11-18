@@ -4,21 +4,30 @@ CI runs one thing: the enforcing test suite, on every push to `dev` and
 every pull request. "Enforcing" means a missing fixture fails the run
 instead of skipping its test.
 
-The suite needs a recent Swift, because the fixtures are compiled from
-source and some use new language features. GitHub's hosted macOS images
-are behind: `macos-15` carries Swift 6.2.4, which cannot build the
-fixtures, and `macos-26` jobs were never given a runner when tried
-(2026-11-13). So a repository that wants a passing run uses its own Mac
-as the runner. That applies to a fork as much as to the main
-repository: each copy sets up its own.
+The suite needs Swift 6.4 or newer because its fixtures are compiled from
+source. The hosted workflow requests GitHub's documented `xcode-27` ARM64
+preview image and selects `/Applications/Xcode_27.1.app`, the locally tested
+Xcode version. The image also includes newer Xcodes, so selecting the highest
+installed version would change the compiler that builds the fixtures.
+See the [image inventory](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md)
+and [supported runner labels](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+The preview is provided as available; a documented image is not proof that
+this repository has acquired a runner or passed its suite.
 
-Observed on 2026-11-17: [run 44070526750 at published
-917dea7](https://github.com/CamdenBopp/swiftdc/actions/runs/44070526750) acquired
-a hosted runner, selected Xcode 26.3 / Swift 6.2.4, and failed the Toolchain
-step. Fixtures, build and the enforcing suite were skipped. This differs
-from the earlier runner-capacity failure and is not a CI test result.
-The original local integration gate passed all 1,867 tests / 43 suites
-before pushing that commit; a local gate pass is not a hosted CI pass.
+A repository can instead use its own Apple Silicon Mac by setting
+`SWIFTDC_SELF_HOSTED=true` after setup below. That route keeps the selected
+local Xcode and runs the same Toolchain, Fixtures, Build and Enforcing suite
+steps. Each fork chooses and configures its own runner.
+
+The previous hosted fallback, `macos-15`, selected Xcode 26.3 / Swift 6.2.4
+and failed Toolchain before any fixtures, build or tests ran. The completed
+[run 44400919902 at published 6c40aea](https://github.com/CamdenBopp/swiftdc/actions/runs/44400919902)
+confirms this in its job logs. The original local integration gate passed
+all 1,993 tests / 43 suites before that push; it is not a hosted CI pass.
+An earlier `macos-26` job remained queued without a runner for 50 minutes
+on 2026-11-13. The `xcode-27` image and version selection are a new route;
+its actual scheduling, toolchain and suite result must be recorded after
+publication.
 
 ## The environment
 

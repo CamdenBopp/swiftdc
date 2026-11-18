@@ -17,14 +17,12 @@ jobs:
   suite:
     # Where it runs is the repository's choice. With the variable
     # SWIFTDC_SELF_HOSTED set to true (Tools/ci/setup-runner.sh sets it)
-    # the suite runs on that repository's own Mac, labelled `swiftdc`,
-    # which has the toolchain the fixtures need. Without it, it runs on
-    # the newest hosted image that starts: `macos-26` stayed queued with
-    # no runner for 50 minutes on 2026-11-13, and `macos-15` carries a
-    # Swift too old to build the fixtures, so there the Toolchain step
-    # fails by name instead of the fixture build failing obscurely.
+    # the suite runs on that repository's own Mac, labelled `swiftdc`.
+    # The hosted fallback uses the documented Xcode 27 ARM64 preview image,
+    # which includes our tested Xcode 27.1. macos-15 selected Swift 6.2.4
+    # and failed Toolchain before any fixtures or tests ran.
     # docs/CI.md has the whole picture.
-    runs-on: ${{ vars.SWIFTDC_SELF_HOSTED == 'true' && fromJSON('["self-hosted", "macOS", "ARM64", "swiftdc"]') || 'macos-15' }}
+    runs-on: ${{ vars.SWIFTDC_SELF_HOSTED == 'true' && fromJSON('["self-hosted", "macOS", "ARM64", "swiftdc"]') || 'xcode-27' }}
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
@@ -32,9 +30,9 @@ jobs:
         if: runner.environment == 'github-hosted'
         with:
           go-version: stable
-      - name: Select the newest Xcode
+      - name: Select the tested Xcode
         if: runner.environment == 'github-hosted'
-        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+        run: sudo xcode-select --switch /Applications/Xcode_27.1.app
       - name: Toolchain
         # Prints the exact versions, so two runs can be compared, and
         # stops here when this machine cannot build the fixtures.
