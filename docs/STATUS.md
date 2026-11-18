@@ -155,8 +155,21 @@ Reproduce: `Tools/fixtures.sh`; execute the 27
 releases with `Tools/blast-radius.sh <base> <new> <out> --real --perf`.
 Reviewed candidate SHA256:
 `879cd1118b45598489c2209d89bc4463a873fcaecceef583930ce5a27018f81a`.
-The original integration gate and a new hosted CI result remain pending;
-local qualification is not a hosted test result.
+The original integration gate independently rebuilt and pushed `6c40aea`
+with code `3ba928e`, passing **1,993 tests / 43 suites (962.779 s)**.
+Both sides match the reviewed releases across all **723 inputs x four views**
+and all four SDK workloads. All **2,896 paired cost rows** meet every default
+cap without override permission or use: **7,704,142,369,610 ->
+7,717,056,592,175 instructions (+0.167627%)**; **26,858,166,808 ->
+27,034,322,280 bytes summed per-run physical peaks (+0.655873%)**.
+The **1,152 public file / 862 fixture product hashes** match main and gate;
+both trees were clean, and a fresh fetch confirmed the remote head.
+Independent gate release SHA256:
+`a37b9db488cf42e29251286de2eb001ac3652f883b5798b60f5bfbb6324fd717`.
+Hosted [run 44400919902](https://github.com/CamdenBopp/swiftdc/actions/runs/44400919902)
+failed **Toolchain** on **Swift 6.2.4 / Xcode 26.3**. Fixtures, build and the
+enforcing suite were skipped. The completed job/logs were checked; this
+provides no hosted test result.
 
 Still open: exact C result widths, enum-bit qualification, differing-Swift-result
 tail completeness, general Swift argument/entry/RET/fallthrough cases and
