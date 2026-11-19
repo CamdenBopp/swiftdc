@@ -173,6 +173,35 @@ struct AsyncFuncletIndex: Sendable {
         }
     }
 
+    /// A complete leaf path that writes both context-header words and hands
+    /// that same pointer to x22. Its name establishes no calling convention.
+    private struct ContextHeaderHelper {
+        let context: String
+        let resume: String
+
+        init?(_ fragment: OutlinedFragment) {
+            guard !fragment.isTailCall, fragment.body.count == 2,
+                  let store = fragment.body[0].detail,
+                  store.id == AARCH64_INS_STP, !store.writeback,
+                  store.operands.count == 3,
+                  let parent = store.operands[0].operand.register,
+                  parent.kind == .gpr, parent.widthBits == 64,
+                  let resume = store.operands[1].operand.register,
+                  resume.kind == .gpr, resume.widthBits == 64, resume.number < 30,
+                  case .memory(let context?, nil, 0) = store.operands[2].operand,
+                  context.kind == .gpr, context.widthBits == 64, context.number < 30,
+                  let move = fragment.body[1].detail,
+                  move.id == AARCH64_INS_MOV, move.operands.count == 2,
+                  let destination = move.operands[0].operand.register,
+                  destination.kind == .gpr, destination.widthBits == 64, destination.number == 22,
+                  let source = move.operands[1].operand.register,
+                  source.kind == .gpr, source.widthBits == 64, source.key == context.key
+            else { return nil }
+            self.context = context.key
+            self.resume = resume.key
+        }
+    }
+
     /// The identity of a funclet's own incoming context (x22 at its entry).
     static let ownContext = UInt64.max
 
@@ -405,6 +434,17 @@ struct AsyncFuncletIndex: Sendable {
         }
         var materialisations: [UInt64: [Materialisation]] = [:]
         var allocatesContext: Set<UInt64> = []
+        var checkedHeaderHelpers: Set<UInt64> = []
+        var headerHelpers: [UInt64: ContextHeaderHelper] = [:]
+        func headerHelper(at address: UInt64) -> ContextHeaderHelper? {
+            guard functionStarts.contains(address) else { return nil }
+            if checkedHeaderHelpers.insert(address).inserted,
+               let fragment = OutlinedFragment(start: address, instructions: instructions(address)),
+               let helper = ContextHeaderHelper(fragment) {
+                headerHelpers[address] = helper
+            }
+            return headerHelpers[address]
+        }
 
         for start in scanSet {
             let body = instructions(start)
@@ -457,6 +497,32 @@ struct AsyncFuncletIndex: Sendable {
                         // name was parsed from its text and never read.
                         let name = insn.branchTarget.flatMap(nameOf)
                             ?? DisassembledFunction.calleeName(of: insn)
+                        if !Self.isTaskAlloc(name), !Self.isTaskSwitch(name), !Self.isContinuationInit(name),
+                           !pending.isEmpty,
+                           contexts.values.contains(where: {
+                               $0 != ContextAddress(identity: Self.ownContext, offset: 0)
+                           }),
+                           let target = insn.branchTarget, let helper = headerHelper(at: target),
+                           let context = contexts[helper.context], let resume = held[helper.resume],
+                           pending.contains(where: { $0.address == resume }) {
+                            // BL changes x30 before the helper runs. Its other
+                            // inputs and writes are proved by the whole leaf.
+                            for offset in [Int64(0), Int64(8)] {
+                                let field = context.advanced(by: offset)
+                                resumeFields = resumeFields.filter { known, _ in
+                                    known.identity != field.identity
+                                        || known.offset + 8 <= field.offset || field.offset + 8 <= known.offset
+                                }
+                            }
+                            // Parent is data, not a proved resume pointer.
+                            resumeFields[context.advanced(by: 8)] = resume
+                            contexts["x22"] = context
+                            held["x22"] = nil; pages["x22"] = nil
+                            held["x30"] = nil; pages["x30"] = nil; contexts["x30"] = nil
+                            // The normal terminal check establishes handover.
+                            // A later overwrite or call can still invalidate it.
+                            continue
+                        }
                         if Self.isTaskAlloc(name) || Self.isTaskSwitch(name) || Self.isContinuationInit(name) {
                             allocatesContext.insert(start)
                         }

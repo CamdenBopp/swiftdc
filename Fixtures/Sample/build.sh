@@ -1278,3 +1278,7 @@ python3 build-swift-narrow-arguments.py
 # Keep formal value/type lists aligned when integer receiver words become self.
 echo "==> Swift receiver type-list alignment (own source, -Onone/-O/-Osize)"
 python3 build-swift-receiver-type-list.py
+
+# Prove outlined async context header setup without disabling the outliner.
+echo "==> outlined async context headers (own source, -Onone/-O/-Osize)"
+python3 build-async-outlined-context.py
