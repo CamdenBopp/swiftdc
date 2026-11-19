@@ -124,11 +124,112 @@ and its decoded job logs confirm **1,993 tests / 43 suites passing
 **Xcode 27.1 / Swift 6.4** on **arm64 macOS 27.0.1**, with **Go 1.27.4,
 7 GB memory and 36 GB free disk**. Toolchain, Fixtures, Build and Enforcing
 suite all completed successfully. This covers that published revision.
-The later `a841357` revision passed its own 2,000-test local gate and has a
-new hosted run pending (below). See [CI setup and image sources](CI.md).
+The later published `a841357` also completed
+[run 44423167838](https://github.com/CamdenBopp/swiftdc/actions/runs/44423167838):
+**2,000 tests / 43 suites passed (2,384.404 s)** with fixture presence enforced.
+Its terminal job state and decoded logs were checked. That hosted result
+covers code `3385323`; the newer argument-view change has its own local
+verification and still needs publication. See [CI setup and image sources](CI.md).
 No decompilation benchmark or readiness percentage changes.
 
 ## Latest local verification
+
+At `8a1592827b1ff7fc96a5eeb3eee08c57ac868941`, bounded Swift call sites with matching type/value lists
+read canonical 8/16/32-bit integer formals at their declared width and
+signedness. For example, `signed8BitPatternCaller(UInt8)` previously passed
+`arg0` to an `Int8` consumer: input 128 denoted 128 although the native
+formal is -128. The argument now has an explicit signed view.
+
+The existing scalar-bit proof runs before producer-use collection. Existing
+exactly recovered narrow stack words keep their formal types; unproved
+producer widths become `?` while their calls remain visible. Inout addresses,
+receivers and FP banks retain their roles. This adds no entry, frame/context,
+argument-location or extension seeds, and no semantic annotation parsing.
+
+Own-source fixtures at -Onone/-O/-Osize provide **390 selected unique
+export/nlist/start/raw frames**, **186 wrapper call sites**, and **12,645
+native observations**. All **12,417 numerically classified formal values
+match**, including **4,723 refuted before**. Separate scopes are **72 address
+controls**, **144 unknown-width provider observations with one actual effect
+per call**, and **12 observations with the existing Onone Float getter
+receiver limitation**. Supplemental allocating-constructor drivers pass
+**1,704 observations**, including stored bits, zero setter count and dynamic
+class identity; **17 additional argument views have 34 raw/symbol/start/export
+witnesses**. Nonallocating initializer exports are not separately invoked.
+Existing optimized unsigned-to-signed nominal constructor aliases are not a
+claim of recovered nominal receiver context.
+
+All **346 prior test files and assertions remain byte-identical**; one file
+adds five declarations. The new regressions first fail with **1,642 issues**
+(register views 1,035; roles 247; opaque producers 360). Five separately
+compiled mutations fail: omit Swift views (1,642), erase stack types (42),
+omit producing-ABI proof (280), substitute the requested type for unknown
+producer proof (360), and consume a declined producer effect (450). Exact
+restoration/rebuild passes 26 focused tests, then the fresh fixture-enforced
+suite passes **2,005 tests / 43 suites (884.860 s)**. Fixture cache: **895
+products**. Public input snapshot: **1,168 files**.
+
+Matched frozen releases cover **756 inputs x four views** plus four SDK
+workloads. The complete corpus delta is **711 fields across 12 inputs**:
+**119 native-proved argument views, 17 initializer views, and 61 honest
+argument declines** (18 opaque producers, 42 outlined results, one stripped
+SDK input). JSON, listing and both source views reconstruct exactly from
+those changes. **60 producer statements** survive; four now appear before
+existing unknown UXTH conditions. Those conditions and their consumed-call
+visibility remain open. Raw instructions, CFGs, function metadata and all
+other fields are unchanged.
+
+All **3,028 paired cost rows** meet every default cap without override:
+**8,554,101,285,176 -> 8,552,526,784 instructions (-0.018406%)**;
+**28,505,280,064 -> 28,537,816,504 bytes summed per-run physical peaks
+(+0.114142%)**. No performance improvement is claimed. The frozen main
+release hashes are `a302e4b9e1715beac48449094ef2ed92257237a453506f1da07f0e7ea977c01b`
+and `cfd93816ce8cbfe72edd60fb5a627cda24f72879c988d60eb75f33f0304838a7`.
+
+All **832 CLI invocations over 32 inputs and 13 paths** pass. **160
+metadata/xrefs pairs**, **416 stderr pairs** and **32 Lab pairs** are
+identical; **256 whole views** match measurements and **128 filtered
+comparisons** match whole bodies. All 514 changed analyze lines and the
+filtered pseudo/structured changes map to the reviewed corpus fields.
+Four guarded SDK rerenders match measurement hashes: Syntax is unchanged;
+Parser has one enum-self byte argument to `Hasher._combine(UInt8)` become
+unknown. Its raw byte load, entry seeds and call layout are unchanged.
+Both SDK xrefs workloads are unchanged.
+
+Ten original Clarc/GoodLinks/Terminal/TextEdit/Chess renders pass a **2,000 MB
+footprint guard** (maximum sampled **237 MB**). All **84,833 function
+headers/order** and all call spellings/counts remain intact. The **130
+diff-side lines in 24 functions** are reconstructed from **52 pure argument
+precision declines**, **six UInt16 mask tightenings**, and consistent result
+binding cleanup. Removed binding references occur only in the declined
+arguments; the calls still execute at the same statements. **144 unique
+guarded filtered pseudo/JSON/Lab artifacts** inspect those functions. Two
+preexisting whole/filtered precision differences remain exactly unchanged;
+they are not repaired by this work. Private bodies, literals and reports
+remain ignored. This is reliability/output review, not app accuracy.
+
+**OPEN:** a separately authored **1,536-observation** GP/FP value-receiver
+probe reproduces an existing type-list mismatch after GP receiver words
+move to `self`: the receiver's type entries remain after its values are
+removed. Those sites fail the matching-list guard and still miss the integer
+view; the FP-receiver control receives it. That list-alignment invariant
+needs a separate follow-up. General argument/entry/RET/fallthrough placement,
+C/ObjC result widths, enum-bit qualification and values carried across awaits
+also remain open. Pinned scoring/readiness percentages are not recomputed.
+
+Reproduce with `Tools/fixtures.sh`, `swift build --build-tests`, and
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`; authored native drivers
+are the nine `Fixtures/Sample/narrow-integer-return-SwiftArgument*-oracle`
+products. See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/8a1592827b1ff7fc96a5eeb3eee08c57ac868941)
+for the compiled faults and their observed red regressions.
+
+**Publication pending:** local verification above covers this committed code.
+The existing original integration gate must independently rebuild/test and
+push it; a hosted result for this revision has not yet been observed. The
+previous published `a841357` completed its own hosted **2,000-test / 43-suite**
+run; that result does not cover these five new declarations.
+
+## Previous verification: converted integer tail returns
 
 At `3385323e011e675f1c5bc97078b96110ead2a17e`, an ordinary Swift function or getter tail can retain
 its return when caller and callee use opposite signedness at the same
@@ -193,13 +294,16 @@ The **1,159 public input / 874 fixture product hashes** match both clean
 trees; an independent remote-head check confirms publication. Gate release
 SHA256: `4e16def0eb587925dfe8b73b86dfb2dbb19bef5b2a28784b8f2a9c211dd1a2fc`.
 
-New hosted [run 44423167838](https://github.com/CamdenBopp/swiftdc/actions/runs/44423167838)
-at `a841357` passed Toolchain and Fixtures and is building; its enforcing
-suite is pending. Completed job/logs still need observation. The earlier
+**VERIFIED hosted execution:**
+[run 44423167838](https://github.com/CamdenBopp/swiftdc/actions/runs/44423167838)
+at `a841357` completed successfully: **2,000 tests / 43 suites (2,384.404 s)**
+with fixture presence enforced. Toolchain, Fixtures, Build and Enforcing
+suite passed; terminal job status and decoded logs were checked. This
+covers the published tail-return revision, separately from the newer local
+argument-view verification. The earlier
 [run 44411756483](https://github.com/CamdenBopp/swiftdc/actions/runs/44411756483)
 at `d69fff8` passed **1,993 tests / 43 suites (2,253.679 s)** on **Xcode 27.1 /
-Swift 6.4**; that job and decoded logs were checked. Its hosted result covers
-the earlier revision; the new 2,000-test hosted result remains pending.
+Swift 6.4**.
 
 Still open: other tail-result conversions (including differing widths and
 64-bit sign views), general Swift argument/entry/RET/fallthrough cases,
