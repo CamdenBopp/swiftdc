@@ -136,7 +136,70 @@ code `8a15928`; the local receiver change requires its own gate/publication
 and hosted result. See [CI setup and image sources](CI.md).
 No decompilation benchmark or readiness percentage changes.
 
-## Latest local verification: indexed native-frame addresses
+## Latest local verification: prove outlined terminal handoffs
+
+**FIXED locally at `04efb1f8b22764e509a7d61fcac4c41f7d1c03fe`:** async ownership no longer carries a
+caller's context/header snapshot through an unproved outlined terminal
+prefix. In an independently decoded reduction of the default-Osize
+`AsyncOutlinedContext.sequence` image, clearing x22 inside that prefix
+previously retained the false chain `0x768 -> 0x7a8 -> 0x804`; it now declines.
+The matched context-preserving image retains the complete chain. Patched
+images are never executed.
+
+Follow only a whole two-instruction epilogue that strips x29's async-frame
+tag and performs an aligned full-width SP pop, then reaches an independently
+known entry/binding. Prove every prefix, decline cycles/depth caps and
+interior/unbound targets, and use the final callee for task-switch/runtime-wait
+roles. Validated metadata-declared async entries retain their own ABI
+boundary: an ordinary nine-argument async entry may read/pop incoming stack
+arguments without being an outlined prefix. Both isolation images retain
+all six owners of their shared resume. This boundary was independently
+checked against function starts, symbols, metadata and LLVM decoding.
+
+Eight new test declarations, **19 separately compiled mutation reds** and
+an exact restored **25-test green** cover the proof and boundary behavior;
+all seventeen prior focused controls pass in every variant. All **352 prior
+Swift test files are byte-identical**, with none removed or weakened. Debug
+and release each verify seven whole images in four views, four images in
+three filtered views, and 21 native observations on the original sources.
+Native source controls do not establish numeric decompiler agreement.
+
+The rebuilt fixture-enforced suite passes **2,033 tests / 43 suites
+(990.961 s)**. Public inputs/products stay frozen at **1,181 / 907** through
+qualification. All **768 fixture/toolchain inputs match in all four views**,
+with zero changed JSON fields. All **3,076 default paired cost limits pass**
+without override: **8,716,662,485,172 -> 8,722,665,697,860 instructions
+(+0.068871%)**; summed per-run physical peaks
+**29,037,527,056 -> 28,903,454,672 bytes (-0.461721%)**.
+No performance improvement is claimed.
+
+All **416 CLI invocations over 13 paths** match, including 80 metadata/xrefs
+pairs, 208 stderr pairs, 128 measured whole views and 64 filtered comparisons.
+All four SDK workloads and their guarded rerenders match. Ten guarded renders
+of the original five apps match, preserving **84,833 functions/order**, with
+no kills and **224 MB** maximum sampled footprint. Private reports stay ignored.
+The frozen baseline directly matches published `b5d0724`'s actual gate release
+across all 3,072 corpus view/exit pairs and four SDK workloads.
+
+Frozen release SHA256 (baseline / candidate):
+`534664ebffc03232cfdda78f598397c9d24a39b6392435e23e6ba3f7a4f3e2a1` /
+`dc42ee93dc0517664ff39ed453412e1ca0c084a54f9d02994bd8498e235427ee`.
+
+**PUBLICATION PENDING:** this code has not passed the original integration
+gate or hosted CI. The prior published batch at `b5d0724` has terminal hosted
+success, which does not cover this change. **OPEN:** outlined allocation and
+other runtime wrappers, values carried across awaits, and general context
+escape/lifetime effects. No readiness percentage or scoring table is
+recomputed.
+
+Reproduce after `swift build --build-tests` with
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter outlinedTerminal`;
+full suite: `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+Compare frozen releases with
+`Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/04efb1f8b22764e509a7d61fcac4c41f7d1c03fe).
+
+## Previous local verification: indexed native-frame addresses
 
 **VERIFIED locally at `e8f2f7ebb72b28e31e3218ceed1f46ec9dc22782`:** native SP/x29 provenance alone no longer
 classifies an indexed effective address as stack memory. Only an absent index
@@ -192,10 +255,12 @@ comparing actual published `087d2af` with the complete batch:
 (+0.204764%)**. Independent gate release SHA256:
 `749b90de957d6c261070b9515f3036041c6dff220fba89479adc800908486cf0`.
 
-**HOSTED PENDING:** [run 44519956304](https://github.com/CamdenBopp/swiftdc/actions/runs/44519956304)
-is in progress at published `b5d0724`. No hosted pass is claimed. The preceding
-hosted success at `087d2af` covers earlier code. Hold the next push until this
-run is terminal, so a documentation update does not cancel it.
+**HOSTED VERIFIED:** [run 44519956304](https://github.com/CamdenBopp/swiftdc/actions/runs/44519956304)
+completed successfully at published `b5d0724`; job `135545705472` rebuilt and
+passed **2,025 tests / 43 suites (2,582.965 s)** with fixture presence enforced.
+The terminal head/job steps and decoded enforcing-suite log were checked.
+This covers the frame-provenance/indexed-address batch; later local code
+requires its own original gate and hosted result.
 **OPEN:** values carried across awaits, other outlined allocator/runtime wrappers,
 and general context escape/lifetime effects. Unknown indexes decline rather
 than proving general effective-address disjointness.
@@ -271,7 +336,9 @@ cover the preceding code, not this new frame-provenance fix.
 **PUBLISHED with the indexed-address fix at `b5d0724`:** the original gate
 passed both code changes, **2,025 tests / 43 suites (988.578 s)** and default
 cost limits; see the indexed-address record for the complete publication
-measurement. Hosted verification of this batch remains pending.
+measurement. Hosted run `44519956304` also passed this published batch:
+**2,025 tests / 43 suites (2,582.965 s)**, confirmed from the terminal
+head/job steps and decoded enforcing-suite log.
 The indexed effective-address gap is addressed separately by `e8f2f7e`'s
 qualified index guard. **OPEN:** transporting values across awaits, other
 outlined allocator/runtime wrappers and general context escape/lifetime effects.
