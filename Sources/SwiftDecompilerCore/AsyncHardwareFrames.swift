@@ -7,9 +7,13 @@ enum AsyncHardwareFrames {
     private static let helperSensitive = Set((0...17).map { "x\($0)" } + ["x22"])
 
     static func advance(_ frames: inout Set<String>, by insn: Instruction,
+                        allocatorPrefix: (UInt64) -> [Instruction]? = { _ in nil },
                         isHeaderHelper: (UInt64) -> Bool) {
         guard let detail = insn.detail else { frames.removeAll(); return }
         if insn.controlFlow == .call {
+            if let target = insn.branchTarget, let prefix = allocatorPrefix(target) {
+                for step in prefix { advance(&frames, by: step, isHeaderHelper: { _ in false }) }
+            }
             // The complete leaf's only register writes are x22 and BL's LR.
             // Resolve it only when an ordinary ABI transfer would differ.
             if !frames.isDisjoint(with: helperSensitive),
@@ -47,6 +51,7 @@ enum AsyncHardwareFrames {
     /// outputs start at lattice top, then only lose facts until convergence.
     /// A limit or an inconsistent transfer returns no incoming proofs.
     static func inputs(in blocks: [BasicBlock], entry: UInt64, maximumVisits: Int? = nil,
+                       allocatorPrefix: (UInt64) -> [Instruction]? = { _ in nil },
                        isHeaderHelper: (UInt64) -> Bool) -> [UInt64: Set<String>] {
         let byStart = Dictionary(blocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { first, _ in first })
         guard byStart[entry] != nil else { return [:] }
@@ -83,7 +88,9 @@ enum AsyncHardwareFrames {
             }
             inputs[address] = incoming
             var outgoing = incoming
-            for insn in block.instructions { advance(&outgoing, by: insn, isHeaderHelper: isHeaderHelper) }
+            for insn in block.instructions {
+                advance(&outgoing, by: insn, allocatorPrefix: allocatorPrefix, isHeaderHelper: isHeaderHelper)
+            }
             guard outgoing.isSubset(of: outputs[address] ?? universe) else { return [:] }
             if outputs[address] == nil || outputs[address] != outgoing {
                 outputs[address] = outgoing

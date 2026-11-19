@@ -202,6 +202,45 @@ struct AsyncFuncletIndex: Sendable {
         }
     }
 
+    /// A complete default-Osize allocator prefix. Its only memory write is
+    /// a direct caller-stack spill; its only nonvolatile register output is
+    /// the native frame pointer. The tail's binding proves the allocation.
+    private struct ContextAllocatorHelper {
+        let prefix: [Instruction]
+
+        init?(_ fragment: OutlinedFragment, targetName: String?) {
+            guard fragment.isTailCall, AsyncFuncletIndex.isTaskAlloc(targetName), fragment.body.count == 5 else { return nil }
+            let details = fragment.body.compactMap(\.detail)
+            guard details.count == 5, details.allSatisfy({ !$0.writeback }) else { return nil }
+            func register(_ instruction: Int, _ operand: Int, _ number: Int, _ width: Int = 64) -> Bool {
+                guard details[instruction].operands.indices.contains(operand),
+                      let reg = details[instruction].operands[operand].operand.register else { return false }
+                return reg.kind == .gpr && reg.number == number && reg.widthBits == width
+            }
+            guard details[0].id == AARCH64_INS_STR, details[0].operands.count == 2,
+                  register(0, 0, 22),
+                  case .memory(let stack?, nil, 8) = details[0].operands[1].operand,
+                  stack.kind == .stackPointer, stack.widthBits == 64,
+                  details[1].id == AARCH64_INS_ADD, details[1].operands.count == 3,
+                  register(1, 0, 29),
+                  let source = details[1].operands[1].operand.register,
+                  source.kind == .stackPointer, source.widthBits == 64,
+                  details[1].operands[2].shiftedImmediate == 16,
+                  details[2].id == AARCH64_INS_ADRP, details[2].operands.count == 2,
+                  register(2, 0, 8), details[2].operands[1].operand.immediateValue != nil,
+                  details[3].id == AARCH64_INS_LDR, details[3].operands.count == 2,
+                  register(3, 0, 8),
+                  case .memory(let descriptor?, nil, _) = details[3].operands[1].operand,
+                  descriptor.kind == .gpr, descriptor.number == 8, descriptor.widthBits == 64,
+                  details[4].id == AARCH64_INS_LDR, details[4].operands.count == 2,
+                  register(4, 0, 0, 32),
+                  case .memory(let size?, nil, 4) = details[4].operands[1].operand,
+                  size.kind == .gpr, size.number == 8, size.widthBits == 64
+            else { return nil }
+            prefix = fragment.body
+        }
+    }
+
     /// The identity of a funclet's own incoming context (x22 at its entry).
     static let ownContext = UInt64.max
 
@@ -506,6 +545,18 @@ struct AsyncFuncletIndex: Sendable {
             }
             return nil
         }
+        var checkedAllocatorHelpers: Set<UInt64> = []
+        var allocatorHelpers: [UInt64: ContextAllocatorHelper] = [:]
+        func allocatorHelper(at address: UInt64) -> ContextAllocatorHelper? {
+            guard functionStarts.contains(address) else { return nil }
+            if checkedAllocatorHelpers.insert(address).inserted,
+               let fragment = OutlinedFragment(start: address, instructions: instructions(address)),
+               let target = fragment.terminator.branchTarget,
+               let helper = ContextAllocatorHelper(fragment, targetName: nameOf(target)) {
+                allocatorHelpers[address] = helper
+            }
+            return allocatorHelpers[address]
+        }
         func headerHelper(at address: UInt64) -> ContextHeaderHelper? {
             guard functionStarts.contains(address) else { return nil }
             if checkedHeaderHelpers.insert(address).inserted,
@@ -531,7 +582,8 @@ struct AsyncFuncletIndex: Sendable {
             for run in runs {
                 for successor in Set(run.successors) { predecessors[successor, default: []].append(run.startAddress) }
             }
-            let hardwareFrameInputs = AsyncHardwareFrames.inputs(in: runs, entry: start) {
+            let hardwareFrameInputs = AsyncHardwareFrames.inputs(in: runs, entry: start,
+                allocatorPrefix: { allocatorHelper(at: $0)?.prefix }) {
                 headerHelper(at: $0) != nil
             }
             for run in runs {
@@ -569,7 +621,8 @@ struct AsyncFuncletIndex: Sendable {
 
                 for insn in path {
                     let framePointerIsHardwareFrame = hardwareFrames.contains("x29")
-                    AsyncHardwareFrames.advance(&hardwareFrames, by: insn) { headerHelper(at: $0) != nil }
+                    AsyncHardwareFrames.advance(&hardwareFrames, by: insn,
+                        allocatorPrefix: { allocatorHelper(at: $0)?.prefix }) { headerHelper(at: $0) != nil }
                     guard let detail = insn.detail else {
                         pages.removeAll(); held.removeAll(); contexts.removeAll(); resumeFields.removeAll()
                         continue
@@ -579,6 +632,8 @@ struct AsyncFuncletIndex: Sendable {
                         // name was parsed from its text and never read.
                         let name = insn.branchTarget.flatMap(nameOf)
                             ?? DisassembledFunction.calleeName(of: insn)
+                        let allocator = insn.branchTarget.flatMap { allocatorHelper(at: $0) }
+                        let allocates = Self.isTaskAlloc(name) || allocator != nil
                         if !Self.isTaskAlloc(name), !Self.isTaskSwitch(name), !Self.isContinuationInit(name),
                            !pending.isEmpty,
                            contexts.values.contains(where: {
@@ -605,7 +660,7 @@ struct AsyncFuncletIndex: Sendable {
                             // A later overwrite or call can still invalidate it.
                             continue
                         }
-                        if Self.isTaskAlloc(name) || Self.isTaskSwitch(name) || Self.isContinuationInit(name) {
+                        if allocates || Self.isTaskSwitch(name) || Self.isContinuationInit(name) {
                             allocatesContext.insert(start)
                         }
                         // `swift_continuation_init(context, flags)`: the resume
@@ -620,11 +675,16 @@ struct AsyncFuncletIndex: Sendable {
                         for n in 0...17 {
                             pages["x\(n)"] = nil; held["x\(n)"] = nil; contexts["x\(n)"] = nil
                         }
+                        if allocator != nil {
+                            // The proved prefix replaces x29 with SP+16; it
+                            // cannot retain an older context/address alias.
+                            pages["x29"] = nil; held["x29"] = nil; contexts["x29"] = nil
+                        }
                         // BL/BLR replace LR even when the callee preserves
                         // every other register holding a context or address.
                         pages["x30"] = nil; held["x30"] = nil; contexts["x30"] = nil
                         resumeFields.removeAll()
-                        if Self.isTaskAlloc(name) {
+                        if allocates {
                             contexts["x0"] = ContextAddress(identity: insn.address, offset: 0)
                         }
                         continue
