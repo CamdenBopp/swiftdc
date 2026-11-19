@@ -14729,9 +14729,22 @@ Frozen release SHA256 (published baseline / candidate):
 `4d7b9cf3b1efc053772b8f6bc84a41327160d717416a051be612679e70e17f4d` /
 `c6df78e6d8a4e38ad3d532d48f4d4bbf83c491957d8605f1b23578b166504248`.
 
-**PUBLICATION PENDING:** the original integration gate must independently
-rebuild, test and compare committed `4de8391`; no hosted result applies to this
-code yet. Values genuinely carried across an await remain open. No scoring
+**VERIFIED original gate and publication at `ec2565ac99c286cb73278671362797484cd8fef5`:**
+the validation-only gate worktree independently rebuilt committed code
+`4de8391`, passed **2,052 tests / 43 suites (955.657 s)** and pushed both code
+and documentation to `origin/dev`. Its four-view differences exactly retain
+the reviewed **8 files / 26 lines** (JSON 78 lines). All **3,092 default gate
+cost rows** pass without override: **8,766,859,437,664 -> 8,763,190,467,784
+instructions (-0.041850%)** and **29,174,305,368 -> 29,009,332,384 bytes
+summed per-run physical peaks (-0.565474%)**. Independent gate release SHA256:
+`4c1e3e8540b1e9658b324838c2f1c0da44af12e0d0bbbbf15b7ab01243d4f0d4`.
+The clean main/gate inventories match at **1,185 public inputs / 911 products**.
+
+**HOSTED VERIFIED:** [run 44638985902](https://github.com/CamdenBopp/swiftdc/actions/runs/44638985902)
+completed successfully at published `ec2565a`. Its Xcode 27 ARM64 job rebuilt
+the fixtures and tests, then passed the enforcing **2,052 tests / 43 suites
+(2,471.718 s)**. The terminal run/head, all job steps and decoded suite log
+were checked. Values genuinely carried across an await remain open. No scoring
 table or readiness percentage is recomputed.
 
 Reproduce after `swift build --build-tests` with
