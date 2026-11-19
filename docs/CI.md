@@ -45,9 +45,13 @@ terminal job status and decoded logs were checked. This covers code
 at `5c5ab71` through the original gate, which independently passed **2,005
 tests / 43 suites (946.199 s)** and every default output/cost check. New
 [hosted run 44448308320](https://github.com/CamdenBopp/swiftdc/actions/runs/44448308320)
-passed Toolchain and is building Fixtures at the latest observation; Build
-and Enforcing suite are pending. Its completed job/logs must still be checked
-before claiming hosted success for these five new declarations.
+completed successfully. Terminal job state and decoded logs confirm
+fixture-enforced **2,005 tests / 43 suites (1,938.195 s)**, with Toolchain,
+Fixtures, Build and Enforcing suite all passing. This hosted result covers
+published code `8a15928`. The subsequent local receiver-alignment change
+`dbbdc83` passes **2,007 tests / 43 suites (911.246 s)** locally; its original
+integration gate and publication are still pending, so it has no hosted
+2,007-test result yet.
 
 ## The environment
 

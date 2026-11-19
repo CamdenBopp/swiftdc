@@ -14055,14 +14055,13 @@ preexisting whole/filtered precision differences remain exactly unchanged;
 they are not repaired by this work. Private bodies, literals and reports
 remain ignored. This is reliability/output review, not app accuracy.
 
-**OPEN:** a separately authored **1,536-observation** GP/FP value-receiver
-probe reproduces an existing type-list mismatch after GP receiver words
-move to `self`: the receiver's type entries remain after its values are
-removed. Those sites fail the matching-list guard and still miss the integer
-view; the FP-receiver control receives it. That list-alignment invariant
-needs a separate follow-up. General argument/entry/RET/fallthrough placement,
-C/ObjC result widths, enum-bit qualification and values carried across awaits
-also remain open. Pinned scoring/readiness percentages are not recomputed.
+**FOLLOW-UP FIXED (`dbbdc83`):** the separate GP/FP receiver probe's
+value/type-list mismatch is repaired by the receiver-extraction change
+recorded in its own verification entry. The earlier matching-list claim
+above remains the scope of `8a15928`. General argument/entry/RET/fallthrough
+placement, C/ObjC result widths, enum-bit qualification and values carried
+across awaits remain open. Pinned scoring/readiness percentages are not
+recomputed.
 
 Reproduce with `Tools/fixtures.sh`, `swift build --build-tests`, and
 `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`; authored native drivers
@@ -14083,8 +14082,73 @@ confirmed the push. Independent gate release SHA256:
 `76f321ea18de668baf6ba4f7c90f28a3a82ee074b6fc71d96005b13c81833e25`.
 
 New hosted [run 44448308320](https://github.com/CamdenBopp/swiftdc/actions/runs/44448308320)
-at `5c5ab71` has passed Toolchain and is building Fixtures at the latest
-observation; Build and Enforcing suite are pending. Completed job/logs still
-need observation before claiming hosted 2,005-test success. The prior
+at `5c5ab71` completed successfully. Its terminal job state and decoded
+logs confirm fixture-enforced **2,005 tests / 43 suites (1,938.195 s)**;
+Toolchain, Fixtures, Build and Enforcing suite all passed. This covers
+published code `8a15928`, not the subsequent local receiver change. The prior
 published `a841357` completed its own hosted **2,000-test / 43-suite** run;
 that result does not cover these five new declarations.
+
+### 2026-11-18: formal types follow extracted GP receivers
+
+**FIXED for already placed GP value receivers (soundness, `dbbdc83`).**
+
+At `dbbdc834b5a02894d5b8b5e8b062d3da6a7523ac`, extracting trailing integer
+receiver words into `self` also removes their type placeholders from the
+formal list. Previously the unequal value/type counts suppressed the
+existing scalar views and typed literal rendering: an `Int8` argument
+read `arg0` (or its 32-bit reload), Float `3.5` read `0x40600000`, and Bool
+`true` read `1`. Receiver placement and producer-use rules retain their
+existing proofs. The Onone unknown receivers remain explicit unknowns.
+
+Own-source one- and two-word GP receivers, an FP-receiver control and
+Float/Bool controls run at **-Onone / -O / -Osize**. **2,322 native
+observations** include **2,304 numeric formal values** (baseline **768
+refuted / 1,536 matched**, candidate **2,304 matched**) and **18 literal
+controls**. **30 independent nlist/export/start/raw frames** bind **15
+physical calls** to their signatures. All five public analysis APIs check
+exact formal values and receiver rendering. The regression was seen red
+with **180 issues**; separately rebuilt omission and one-type-only cleanup
+mutations fail with **180 / 45 issues**. Exact restoration, rebuild and
+focused tests pass.
+
+The fresh fixture cache restores **901 products** from **1,172 public
+inputs**. All **347 preexisting test files** are byte-identical; one new
+file adds two test declarations. The full fixture-enforced suite passes
+**2,007 tests / 43 suites (911.246 s)** after rebuilding.
+
+All **762 Mach-O inputs x four views** are reviewed. Only the three new
+libraries change: **40 JSON fields** (16 annotations, 12 arguments,
+12 statements) for **12 sites**: six Int8 views, three Float literals and
+three Bool literals. Exact reconstruction explains JSON, both source
+views and listing. Raw instructions, CFG, metadata, receiver spelling and
+producer effects are unchanged. The other **759 inputs** and all four SDK
+workload outputs are byte-identical.
+
+All **3,052 paired cost rows** pass default caps without overrides:
+**8,574,052,349,126 -> 8,571,964,071,628 instructions (-0.024356%)**;
+**28,673,162,360 -> 28,735,768,024 bytes summed per-run physical peaks
+(+0.218342%)**. No speed improvement is claimed. All **416 CLI invocations**
+pass: **80 metadata/xrefs pairs**, **208 stderr pairs**, **128 whole-view /
+measured comparisons**, **64 filtered / whole comparisons**, and **16 Lab
+pairs** are unchanged or match their corresponding reviewed output. All
+**32 changed Analyze lines** and **24 changed lines per filtered source
+view** map to the reviewed fields/whole-source lines. Four guarded SDK
+structured rerenders match measured hashes.
+
+The original five apps produce byte-identical outputs across **84,833
+functions**, preserving every header and its order. All ten guarded renders
+exit zero without kills, maximum sampled **231 MB** under the **2,000 MB**
+guard. Private bodies and reports remain ignored. This is reliability/output
+comparison, not source-grounded vendor accuracy scoring.
+
+Reproduce with `Tools/fixtures.sh`, `swift build --build-tests`, and
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`; native drivers are the
+three `Fixtures/Sample/narrow-integer-return-SwiftReceiverTypeList.*-oracle`
+products. See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/dbbdc834b5a02894d5b8b5e8b062d3da6a7523ac).
+**Publication is pending the original integration gate**; these are local
+results, not a new hosted 2,007-test result.
+
+**OPEN:** general argument/entry/RET/fallthrough placement, other tail-result
+conversions, C/ObjC result widths, enum-bit qualification and values carried
+across awaits. Existing readiness/scoring tables are not recomputed.
