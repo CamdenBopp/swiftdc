@@ -10223,6 +10223,7 @@ public struct Disassembler: Sendable {
                     selfValueBySite[address] = value
                     valueSelfBySite[address] = value
                     following = []
+                    followingTypes = []
                 }
                 if !(laidOut + unplaced + following).isEmpty {
                     argumentsByAddress[address] = (laidOut + unplaced).map(sanitizeValue) + following

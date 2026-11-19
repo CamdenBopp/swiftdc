@@ -1274,3 +1274,7 @@ python3 build-swift-integer-tail-results.py
 
 echo "==> Swift narrow formals consume proved bits across register/stack roles (swift_narrow_argument*.swift, -Onone/-O/-Osize)"
 python3 build-swift-narrow-arguments.py
+
+# Keep formal value/type lists aligned when integer receiver words become self.
+echo "==> Swift receiver type-list alignment (own source, -Onone/-O/-Osize)"
+python3 build-swift-receiver-type-list.py
