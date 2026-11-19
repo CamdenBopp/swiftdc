@@ -136,7 +136,102 @@ code `8a15928`; the local receiver change requires its own gate/publication
 and hosted result. See [CI setup and image sources](CI.md).
 No decompilation benchmark or readiness percentage changes.
 
-## Latest local verification: async link-register facts
+## Latest local verification: outlined async context headers
+
+**FIXED for complete outlined header leaves (completeness, `07a9d04`).**
+
+At `07a9d04468f36ea9e265b10c7460ce1c1cab655d`,
+`AsyncFuncletIndex` proves a declared helper's complete
+non-tail `stp <parent>,<resume>,[<context>]; mov x22,<context>; ret` leaf,
+with exact 64-bit operands, offset zero and no writeback. At the call,
+live context/resume facts must match the pending resume. The proof invalidates
+both overwritten header words, records only ResumeParent as a resume pointer,
+installs the x22 handoff and discards stale x22/LR address facts. The final
+handover check still validates the terminal context, and later calls or
+writes can invalidate it. Parent data is not interpreted as a resume address.
+
+The default -Osize own-source `AsyncOutlinedContext.sequence` calls this
+helper twice. Its declared resume functions were present in nlist, function
+starts and Swift async hint sections but remained orphaned. The sequence
+now groups its three funclets and two awaits, as -Onone/-O already did.
+The helper call remains visible; generic outlined inlining is unchanged.
+Four grouping APIs verify the exact chain, kinds, ordinals and predecessors;
+`analyzeEachFunction` keeps its documented ungrouped/await-result decline.
+
+The public source/native driver covers **21 source-sum controls** at the
+three default optimization levels, including independently varied values
+and wrapping extremes. **16 selected frames** have independent LLVM,
+nlist/export/start/relative-hint witnesses, including both Osize helper calls.
+These native controls establish the source result; the decompiler still
+prints **`return ?` at all three levels**, so no numeric agreement is claimed.
+
+All **25 separately compiled mutations** fail; the native control and both
+committed link-register tests pass every mutant. The omitted helper proof
+fails with **52 issues**. Exact restoration rebuilds **22 focused tests**
+green. Adversarial cases cover the complete helper/start/operand/width proof,
+wrong stores or moves, tail/extra effects, overlapping header words,
+premature handover, and stale x22/LR facts. The composed earlier-call
+regression also retains the separate `5291877` generic LR fix.
+
+All **349 preexisting test files/assertions remain byte-identical**. One new
+file adds four test declarations. The fresh rebuilt fixture-enforced suite
+passes **2,013 tests / 43 suites (917.994 s)**. The frozen snapshot contains
+**1,177 public input files / 907 fixture products**.
+
+Across **768 inputs x four views**, only the new Osize dylib changes:
+**20 fields**, comprising nine ownership-metadata fields and eleven
+instruction fields. The two await notes, two hidden private-frame spill
+notes and raw-proved ResumeParent return classification reconstruct all
+JSON, listing and source-view changes exactly. Physical instructions,
+addresses, targets and CFGs remain unchanged; the other **767 inputs are
+identical**. The final returned value remains unknown.
+
+All **3,076 paired cost rows** meet every default limit without override:
+**8,594,354,856,255 -> 8,601,454,476,795 instructions (+0.082608%)**;
+**28,987,224,456 -> 28,919,951,200 bytes summed per-run physical peaks
+(-0.232079%)**. No performance improvement is claimed. Frozen baseline
+SHA256: `e14bb8102648e4e3d30b4de1327dd4d9f5dc54f931d33c217c0d17a021a800b3`;
+candidate: `31a9504d6f3351148037dd60ca4d9794e155748bd43d3f5d7b36e5d69bb46849`.
+
+All **416 CLI invocations over 16 inputs and 13 paths** pass. The **80
+metadata/xrefs pairs** and **208 stderr pairs** are identical; **128 whole
+views** match the measurements and **64 filtered comparisons** match whole
+bodies. All changed Analyze, Lab and filtered-view lines are reconstructed.
+Lab's live x20 at the final branch is a raw register value; the Int64 return
+is x0 and remains unknown. All four measured SDK workloads are unchanged;
+four guarded structured rerenders match measured hashes.
+
+Ten original Clarc/GoodLinks/Terminal/TextEdit/Chess renders pass the
+**2,000 MB footprint guard**, with identical output and all **84,833
+function headers in order**. The largest sampled footprint is **311 MB**.
+Private reports remain under ignored `work/`; this reliability/output
+comparison claims no source-grounded application accuracy.
+
+For the pending publication interval, published `83443a5` and the
+intermediate `5291877` baseline also match all **3,072 render/exit pairs**
+and four SDK workloads at the same 768-input content key. Choosing the
+separately qualified LR baseline hides no additional output delta.
+
+Reproduce with `Tools/fixtures.sh`, `swift build --build-tests`, then
+`swift test --skip-build --filter 'AsyncOutlinedContextTests|AsyncHandoffShapeTests|AsyncSlotChronologyTests|AsyncCallLinkRegisterTests'`.
+The full command is `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`
+after rebuilding. The three public
+`Fixtures/Sample/async-outlined-context-*-oracle` products execute the native
+controls. Compare frozen releases with
+`Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/07a9d04468f36ea9e265b10c7460ce1c1cab655d).
+
+**Publication pending:** these are local results against the committed
+`5291877` link-register baseline. The original integration gate and a hosted
+run covering both changes remain to be checked.
+
+**OPEN:** transporting values across awaits, including chronology, ambiguous
+predecessors, loops, parent-pointer escape and per-edge memory effects.
+Other outlined allocator/runtime-wrapper forms in the same -Osize fixture
+remain unsupported. General argument/entry/RET placement remains open. Existing
+readiness/scoring tables are not recomputed.
+
+## Previous local verification: async link-register facts
 
 **FIXED for call-clobbered async ownership facts (soundness, `5291877`).**
 
@@ -200,9 +295,13 @@ published receiver code `dbbdc83` at `83443a5` completed hosted
 **2,007 tests / 43 suites (2,555.394 s)**, confirmed from terminal job state
 and decoded fixture-enforced logs. That hosted result does not cover this fix.
 
-**OPEN:** recovering values carried across awaits and context handoffs through
+**OPEN at `5291877`:** recovering values carried across awaits and context handoffs through
 outlined helpers. This commit fixes a false ownership proof; it does not add
 value propagation. No decompilation benchmark or readiness percentage changes.
+
+**FOLLOW-UP FIXED (`07a9d04`):** the complete STP/MOV/RET header
+helper now has a body-proven ownership summary. Carried-value recovery and
+other outlined allocator/runtime-wrapper forms remain open.
 
 ## Previous local verification: receiver formal type alignment
 
