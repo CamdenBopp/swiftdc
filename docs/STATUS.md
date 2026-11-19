@@ -235,11 +235,12 @@ All **3,076 paired gate cost rows** pass default caps without override:
 (+0.533272%)**. Independent gate release SHA256:
 `e735966e0d628d7b92e7792377515a7456eb6dfbc98342bff3c42e10bd831f93`.
 
-New hosted [run 44480495586](https://github.com/CamdenBopp/swiftdc/actions/runs/44480495586)
-at `abdd596` is in progress (suite job `135411263664`). Its actual terminal
-state and decoded logs remain to be checked before claiming hosted
-2,013-test success. The prior `83443a5` run's success covers receiver code
-`dbbdc83`, not these two newly published changes.
+**VERIFIED hosted execution:** [run 44480495586](https://github.com/CamdenBopp/swiftdc/actions/runs/44480495586)
+at published `abdd596` completed successfully. Job `135411263664` rebuilt
+and passed the fixture-enforced **2,013 tests / 43 suites (1,985.238 s)**.
+The terminal run head, successful job steps and decoded suite log were checked.
+This covers soundness code `5291877` and completeness code `07a9d04`;
+it does not establish recovery of values carried across awaits.
 
 **OPEN:** transporting values across awaits, including chronology, ambiguous
 predecessors, loops, parent-pointer escape and per-edge memory effects.
@@ -306,8 +307,9 @@ See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/529187
 
 **PUBLISHED in `abdd596` with outlined-header code `07a9d04`:** the
 original gate's independent **2,013 tests / 43 suites** cover this
-soundness fix. The current publication receipt is above; hosted run
-`44480495586` is still in progress. Separately,
+soundness fix. Hosted run `44480495586` also passed the rebuilt,
+fixture-enforced **2,013 tests / 43 suites (1,985.238 s)**; its terminal
+state and decoded log were checked. Separately,
 published receiver code `dbbdc83` at `83443a5` completed hosted
 [run 44456365627](https://github.com/CamdenBopp/swiftdc/actions/runs/44456365627):
 **2,007 tests / 43 suites (2,555.394 s)**, confirmed from terminal job state
