@@ -14416,11 +14416,10 @@ the terminal run head/job and decoded enforcing-suite log. Those results
 cover the preceding code, not this new frame-provenance fix.
 
 **PUBLICATION PENDING:** code `731c17d` has not run through the original
-integration gate or hosted CI. **OPEN:** unproved indexed native-frame
-effective addresses, transporting values across awaits, other outlined
+integration gate or hosted CI. The indexed effective-address gap in this
+base-provenance change is addressed separately by `e8f2f7e`'s qualified
+index guard. **OPEN:** transporting values across awaits, other outlined
 allocator/runtime wrappers and general context escape/lifetime effects.
-The separate indexed-address reduction reproduces with both native sp and
-x29 bases; this base-provenance change does not fix it.
 
 Reproduce the focused controls after rebuilding with
 `swift test --skip-build --filter 'asyncKnownFrameRegisterContext|asyncHardwareFrameStores|asyncLostContextFacts|asyncProvedHardwareFrame|asyncUnprovedFrame|asyncFrameProvenanceCrossesCFG|asyncHardwareFrameFactsMeet|asyncProvedHeaderFrameEffects|asyncCallsForgetPriorLinkRegister|asyncCallsKeepCalleeSaved|outlinedContextHeader|asyncSignedResumeBehind'`.
@@ -14428,3 +14427,56 @@ The full command is `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
 Compare frozen releases with
 `Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
 See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/731c17dfe88a8c68ab7ccbd541033d3329c2dfb9).
+
+## Latest local verification: indexed native-frame addresses
+
+**VERIFIED locally at `e8f2f7ebb72b28e31e3218ceed1f46ec9dc22782`:** native SP/x29 provenance alone no longer
+classifies an indexed effective address as stack memory. Only an absent index
+or literal zero register retains that proof. Unknown-index writes conservatively
+invalidate resume ownership; direct/zero-index stores and indexed loads retain
+valid ownership.
+
+In an own-image reduction of `AsyncOutlinedContext.sequence` at -Osize,
+`x9 = child - nativeBase + 8` makes an indexed store overwrite `ResumeParent`.
+Debug and release each decline both false chains (SP and x29), while preserving
+both direct-store controls. All four images are independently LLVM-decoded and
+never executed; no native numeric agreement is claimed.
+
+Three new test declarations cover hints/fallback, both bases, byte/full-width
+stores, zero-index/direct controls and loads. Five compiled mutants fail
+(16, 2, 8, 8 and 11 issues); the load mutant also fails an existing signed-resume
+control. Exact restoration rebuilds **17 focused tests** green.
+**All 351 prior test files remain byte-identical.** The rebuilt fixture-enforced
+suite passes **2,025 tests / 43 suites (914.316 s)**, with
+**1,180 public input files / 907 fixture products** frozen.
+
+All **768 fixture/toolchain inputs in four views** are byte-identical.
+All **3,076 paired cost rows** pass default limits without override:
+**8,713,600,310,998 -> 8,716,662,485,172 instructions
+(+0.035142%)**; **28,858,150,464 -> 29,037,527,056 bytes
+summed per-run physical peaks (+0.621580%)**.
+No speed improvement is claimed. Baseline/candidate release SHA256:
+`877857a7df4a2a6d9e1c6b19c87ae658bdf2ee5606c18c0debaa0a411c418c88` /
+`534664ebffc03232cfdda78f598397c9d24a39b6392435e23e6ba3f7a4f3e2a1`.
+
+All **416 CLI invocations / 16 inputs / 13 paths** are unchanged, including
+80 metadata/xrefs pairs, 208 stderr pairs, 128 whole-view/measurement matches
+and 64 filtered/whole comparisons. All four SDK workloads and four guarded
+rerenders match. Ten guarded renders of the original five apps preserve complete
+output and **84,833 functions/order**, without kills; maximum sampled footprint
+**215 MB**. Private reports stay ignored; scoring/readiness tables are unchanged.
+
+The intermediate baseline directly matches published `087d2af` across all
+3,072 four-view/exit pairs and four SDK outputs. **PUBLICATION PENDING:** this
+fix and frame-provenance code `731c17d` await the original integration gate
+and hosted CI. The previous hosted success at `087d2af` covers preceding code.
+**OPEN:** values carried across awaits, other outlined allocator/runtime wrappers,
+and general context escape/lifetime effects. Unknown indexes decline rather
+than proving general effective-address disjointness.
+
+Reproduce after `swift build --build-tests` with
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter 'asyncIndexedNativeFrame|asyncDirectAndZeroIndexed'`;
+full suite: `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+Compare frozen releases with
+`Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/e8f2f7ebb72b28e31e3218ceed1f46ec9dc22782).
