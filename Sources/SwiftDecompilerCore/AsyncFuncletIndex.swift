@@ -208,7 +208,8 @@ struct AsyncFuncletIndex: Sendable {
     /// x29 addresses the hardware stack only while its provenance proves it.
     /// Losing an async-context fact does not restore the frame-pointer role.
     static func addressesFrame(_ operand: StructuredOperand, framePointerIsHardwareFrame: Bool) -> Bool {
-        guard case .memory(let base?, _, _) = operand else { return false }
+        guard case .memory(let base?, let index, _) = operand,
+              index == nil || index?.kind == .zero else { return false }
         return base.kind == .stackPointer || (base.key == "x29" && framePointerIsHardwareFrame)
     }
 
