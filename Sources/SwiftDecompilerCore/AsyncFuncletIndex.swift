@@ -205,11 +205,11 @@ struct AsyncFuncletIndex: Sendable {
     /// The identity of a funclet's own incoming context (x22 at its entry).
     static let ownContext = UInt64.max
 
-    /// A memory operand based on sp, or on x29, which the Apple arm64 ABI
-    /// keeps as the frame pointer.
-    static func addressesFrame(_ operand: StructuredOperand) -> Bool {
+    /// x29 addresses the hardware stack only while its provenance proves it.
+    /// Losing an async-context fact does not restore the frame-pointer role.
+    static func addressesFrame(_ operand: StructuredOperand, framePointerIsHardwareFrame: Bool) -> Bool {
         guard case .memory(let base?, _, _) = operand else { return false }
-        return base.kind == .stackPointer || base.key == "x29"
+        return base.kind == .stackPointer || (base.key == "x29" && framePointerIsHardwareFrame)
     }
 
     /// Runtime suspensions that take the resume function as an explicit
@@ -461,6 +461,9 @@ struct AsyncFuncletIndex: Sendable {
             for run in runs {
                 for successor in Set(run.successors) { predecessors[successor, default: []].append(run.startAddress) }
             }
+            let hardwareFrameInputs = AsyncHardwareFrames.inputs(in: runs, entry: start) {
+                headerHelper(at: $0) != nil
+            }
             for run in runs {
                 let path = Self.straightLinePath(from: run, runAt: runAt, predecessors: predecessors)
                 var pages: [String: UInt64] = [:]
@@ -471,6 +474,7 @@ struct AsyncFuncletIndex: Sendable {
                 // context may live inside another's frame: `sleep(nanoseconds:)`
                 // builds its continuation context at `x22 + 0x10`.
                 var contexts: [String: ContextAddress] = [:]
+                var hardwareFrames = path.first.flatMap { hardwareFrameInputs[$0.address] } ?? []
                 if path.first?.address == start {
                     contexts["x22"] = ContextAddress(identity: Self.ownContext, offset: 0)
                 }
@@ -489,8 +493,11 @@ struct AsyncFuncletIndex: Sendable {
                 if hop || wait != nil { allocatesContext.insert(start) }
 
                 for insn in path {
+                    let framePointerIsHardwareFrame = hardwareFrames.contains("x29")
+                    AsyncHardwareFrames.advance(&hardwareFrames, by: insn) { headerHelper(at: $0) != nil }
                     guard let detail = insn.detail else {
-                        pages.removeAll(); held.removeAll(); contexts.removeAll(); resumeFields.removeAll(); continue
+                        pages.removeAll(); held.removeAll(); contexts.removeAll(); resumeFields.removeAll()
+                        continue
                     }
                     if insn.controlFlow == .call {
                         // Named only here: for any other instruction the
@@ -612,7 +619,7 @@ struct AsyncFuncletIndex: Sendable {
                         // is a handoff. An arbitrary memory store proves nothing.
                         let count = detail.id == AARCH64_INS_STP ? 2 : 1
                         let memory = operands.first(where: { $0.operand.isMemory })?.operand
-                        if let memory, Self.addressesFrame(memory) {
+                        if let memory, Self.addressesFrame(memory, framePointerIsHardwareFrame: framePointerIsHardwareFrame) {
                             // The C stack holds no async context: one lives in
                             // the task allocator or inside another context.
                         } else if case .memory(let base?, nil, let displacement)? = memory, !detail.writeback,
@@ -645,7 +652,7 @@ struct AsyncFuncletIndex: Sendable {
                         // field, unless it is to the C stack.
                         if let memory = operands.first(where: { $0.operand.isMemory })?.operand,
                            !Self.readsMemoryOnly.contains(detail.id),
-                           !Self.addressesFrame(memory) {
+                           !Self.addressesFrame(memory, framePointerIsHardwareFrame: framePointerIsHardwareFrame) {
                             resumeFields.removeAll()
                         }
                         if let dst = operands.first?.operand.register {
