@@ -472,6 +472,9 @@ struct AsyncFuncletIndex: Sendable {
                         for n in 0...17 {
                             pages["x\(n)"] = nil; held["x\(n)"] = nil; contexts["x\(n)"] = nil
                         }
+                        // BL/BLR replace LR even when the callee preserves
+                        // every other register holding a context or address.
+                        pages["x30"] = nil; held["x30"] = nil; contexts["x30"] = nil
                         resumeFields.removeAll()
                         if Self.isTaskAlloc(name) {
                             contexts["x0"] = ContextAddress(identity: insn.address, offset: 0)
