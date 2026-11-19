@@ -6,7 +6,7 @@ its commit, its denominator and the command that reproduces it. The long
 history is [PRODUCTION-READINESS.md](PRODUCTION-READINESS.md); this page
 is what to quote.
 
-Updated 2026-11-18. Each measurement names its commit; the benchmark
+Updated 2026-11-19. Each measurement names its commit; the benchmark
 tables retain their original measurements.
 
 ## What to report, and what not to
@@ -136,7 +136,75 @@ code `8a15928`; the local receiver change requires its own gate/publication
 and hosted result. See [CI setup and image sources](CI.md).
 No decompilation benchmark or readiness percentage changes.
 
-## Latest local verification: receiver formal type alignment
+## Latest local verification: async link-register facts
+
+**FIXED for call-clobbered async ownership facts (soundness, `5291877`).**
+
+At `5291877b835e54d9d0ba65a25b5ee81caae466fa`,
+`AsyncFuncletIndex` discards held addresses, address pages
+and context aliases in x30 after a call. It previously cleared x0...x17
+but retained x30: a later copy into another register could fabricate a
+resume handoff from the old LR value, although BL/BLR had replaced it.
+Callee-saved x19 facts retain their existing behavior.
+
+A standalone inline-header regression covers address/page/context facts,
+direct/indirect calls and hint-backed/code-only indexing: **12 false
+handoffs become declines**, while **12 x19 controls retain their chains**.
+The initial rebuilt tests fail with **24 issues**. Three independently
+compiled mutations, each retaining one x30 fact domain, fail with **eight
+issues each**; their x19 controls pass. Exact restoration rebuilds both
+regressions green. The source-controlled regression decodes explicit machine
+words with Capstone and checks recovered chains and suspension records;
+it is a reduced ownership proof, not an application-wide accuracy or
+carried-value result.
+
+All **348 preexisting test files/assertions remain byte-identical**. One
+new file adds two test declarations. The rebuilt fixture-enforced suite
+passes **2,009 tests / 43 suites (926.957 s)**. The frozen snapshot has
+**1,173 public input files / 901 fixture products**.
+
+Matched frozen releases produce **identical outputs for all 762 inputs
+in four views**, including 35 unchanged expected preflight-decline pairs.
+All **3,052 paired cost rows** pass every default limit without override:
+**8,564,422,553,288 -> 8,572,825,019,096 instructions (+0.098109%)**;
+**28,674,159,896 -> 28,770,205,872 bytes summed per-run physical peaks
+(+0.334957%)**. No performance improvement is claimed. Baseline release
+SHA256: `f7959128c7cd520851b181a0bc0042bd23923d905d5236a25773093f436cba75`;
+candidate: `e14bb8102648e4e3d30b4de1327dd4d9f5dc54f931d33c217c0d17a021a800b3`.
+
+All **338 CLI invocations over 13 inputs and 13 paths** pass with
+identical output: **65 metadata/xrefs pairs**, **169 stderr pairs**,
+**104 whole views** matching the measurements, and **52 filtered/whole
+comparisons**. Analyze and Lab remain identical. All four measured SDK
+workload outputs are unchanged; four guarded structured rerenders match
+the measured hashes.
+
+Ten original Clarc/GoodLinks/Terminal/TextEdit/Chess renders pass the
+**2,000 MB footprint guard**, preserving identical outputs and all
+**84,833 function headers in order**. The largest sampled footprint is
+**308 MB**. These are reliability/output comparisons, not source-grounded
+application accuracy measurements. Private reports remain under ignored
+`work/`.
+
+Reproduce the regressions with `swift build --build-tests`, then
+`swift test --skip-build --filter 'asyncCalls(ForgetPriorLinkRegister|KeepCalleeSaved)'`.
+The full command is `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`
+after rebuilding. Compare frozen releases with
+`Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/5291877b835e54d9d0ba65a25b5ee81caae466fa).
+
+**Publication pending:** this is local verification. The original integration
+gate and a hosted run covering this change remain to be checked. Separately,
+published receiver code `dbbdc83` at `83443a5` completed hosted
+[run 44456365627](https://github.com/CamdenBopp/swiftdc/actions/runs/44456365627):
+**2,007 tests / 43 suites (2,555.394 s)**, confirmed from terminal job state
+and decoded fixture-enforced logs. That hosted result does not cover this fix.
+
+**OPEN:** recovering values carried across awaits and context handoffs through
+outlined helpers. This commit fixes a false ownership proof; it does not add
+value propagation. No decompilation benchmark or readiness percentage changes.
+
+## Previous local verification: receiver formal type alignment
 
 **FIXED for already placed GP value receivers (soundness, `dbbdc83`).**
 
@@ -205,9 +273,10 @@ input / 901 product hashes**, and a separate remote-head check confirms
 publication. Independent gate release SHA256:
 `f7959128c7cd520851b181a0bc0042bd23923d905d5236a25773093f436cba75`.
 
-New hosted [run 44456365627](https://github.com/CamdenBopp/swiftdc/actions/runs/44456365627)
-at `83443a5` is in progress (suite job `135332241554`). Its actual terminal
-job/logs must still be checked before claiming hosted 2,007-test success.
+Hosted [run 44456365627](https://github.com/CamdenBopp/swiftdc/actions/runs/44456365627)
+at `83443a5` completed successfully (suite job `135332241554`). Terminal
+job state and decoded fixture-enforced logs confirm **2,007 tests / 43 suites
+(2,555.394 s)**. This result covers receiver code `dbbdc83`.
 
 **OPEN:** general argument/entry/RET/fallthrough placement, other tail-result
 conversions, C/ObjC result widths, enum-bit qualification and values carried
