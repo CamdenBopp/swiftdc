@@ -136,7 +136,92 @@ code `8a15928`; the local receiver change requires its own gate/publication
 and hosted result. See [CI setup and image sources](CI.md).
 No decompilation benchmark or readiness percentage changes.
 
-## Latest local verification: prove outlined terminal handoffs
+## Latest local verification: complete outlined allocator prefixes
+
+**FIXED locally at `5c4ede235078ba6effcb66166c91ba4b8c7047f8`:** the default-Osize allocator wrapper in
+`AsyncOutlinedContext.first` and `second` no longer leaves their resumes
+orphaned. Both complete three-funclet producer chains are recovered at all
+three default optimization levels across the path, loaded-image, filtered
+and streaming APIs. The unchanged fixture genuinely awaits `Task.yield` in
+both producers. Its carried sum still renders `return ?`.
+
+The index proves the entire native-stack spill/frame setup, descriptor/GOT
+load and 32-bit size load before the bound `swift_task_alloc` tail. Each
+outer call receives a separate context identity. Old x29 page/resume/context
+facts are discarded, and the proved frame prefix is replayed in both the
+CFG-MUST and bounded-path domains before normal call clobbers. Names alone
+prove nothing; the same body proof accepts ordinary and absent labels.
+
+This depends on terminal-handoff soundness code
+`04efb1f8b22764e509a7d61fcac4c41f7d1c03fe`. A combined allocator/terminal
+context-clobber reduction stays declined. Both six-owner isolation controls
+remain intact. Patched images are never executed.
+
+Five new declarations first rebuild red against that dependency: three
+expected failures, 152 terminal issues, with all 25 prior focused controls
+passing. All **19 separately compiled mutations** fail their expected new
+declarations, with those 25 controls passing in every variant; exact
+restoration rebuilds **30 focused tests green**. All **353 prior Swift test
+files are byte-identical**. No existing test or assertion was removed or
+weakened. Fixture-presence enforcement remains intact.
+
+Independent LLVM checks cover 43 literal test words and eight critical
+address/alias encodings. Raw Mach-O relative-pointer tables, four runtime
+bindings and 35 LLVM words classify the original image's 32 changed debug
+fields across six functions. A fresh default-Osize build with a 24-byte GOT
+displacement recovers both complete chains as well. Debug and release each
+check eight whole images in four views, six images with three producer
+filters in three views, and 28 native source observations. Whole/filtered
+JSON typed metadata/facts and addresses match; raw instruction/symbol-note
+spelling differs between the existing LLVM and Capstone paths. Pseudocode
+and structured bodies match exactly. Native source controls do not establish
+numeric decompiler agreement.
+
+The rebuilt fixture-enforced suite passes **2,038 tests / 43 suites
+(927.772 s)**, with **1,182 public inputs / 907 products** frozen throughout
+qualification. Across **768 fixture/toolchain inputs**, only `libAsyncOutlinedContext.Osize.dylib`
+changes: **32 JSON fields / six functions**, adding two complete producer chains
+and four resume funclets. Every changed field and listing/pseudocode/structured
+line matches independently checked metadata, binding and instruction evidence.
+The other **767 inputs are byte-identical in all four views**; all physical
+functions/order/instructions remain intact.
+
+All **3,076 default paired cost limits pass without override**:
+**8,722,665,697,860 -> 8,760,161,140,457 instructions (+0.429862%)**;
+summed per-run physical peaks **28,903,454,672 -> 28,885,611,848 bytes
+(-0.061732%)**. No performance improvement is claimed.
+
+All **416 CLI invocations over 13 paths** pass and their eight changed command
+outputs are reviewed on the same fixture. Analyze's changes match the
+reviewed listing; lab's four context seeds and two opaque global-load exits
+match raw metadata/LLVM evidence. All 80 metadata/xrefs pairs and 208 stderr
+pairs are unchanged; 128 whole views match measurements and 64 filtered
+comparisons match whole bodies. Four SDK workloads and four guarded rerenders
+match. Ten guarded renders of the original five apps are byte-identical,
+retaining **84,833 functions/order**, with no kills and **223 MB** maximum
+sampled footprint. Private reports stay ignored.
+
+Frozen release SHA256 (baseline / candidate):
+`dc42ee93dc0517664ff39ed453412e1ca0c084a54f9d02994bd8498e235427ee` /
+`f2f700e6a20084ec93777b200d10a0b872b99ebfa6435479ec72942fb5867e9b`.
+The baseline directly matches published `b5d0724`'s actual gate release
+across all 3,072 corpus view/exit pairs and four SDK workloads.
+
+**PUBLICATION PENDING:** this code and its terminal-handoff dependency still
+require the original integration gate and hosted verification. The earlier
+published `b5d0724` batch's terminal hosted success covers earlier code.
+**OPEN:** values carried across awaits, other runtime wrappers, and general
+context escape/lifetime effects. No scoring table or readiness percentage is
+recomputed.
+
+Reproduce after `swift build --build-tests` with
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter outlinedTaskAllocator`;
+full suite: `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+Compare frozen releases with
+`Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/5c4ede235078ba6effcb66166c91ba4b8c7047f8).
+
+## Previous local verification: prove outlined terminal handoffs
 
 **FIXED locally at `04efb1f8b22764e509a7d61fcac4c41f7d1c03fe`:** async ownership no longer carries a
 caller's context/header snapshot through an unproved outlined terminal
@@ -187,9 +272,10 @@ Frozen release SHA256 (baseline / candidate):
 
 **PUBLICATION PENDING:** this code has not passed the original integration
 gate or hosted CI. The prior published batch at `b5d0724` has terminal hosted
-success, which does not cover this change. **OPEN:** outlined allocation and
-other runtime wrappers, values carried across awaits, and general context
-escape/lifetime effects. No readiness percentage or scoring table is
+success, which does not cover this change. The specific outlined allocator
+prefix is qualified separately by `5c4ede235078ba6effcb66166c91ba4b8c7047f8`.
+**OPEN:** other runtime wrappers, values carried across awaits, and general
+context escape/lifetime effects. No readiness percentage or scoring table is
 recomputed.
 
 Reproduce after `swift build --build-tests` with
