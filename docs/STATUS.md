@@ -136,7 +136,82 @@ code `8a15928`; the local receiver change requires its own gate/publication
 and hosted result. See [CI setup and image sources](CI.md).
 No decompilation benchmark or readiness percentage changes.
 
-## Latest local verification: outlined async context headers
+## Latest local verification: native frame provenance in async ownership
+
+**VERIFIED locally at `731c17dfe88a8c68ab7ccbd541033d3329c2dfb9`:** a separate native-stack
+MUST analysis replaces the assumption that every x29-based memory operand is
+a hardware-frame access. Full-width copies and constant ADD/SUB carry the
+proof; register writes, call-volatiles/LR and the complete header helper's
+x22/LR outputs invalidate it. The helper's untouched arguments retain their
+proved provenance. Memory classification uses the incoming address before
+writeback or destination updates.
+
+Reachable CFG predecessor intersections and backedges preserve native x29
+across joins; unvisited predecessors start at top and a capped or inconsistent
+solve discards incoming facts. This retains the published Onone concurrent
+and nonsending isolation oracles' chains before outgoing stack-argument
+stores. Both oracles match the published baseline in all four views.
+
+Nine new test declarations exercise overwritten/lost context aliases,
+precise and partial writes, disjoint/native frame controls, full-width frame
+restoration, ordinary/helper effects, writeback ordering, joins, loops, entry
+backedges, unreachable predecessors, missing detail and capped solves.
+**All 25 independently compiled mutations fail** with five retained control
+declarations green in every mutant. The previous index policy records
+82 issues, the context-absence approximation 40, and the path-local version
+two. Exact restoration rebuilds **14 focused tests** green.
+
+Debug and release each pass **28 independently LLVM-decoded own-image
+reductions**: ten false ownerships declined, one valid header recovered and
+17 matched controls preserved. These images are decoded, never executed;
+they establish ownership behavior and do not claim a conforming compiler
+emits the contradictory aliases or establish native numeric agreement.
+
+**All 350 prior test files/assertions remain byte-identical.** One new file
+adds nine declarations. The rebuilt fixture-enforced suite passes
+**2,022 tests / 43 suites (907.912 s)**. The frozen snapshot contains
+**1,179 public input files / 907 fixture products**.
+
+All **768 fixture/toolchain inputs in four views** are byte-identical.
+All **3,076 paired cost rows** pass default limits without override:
+**8,601,454,476,795 -> 8,713,600,310,998 instructions (+1.303801%)**;
+**28,919,951,200 -> 28,858,150,464 bytes summed per-run physical peaks
+(-0.213696%)**. No performance improvement is claimed. Frozen baseline and
+candidate SHA256 are respectively
+`31a9504d6f3351148037dd60ca4d9794e155748bd43d3f5d7b36e5d69bb46849` and
+`877857a7df4a2a6d9e1c6b19c87ae658bdf2ee5606c18c0debaa0a411c418c88`.
+
+All **416 CLI invocations over 16 inputs and 13 paths** pass unchanged:
+80 metadata/xrefs pairs, 208 stderr pairs, 128 whole-view/measurement matches
+and 64 filtered/whole comparisons. All four SDK workloads are unchanged;
+four guarded rerenders match their measurements. Ten guarded renders of
+the original five apps preserve complete output and all **84,833 functions
+and their order**, with no kills and a maximum sampled footprint of **204 MB**.
+Private reports remain ignored. Benchmark scoring tables are not recomputed.
+
+The local baseline matches published `087d2af`'s gate release across all
+3,072 four-view/exit pairs and four SDK outputs. That published baseline
+also passed its original gate's **2,013 tests / 43 suites (918.104 s)** and
+hosted [run 44489579978](https://github.com/CamdenBopp/swiftdc/actions/runs/44489579978),
+job `135441491965`: **2,013 tests / 43 suites (2,075.633 s)**, confirmed from
+the terminal run head/job and decoded enforcing-suite log. Those results
+cover the preceding code, not this new frame-provenance fix.
+
+**PUBLICATION PENDING:** code `731c17d` has not run through the original
+integration gate or hosted CI. **OPEN:** unproved indexed native-frame
+effective addresses, transporting values across awaits, other outlined
+allocator/runtime wrappers and general context escape/lifetime effects.
+The separate indexed-address reduction reproduces with both native sp and
+x29 bases; this base-provenance change does not fix it.
+
+Reproduce the focused controls after rebuilding with
+`swift test --skip-build --filter 'asyncKnownFrameRegisterContext|asyncHardwareFrameStores|asyncLostContextFacts|asyncProvedHardwareFrame|asyncUnprovedFrame|asyncFrameProvenanceCrossesCFG|asyncHardwareFrameFactsMeet|asyncProvedHeaderFrameEffects|asyncCallsForgetPriorLinkRegister|asyncCallsKeepCalleeSaved|outlinedContextHeader|asyncSignedResumeBehind'`.
+The full command is `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+Compare frozen releases with
+`Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/731c17dfe88a8c68ab7ccbd541033d3329c2dfb9).
+
+## Previous local verification: outlined async context headers
 
 **FIXED for complete outlined header leaves (completeness, `07a9d04`).**
 
