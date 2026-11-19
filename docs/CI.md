@@ -41,9 +41,13 @@ Published `a841357` passed its independent local gate and then
 **2,000 tests / 43 suites (2,384.404 s)** with fixture presence enforced.
 Toolchain, Fixtures, Build and Enforcing suite completed successfully. The
 terminal job status and decoded logs were checked. This covers code
-`3385323`. The newer local argument-view change (`8a15928`) passes **2,005
-tests / 43 suites** locally; it still requires its original-gate publication
-and a separate hosted run result.
+`3385323`. The argument-view change (`8a15928`) was subsequently published
+at `5c5ab71` through the original gate, which independently passed **2,005
+tests / 43 suites (946.199 s)** and every default output/cost check. New
+[hosted run 44448308320](https://github.com/CamdenBopp/swiftdc/actions/runs/44448308320)
+passed Toolchain and is building Fixtures at the latest observation; Build
+and Enforcing suite are pending. Its completed job/logs must still be checked
+before claiming hosted success for these five new declarations.
 
 ## The environment
 

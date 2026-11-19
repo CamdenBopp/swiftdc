@@ -128,8 +128,8 @@ The later published `a841357` also completed
 [run 44423167838](https://github.com/CamdenBopp/swiftdc/actions/runs/44423167838):
 **2,000 tests / 43 suites passed (2,384.404 s)** with fixture presence enforced.
 Its terminal job state and decoded logs were checked. That hosted result
-covers code `3385323`; the newer argument-view change has its own local
-verification and still needs publication. See [CI setup and image sources](CI.md).
+covers code `3385323`; the newer argument-view change has its own independently gated
+publication and separate hosted run pending. See [CI setup and image sources](CI.md).
 No decompilation benchmark or readiness percentage changes.
 
 ## Latest local verification
@@ -223,11 +223,24 @@ are the nine `Fixtures/Sample/narrow-integer-return-SwiftArgument*-oracle`
 products. See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/8a1592827b1ff7fc96a5eeb3eee08c57ac868941)
 for the compiled faults and their observed red regressions.
 
-**Publication pending:** local verification above covers this committed code.
-The existing original integration gate must independently rebuild/test and
-push it; a hosted result for this revision has not yet been observed. The
-previous published `a841357` completed its own hosted **2,000-test / 43-suite**
-run; that result does not cover these five new declarations.
+**PUBLISHED through the original integration gate:** `5c5ab71` (code
+`8a15928`) passed an independent **2,005 tests / 43 suites (946.199 s)**
+and was pushed to `origin/dev`. Both gate releases match the reviewed main
+outputs across all **756 inputs x four views** and four SDK workloads.
+All **3,028 paired cost rows** pass default caps without permission or use of
+an override: **8,554,276,841,592 -> 8,559,398,887,902 instructions
+(+0.059877%)**; **28,407,856,576 -> 28,578,409,896 bytes summed per-run
+physical peaks (+0.600374%)**. The **1,168 public input / 895 product hashes**
+matched both clean trees at publication, and a separate remote-head check
+confirmed the push. Independent gate release SHA256:
+`76f321ea18de668baf6ba4f7c90f28a3a82ee074b6fc71d96005b13c81833e25`.
+
+New hosted [run 44448308320](https://github.com/CamdenBopp/swiftdc/actions/runs/44448308320)
+at `5c5ab71` has passed Toolchain and is building Fixtures at the latest
+observation; Build and Enforcing suite are pending. Completed job/logs still
+need observation before claiming hosted 2,005-test success. The prior
+published `a841357` completed its own hosted **2,000-test / 43-suite** run;
+that result does not cover these five new declarations.
 
 ## Previous verification: converted integer tail returns
 
@@ -299,7 +312,7 @@ SHA256: `4e16def0eb587925dfe8b73b86dfb2dbb19bef5b2a28784b8f2a9c211dd1a2fc`.
 at `a841357` completed successfully: **2,000 tests / 43 suites (2,384.404 s)**
 with fixture presence enforced. Toolchain, Fixtures, Build and Enforcing
 suite passed; terminal job status and decoded logs were checked. This
-covers the published tail-return revision, separately from the newer local
+covers the published tail-return revision, separately from the newer
 argument-view verification. The earlier
 [run 44411756483](https://github.com/CamdenBopp/swiftdc/actions/runs/44411756483)
 at `d69fff8` passed **1,993 tests / 43 suites (2,253.679 s)** on **Xcode 27.1 /
