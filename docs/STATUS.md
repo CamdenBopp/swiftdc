@@ -221,9 +221,25 @@ controls. Compare frozen releases with
 `Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
 See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/07a9d04468f36ea9e265b10c7460ce1c1cab655d).
 
-**Publication pending:** these are local results against the committed
-`5291877` link-register baseline. The original integration gate and a hosted
-run covering both changes remain to be checked.
+**PUBLISHED through the original integration gate:** `abdd596`, including
+soundness code `5291877` and completeness code `07a9d04`, passed an
+independent **2,013 tests / 43 suites (967.872 s)** and was pushed to
+`origin/dev`. Both gate releases match the reviewed outputs across all
+**768 inputs x four views** and four SDK workloads. Both clean checkout
+snapshots preserve the **1,177 public input / 907 product hashes**; a
+separate remote-head check confirms publication.
+
+All **3,076 paired gate cost rows** pass default caps without override:
+**8,585,626,225,827 -> 8,601,806,480,483 instructions (+0.188457%)**;
+**28,875,407,592 -> 29,029,392,152 bytes summed per-run physical peaks
+(+0.533272%)**. Independent gate release SHA256:
+`e735966e0d628d7b92e7792377515a7456eb6dfbc98342bff3c42e10bd831f93`.
+
+New hosted [run 44480495586](https://github.com/CamdenBopp/swiftdc/actions/runs/44480495586)
+at `abdd596` is in progress (suite job `135411263664`). Its actual terminal
+state and decoded logs remain to be checked before claiming hosted
+2,013-test success. The prior `83443a5` run's success covers receiver code
+`dbbdc83`, not these two newly published changes.
 
 **OPEN:** transporting values across awaits, including chronology, ambiguous
 predecessors, loops, parent-pointer escape and per-edge memory effects.
@@ -288,8 +304,10 @@ after rebuilding. Compare frozen releases with
 `Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
 See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/5291877b835e54d9d0ba65a25b5ee81caae466fa).
 
-**Publication pending:** this is local verification. The original integration
-gate and a hosted run covering this change remain to be checked. Separately,
+**PUBLISHED in `abdd596` with outlined-header code `07a9d04`:** the
+original gate's independent **2,013 tests / 43 suites** cover this
+soundness fix. The current publication receipt is above; hosted run
+`44480495586` is still in progress. Separately,
 published receiver code `dbbdc83` at `83443a5` completed hosted
 [run 44456365627](https://github.com/CamdenBopp/swiftdc/actions/runs/44456365627):
 **2,007 tests / 43 suites (2,555.394 s)**, confirmed from terminal job state
