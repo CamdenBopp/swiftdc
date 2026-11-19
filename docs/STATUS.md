@@ -175,9 +175,27 @@ output and **84,833 functions/order**, without kills; maximum sampled footprint
 **215 MB**. Private reports stay ignored; scoring/readiness tables are unchanged.
 
 The intermediate baseline directly matches published `087d2af` across all
-3,072 four-view/exit pairs and four SDK outputs. **PUBLICATION PENDING:** this
-fix and frame-provenance code `731c17d` await the original integration gate
-and hosted CI. The previous hosted success at `087d2af` covers preceding code.
+3,072 four-view/exit pairs and four SDK outputs.
+
+**VERIFIED original gate and publication at `b5d0724d5fd34f4567ac2c1ff5111250422e60c0`:**
+this fix and frame-provenance code `731c17d` passed the independent rebuilt
+fixture-enforced **2,025 tests / 43 suites (988.578 s)**. Both gate releases
+match their reviewed counterparts across all **3,072 four-view/exit pairs per
+side and four SDK workloads**; all **1,180 public inputs / 907 products** match
+in the clean main and original gate checkouts. A separate remote-head check
+confirms publication. No development worktree was added.
+
+All **3,076 paired gate cost rows** pass default limits without override,
+comparing actual published `087d2af` with the complete batch:
+**8,601,806,480,483 -> 8,714,059,703,805 instructions (+1.304996%)**;
+**29,029,392,152 -> 29,088,833,832 bytes summed per-run physical peaks
+(+0.204764%)**. Independent gate release SHA256:
+`749b90de957d6c261070b9515f3036041c6dff220fba89479adc800908486cf0`.
+
+**HOSTED PENDING:** [run 44519956304](https://github.com/CamdenBopp/swiftdc/actions/runs/44519956304)
+is in progress at published `b5d0724`. No hosted pass is claimed. The preceding
+hosted success at `087d2af` covers earlier code. Hold the next push until this
+run is terminal, so a documentation update does not cancel it.
 **OPEN:** values carried across awaits, other outlined allocator/runtime wrappers,
 and general context escape/lifetime effects. Unknown indexes decline rather
 than proving general effective-address disjointness.
@@ -250,11 +268,13 @@ job `135441491965`: **2,013 tests / 43 suites (2,075.633 s)**, confirmed from
 the terminal run head/job and decoded enforcing-suite log. Those results
 cover the preceding code, not this new frame-provenance fix.
 
-**PUBLICATION PENDING:** code `731c17d` has not run through the original
-integration gate or hosted CI. The indexed effective-address gap in this
-base-provenance change is addressed separately by `e8f2f7e`'s qualified
-index guard. **OPEN:** transporting values across awaits, other outlined
-allocator/runtime wrappers and general context escape/lifetime effects.
+**PUBLISHED with the indexed-address fix at `b5d0724`:** the original gate
+passed both code changes, **2,025 tests / 43 suites (988.578 s)** and default
+cost limits; see the indexed-address record for the complete publication
+measurement. Hosted verification of this batch remains pending.
+The indexed effective-address gap is addressed separately by `e8f2f7e`'s
+qualified index guard. **OPEN:** transporting values across awaits, other
+outlined allocator/runtime wrappers and general context escape/lifetime effects.
 
 Reproduce the focused controls after rebuilding with
 `swift test --skip-build --filter 'asyncKnownFrameRegisterContext|asyncHardwareFrameStores|asyncLostContextFacts|asyncProvedHardwareFrame|asyncUnprovedFrame|asyncFrameProvenanceCrossesCFG|asyncHardwareFrameFactsMeet|asyncProvedHeaderFrameEffects|asyncCallsForgetPriorLinkRegister|asyncCallsKeepCalleeSaved|outlinedContextHeader|asyncSignedResumeBehind'`.
