@@ -1271,3 +1271,6 @@ python3 build-narrow-integer-returns.py
 
 echo "==> opposite-signedness Swift function/getter tails retain converted returns (swift_integer_tail_*.swift, -Onone/-O/-Osize)"
 python3 build-swift-integer-tail-results.py
+
+echo "==> Swift narrow formals consume proved bits across register/stack roles (swift_narrow_argument*.swift, -Onone/-O/-Osize)"
+python3 build-swift-narrow-arguments.py

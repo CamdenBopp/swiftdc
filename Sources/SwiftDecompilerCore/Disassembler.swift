@@ -9854,6 +9854,7 @@ public struct Disassembler: Sendable {
         /// Parameter types of the sites laid out from a signature.
         var laidOutTypes: [UInt64: [String]] = [:]
         var cIntegerArgumentSites: Set<UInt64> = []
+        var swiftIntegerArgumentSites: Set<UInt64> = []
         /// Variadic sends whose variadic argument count is not provable: their
         /// fixed arguments render, followed by `…`.
         var unprovenVariadicSites: Set<UInt64> = []
@@ -10098,6 +10099,7 @@ public struct Disassembler: Sendable {
                 }
                 var unplaced = Array(repeating: AbstractValue.unknown,
                                      count: cLayout?.unplaced ?? swiftLayout?.unplaced ?? leadingLayout?.unplaced ?? 0)
+                var unplacedTypes = Array(repeating: "", count: unplaced.count)
                 if !hasAsyncIsolationPrefix, cLayout == nil, let swiftLayout, !swiftLayout.stack.isEmpty {
                     let stackWords = Self.stackParameterWords(
                         swiftLayout, stackArguments: site.stackArguments, widths: site.stackArgumentWidths)
@@ -10112,6 +10114,16 @@ public struct Disassembler: Sendable {
                         default:
                             return words[0]
                         }
+                    }
+                    // Preserve a narrow formal's view only for an exact word
+                    // the existing stack placement already recovered. This
+                    // neither places a new argument nor types other stack roles.
+                    unplacedTypes = zip(swiftLayout.stack, stackWords).map { parameter, words in
+                        let type = TypeInference.classify(parameter.type)
+                        guard let words, words.count == 1, sanitizeValue(words[0]) != .unknown,
+                              type.category == .integer, [8, 16, 32].contains(type.width ?? 0)
+                        else { return "" }
+                        return parameter.type
                     }
                 }
                 var following: [AbstractValue] = []
@@ -10214,8 +10226,9 @@ public struct Disassembler: Sendable {
                 }
                 if !(laidOut + unplaced + following).isEmpty {
                     argumentsByAddress[address] = (laidOut + unplaced).map(sanitizeValue) + following
-                    laidOutTypes[address] = slots.map(\.type) + unplaced.map { _ in "" } + followingTypes
+                    laidOutTypes[address] = slots.map(\.type) + unplacedTypes + followingTypes
                     if cLayout != nil { cIntegerArgumentSites.insert(address) }
+                    else { swiftIntegerArgumentSites.insert(address) }
                 }
                 strategy = hasAsyncIsolationPrefix ? "async-signature-consensus"
                     : leadingSlots != nil ? "swift-leading" : cLayout == nil ? "swift-signature" : "c-declaration"
@@ -10640,9 +10653,16 @@ public struct Disassembler: Sendable {
         // unknown; its producer must still execute as a standalone call.
         for (address, types) in laidOutTypes {
             guard let values = argumentsByAddress[address], values.count == types.count else { continue }
-            argumentsByAddress[address] = zip(values, types).map { value, type in
-                let value = cIntegerArgumentSites.contains(address)
-                    ? Self.cIntegerArgumentValue(value, type: type, arguments: argumentTypes) : value
+            argumentsByAddress[address] = zip(values, types).map { rawValue, type in
+                let value: AbstractValue
+                if cIntegerArgumentSites.contains(address) {
+                    value = Self.cIntegerArgumentValue(rawValue, type: type, arguments: argumentTypes)
+                } else if swiftIntegerArgumentSites.contains(address) {
+                    value = Self.integerScalarValue(rawValue, type: type,
+                        arguments: argumentTypes, atomType: integerScalarAtomType)
+                } else {
+                    value = rawValue
+                }
                 // Literal spelling is already supplied by the typed renderer;
                 // an immediate has no producer to consume here.
                 if case .immediate = value { return value }
@@ -11872,7 +11892,7 @@ public struct Disassembler: Sendable {
             return type.category == .integer && [8, 16, 32].contains(type.width ?? 0)
         } ?? false
 
-        func integerReturnAtomType(_ value: AbstractValue) -> ValueType? {
+        func integerScalarAtomType(_ value: AbstractValue) -> ValueType? {
             if case .awaitResult(let ordinal) = value {
                 guard let info = function.asyncFunclet, let parent = info.parent else { return nil }
                 let resumes = info.chain.filter { address in
@@ -11956,7 +11976,7 @@ public struct Disassembler: Sendable {
             guard let returnTypeName else { return value }
             if returnsNarrowInteger {
                 return Self.integerScalarValue(value, type: returnTypeName,
-                    arguments: argumentTypes, atomType: integerReturnAtomType)
+                    arguments: argumentTypes, atomType: integerScalarAtomType)
             }
             return Self.narrowedResult(Self.floatingPointValue(value, type: returnTypeName), type: returnTypeName)
         }
