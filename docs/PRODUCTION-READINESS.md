@@ -14518,11 +14518,11 @@ summed per-run physical peaks **29,088,833,832 -> 29,184,991,576 bytes
 (+0.330566%)**. Independent gate release SHA256:
 `4d7b9cf3b1efc053772b8f6bc84a41327160d717416a051be612679e70e17f4d`.
 
-**HOSTED PENDING:** [run 44560327218](https://github.com/CamdenBopp/swiftdc/actions/runs/44560327218)
-is in progress at published `3ee3929`, job `135687513029`. No hosted test pass
-is claimed. The preceding published `b5d0724` batch's hosted success covers
-earlier code. Hold the next push until this run is terminal so a docs update
-does not cancel it.
+**HOSTED VERIFIED:** [run 44616043455](https://github.com/CamdenBopp/swiftdc/actions/runs/44616043455)
+completed successfully at documentation head `7cda197`; its enforcing suite
+passed **2,038 tests / 43 suites (2,469.605 s)**. This covers published
+allocator code `5c4ede2`; the later interior-reach change requires its own
+original gate and hosted result.
 **OPEN:** values carried across awaits, other runtime wrappers, and general
 context escape/lifetime effects. No scoring table or readiness percentage is
 recomputed.
@@ -14674,3 +14674,69 @@ full suite: `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
 Compare frozen releases with
 `Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
 See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/e8f2f7ebb72b28e31e3218ceed1f46ec9dc22782).
+
+## Latest local verification: whole-context reach from interior async pointers
+
+**FIXED locally at `4de8391a16d535b94e738dc051ba6825b7422d9a`:** an escaped
+pointer into an async allocation now creates whole-context MAY reach. Negative
+displacement can reach earlier values and the ResumeParent header; a later
+unproved call therefore invalidates every own-context word. Already loaded
+register snapshots remain independent values.
+
+Complete literal-store bodies retain their explicit footprint for the current
+call while preserving durable reach for later calls. A complete physical output
+list distinguishes actual overwrites from caller-saved registers whose logical
+ABI value hid unchanged pointer bits. This covers `x2`, `x3`, `x7`, `x9`,
+`x17` and `x18`; `x30` is excluded because `bl` replaces it. Input-pointer
+transport is not accepted as a noncapturing borrow.
+
+Independent reductions found both final defects. A write through `context+32`
+at displacement -24 overwrites the parent header. In the caller-saved case,
+native execution writes 11 through an `x2` alias while the pre-fix renderer
+showed 7; the candidate renders an unknown observation and unresolved parent
+jump. Authored fixtures separately prove merged unknown/success/error exits.
+Raw instructions show the existing typed-throw image passes `context+16` to
+`swift_willThrowTypedImpl`, so its parent exit is correctly unresolved.
+
+Two current-source material mutations were rebuilt independently. Removing
+post-call provenance produces **23 issues in 12 focused declarations**;
+disabling complete-body footprint bounds produces **six issues across 19
+async/unknown-store controls**. Exact restoration rebuilds all 19 green. No
+test file or declaration is removed: **2,038 -> 2,052 declarations** and
+**354 -> 355 Swift test files**. Two prior expectations are corrected and
+replaced with authored positive/negative controls.
+
+The rebuilt fixture-enforced suite passes **2,052 tests / 43 suites
+(948.872 s)**, with **1,185 public inputs / 911 products** frozen. Frozen
+release comparison covers **772 inputs in each of four views plus four SDK
+workloads**, all **3,092 default cost rows** passing without override:
+instructions **8,766.9G -> 8,767.0G (+0.00%)**; summed footprint
+**27,823 -> 27,833 MB (+0.04%)**. Eight inputs change in all views: seven
+conservative declines and one complete-body proof of the parent target with
+the result value still unknown. Every changed whole output matches the measured
+blast cache.
+
+All **416 CLI invocations / 16 inputs / 13 paths** pass. Metadata, layout,
+interface, Objective-C and xrefs controls are unchanged; analyze/lab/whole and
+filtered view changes are confined to the same eight reviewed inputs. All four
+SDK workload outputs and four guarded rerenders are byte-identical. Ten guarded
+renders of the original five apps retain all **84,833 function headers/order**
+without kills. Four apps are byte-identical. GoodLinks adds **211 conservative
+unresolved indirect jumps** and removes one now-inapplicable leaf comment; it
+removes no body or function. Maximum sampled app footprint is **200 MB**.
+
+Frozen release SHA256 (published baseline / candidate):
+`4d7b9cf3b1efc053772b8f6bc84a41327160d717416a051be612679e70e17f4d` /
+`c6df78e6d8a4e38ad3d532d48f4d4bbf83c491957d8605f1b23578b166504248`.
+
+**PUBLICATION PENDING:** the original integration gate must independently
+rebuild, test and compare committed `4de8391`; no hosted result applies to this
+code yet. Values genuinely carried across an await remain open. No scoring
+table or readiness percentage is recomputed.
+
+Reproduce after `swift build --build-tests` with
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter 'AsyncInteriorReachTests|UnknownCalleeStoreTests'`;
+full suite: `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+Compare frozen releases with
+`Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/4de8391a16d535b94e738dc051ba6825b7422d9a).

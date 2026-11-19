@@ -136,7 +136,50 @@ code `8a15928`; the local receiver change requires its own gate/publication
 and hosted result. See [CI setup and image sources](CI.md).
 No decompilation benchmark or readiness percentage changes.
 
-## Latest local verification: complete outlined allocator prefixes
+## Latest local verification: whole-context reach from interior async pointers
+
+**FIXED locally at `4de8391a16d535b94e738dc051ba6825b7422d9a`:** escaped
+interior pointers now carry whole-async-context MAY reach, including earlier
+values and the ResumeParent header. Complete callee bodies keep explicit
+footprints for the current call, while their complete physical output list
+preserves durable reach through untouched `x2`, `x3`, `x7`, `x9`, `x17` and
+`x18`. Loaded snapshots survive; input-pointer transport is not a noncapturing
+borrow. Values genuinely carried across an await remain open.
+
+Independent native/raw reductions reproduce a parent-header overwrite and a
+caller-saved alias that writes 11 where the pre-fix renderer showed 7. Two
+current-source mutations fail materially: removing post-call provenance gives
+23 issues in 12 focused declarations; disabling complete-body footprint bounds
+gives six issues across 19 controls. Exact restoration rebuilds all 19 green.
+No test file or declaration is removed: **2,038 -> 2,052 declarations** and
+**354 -> 355 Swift test files**.
+
+The rebuilt enforcing suite passes **2,052 tests / 43 suites (948.872 s)**,
+with **1,185 public inputs / 911 products** frozen. Across **772 inputs in four
+views plus four SDK workloads**, all **3,092 default cost rows** pass without
+override: instructions **8,766.9G -> 8,767.0G (+0.00%)** and summed footprint
+**27,823 -> 27,833 MB (+0.04%)**. Eight inputs change: seven conservative
+declines and one bounded-body parent-target proof whose value remains unknown.
+
+All **416 CLI invocations / 16 inputs / 13 paths** pass; unchanged metadata and
+xref controls and every changed whole view were checked. All four SDK workloads
+and guarded rerenders match. Ten guarded original-five-app renders retain all
+**84,833 function headers/order**, no kills, maximum sampled footprint 200 MB.
+Four apps are identical; GoodLinks adds 211 unresolved indirect jumps and
+removes one now-inapplicable leaf comment, with no body or function removed.
+
+Frozen published-baseline/candidate release SHA256:
+`4d7b9cf3b1efc053772b8f6bc84a41327160d717416a051be612679e70e17f4d` /
+`c6df78e6d8a4e38ad3d532d48f4d4bbf83c491957d8605f1b23578b166504248`.
+**Publication pending:** committed `4de8391` still requires the original gate
+and its own hosted result. No scoring/readiness percentage is recomputed.
+
+Reproduce after `swift build --build-tests` with
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter 'AsyncInteriorReachTests|UnknownCalleeStoreTests'`;
+full suite: `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/4de8391a16d535b94e738dc051ba6825b7422d9a).
+
+## Previous local verification: complete outlined allocator prefixes
 
 **FIXED locally at `5c4ede235078ba6effcb66166c91ba4b8c7047f8`:** the default-Osize allocator wrapper in
 `AsyncOutlinedContext.first` and `second` no longer leaves their resumes
@@ -222,11 +265,10 @@ summed per-run physical peaks **29,088,833,832 -> 29,184,991,576 bytes
 (+0.330566%)**. Independent gate release SHA256:
 `4d7b9cf3b1efc053772b8f6bc84a41327160d717416a051be612679e70e17f4d`.
 
-**HOSTED PENDING:** [run 44560327218](https://github.com/CamdenBopp/swiftdc/actions/runs/44560327218)
-is in progress at published `3ee3929`, job `135687513029`. No hosted test pass
-is claimed. The preceding published `b5d0724` batch's hosted success covers
-earlier code. Hold the next push until this run is terminal so a docs update
-does not cancel it.
+**HOSTED VERIFIED:** [run 44616043455](https://github.com/CamdenBopp/swiftdc/actions/runs/44616043455)
+completed successfully at documentation head `7cda197`; its enforcing suite
+passed **2,038 tests / 43 suites (2,469.605 s)**. This covers published
+allocator code `5c4ede2`; later local code needs its own gate and hosted result.
 **OPEN:** values carried across awaits, other runtime wrappers, and general
 context escape/lifetime effects. No scoring table or readiness percentage is
 recomputed.
