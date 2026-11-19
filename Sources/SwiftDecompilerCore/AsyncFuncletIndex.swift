@@ -205,6 +205,31 @@ struct AsyncFuncletIndex: Sendable {
     /// The identity of a funclet's own incoming context (x22 at its entry).
     static let ownContext = UInt64.max
 
+    /// The caller has restored its frame record before branching here. This
+    /// complete epilogue clears the Swift async-frame tag and pops SP; it
+    /// changes no context, resume argument or memory before the final tail.
+    private static func contextPreservingTail(_ fragment: OutlinedFragment) -> UInt64? {
+        guard fragment.isTailCall, fragment.body.count == 2,
+              let target = fragment.terminator.branchTarget,
+              let strip = fragment.body[0].detail, !strip.writeback,
+              strip.id == AARCH64_INS_AND, strip.operands.count == 3,
+              let destination = strip.operands[0].operand.register,
+              destination.kind == .gpr, destination.number == 29, destination.widthBits == 64,
+              let source = strip.operands[1].operand.register,
+              source.kind == .gpr, source.number == 29, source.widthBits == 64,
+              let mask = strip.operands[2].operand.immediateValue,
+              UInt64(bitPattern: mask) == 0xefffffffffffffff,
+              let pop = fragment.body[1].detail, !pop.writeback,
+              pop.id == AARCH64_INS_ADD, pop.operands.count == 3,
+              let stack = pop.operands[0].operand.register,
+              stack.kind == .stackPointer, stack.widthBits == 64,
+              let oldStack = pop.operands[1].operand.register,
+              oldStack.kind == .stackPointer, oldStack.widthBits == 64,
+              let bytes = pop.operands[2].shiftedImmediate, bytes >= 0, bytes % 16 == 0
+        else { return nil }
+        return target
+    }
+
     /// x29 addresses the hardware stack only while its provenance proves it.
     /// Losing an async-context fact does not restore the frame-pointer role.
     static func addressesFrame(_ operand: StructuredOperand, framePointerIsHardwareFrame: Bool) -> Bool {
@@ -414,6 +439,7 @@ struct AsyncFuncletIndex: Sendable {
             scanSet = functionStarts.sorted()
         }
         guard !scanSet.isEmpty else { return index }
+        let declaredAsyncEntries = Set(entries)
 
         // Per funclet: the resume pointers it materialises, in instruction order,
         // each with the suspension that hands it over.
@@ -437,6 +463,49 @@ struct AsyncFuncletIndex: Sendable {
         var allocatesContext: Set<UInt64> = []
         var checkedHeaderHelpers: Set<UInt64> = []
         var headerHelpers: [UInt64: ContextHeaderHelper] = [:]
+        var checkedTerminalFragments: Set<UInt64> = []
+        var terminalFragments: [UInt64: OutlinedFragment] = [:]
+        func terminalFragment(at address: UInt64) -> OutlinedFragment? {
+            guard functionStarts.contains(address) else { return nil }
+            if checkedTerminalFragments.insert(address).inserted,
+               let fragment = OutlinedFragment(start: address, instructions: instructions(address)) {
+                terminalFragments[address] = fragment
+            }
+            return terminalFragments[address]
+        }
+        func terminalTarget(from target: UInt64) -> UInt64? {
+            var current = target
+            var seen: Set<UInt64> = []
+            var followed = 0
+            while seen.insert(current).inserted {
+                // Swift async entries may read and pop incoming stack
+                // arguments. Their declared function boundary is not an
+                // outlining fragment's caller-frame access.
+                if declaredAsyncEntries.contains(current) { return current }
+                let name = nameOf(current)
+                let marked = name?.hasPrefix("OUTLINED_FUNCTION_") == true
+                    || name?.hasPrefix("_OUTLINED_FUNCTION_") == true
+                guard let fragment = terminalFragment(at: current) else {
+                    return marked ? nil : current
+                }
+                if let next = Self.contextPreservingTail(fragment) {
+                    // A bounded proof must reach an independently known entry
+                    // or binding, never treat its last partial target as one.
+                    guard followed < 8,
+                          !fragment.body.contains(where: { $0.address == next }),
+                          fragment.terminator.address != next,
+                          functionStarts.contains(next) || nameOf(next) != nil else { return nil }
+                    followed += 1
+                    current = next
+                    continue
+                }
+                // An ordinary callee keeps its own entry contract. A named
+                // fragment or a body that violates that convention needs a
+                // whole-prefix proof before the caller's snapshot can cross it.
+                return marked || fragment.breaksCallingConvention ? nil : current
+            }
+            return nil
+        }
         func headerHelper(at address: UInt64) -> ContextHeaderHelper? {
             guard functionStarts.contains(address) else { return nil }
             if checkedHeaderHelpers.insert(address).inserted,
@@ -486,11 +555,16 @@ struct AsyncFuncletIndex: Sendable {
                 let terminator = path.last
                 let terminatorIsBranch = terminator?.controlFlow == .branch
                     && terminator?.branchTarget.map(internalAddresses.contains) != true
-                let terminatorTarget = terminator?.branchTarget
+                var terminatorTarget = terminator?.branchTarget
+                var terminalProved = true
+                if terminatorIsBranch, let target = terminatorTarget {
+                    if let forwarded = terminalTarget(from: target) { terminatorTarget = forwarded }
+                    else { terminalProved = false }
+                }
                 let terminatorName = terminatorTarget.flatMap(nameOf)
                     ?? terminator.flatMap { DisassembledFunction.calleeName(of: $0) }
-                let hop = terminatorIsBranch && Self.isTaskSwitch(terminatorName)
-                let wait = terminatorIsBranch ? Self.runtimeWait(terminatorName) : nil
+                let hop = terminalProved && terminatorIsBranch && Self.isTaskSwitch(terminatorName)
+                let wait = terminalProved && terminatorIsBranch ? Self.runtimeWait(terminatorName) : nil
                 if hop || wait != nil { allocatesContext.insert(start) }
 
                 for insn in path {
@@ -699,6 +773,7 @@ struct AsyncFuncletIndex: Sendable {
                         ))
                         continue
                     }
+                    guard terminalProved else { continue }
                     found.append(Materialisation(
                         resume: item.address,
                         suspensionAddress: terminatorIsBranch ? terminator?.address : nil,
