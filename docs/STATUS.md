@@ -193,8 +193,21 @@ Reproduce with `Tools/fixtures.sh`, `swift build --build-tests`, and
 `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`; native drivers are the
 three `Fixtures/Sample/narrow-integer-return-SwiftReceiverTypeList.*-oracle`
 products. See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/dbbdc834b5a02894d5b8b5e8b062d3da6a7523ac).
-**Publication is pending the original integration gate**; these are local
-results, not a new hosted 2,007-test result.
+**PUBLISHED through the original integration gate:** `83443a5` (code
+`dbbdc83`) passed an independent **2,007 tests / 43 suites (967.051 s)**
+and was pushed to `origin/dev`. Both gate releases match the reviewed
+outputs across all **762 inputs x four views** and four SDK workloads.
+All **3,052 paired cost rows** pass default caps without override:
+**8,574,052,349,126 -> 8,564,422,553,288 instructions (-0.112313%)**;
+**28,673,162,360 -> 28,674,159,896 bytes summed per-run physical peaks
+(+0.003479%)**. Both clean checkout snapshots retain the **1,172 public
+input / 901 product hashes**, and a separate remote-head check confirms
+publication. Independent gate release SHA256:
+`f7959128c7cd520851b181a0bc0042bd23923d905d5236a25773093f436cba75`.
+
+New hosted [run 44456365627](https://github.com/CamdenBopp/swiftdc/actions/runs/44456365627)
+at `83443a5` is in progress (suite job `135332241554`). Its actual terminal
+job/logs must still be checked before claiming hosted 2,007-test success.
 
 **OPEN:** general argument/entry/RET/fallthrough placement, other tail-result
 conversions, C/ObjC result widths, enum-bit qualification and values carried
