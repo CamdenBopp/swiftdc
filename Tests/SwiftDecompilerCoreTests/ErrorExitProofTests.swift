@@ -164,14 +164,53 @@ import Ccapstone
 /// (`mov w20, #1`) meet at one ResumeParent branch is neither a plain return
 /// nor a plain throw.
 @Test func aMergedAsyncErrorExitIsNotANormalReturnIfPresent() async throws {
+    let path = "Fixtures/Sample/libAsyncMergedExit.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let resume = try #require(functions.first {
+        $0.displayName.contains("AsyncMerge.choose") && $0.asyncFunclet?.ordinal == 1
+    })
+    try #require(resume.asyncFunclet?.parent != nil)
+    try #require(resume.instructions.contains { $0.detail?.id == AARCH64_INS_BR && $0.controlFlow == .return })
+    for text in [resume.renderStructured(), resume.renderPseudo()] {
+        #expect(text.contains("machine_return()"), Comment(rawValue: text))
+        #expect(!text.contains("return ?"), Comment(rawValue: text))
+    }
+}
+
+@Test func provedAsyncParentExitsDistinguishFixedSuccessAndErrorIfPresent() async throws {
+    for (path, wanted, forbidden) in [
+        ("Fixtures/Sample/libAsyncMergedExit.success.dylib", "return ?", "throw ?"),
+        ("Fixtures/Sample/libAsyncMergedExit.error.dylib", "throw ?", "return ?"),
+    ] {
+        guard FileManager.default.fileExists(atPath: path) else { continue }
+        let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+        let resume = try #require(functions.first {
+            $0.displayName.contains("AsyncMerge.choose") && $0.asyncFunclet?.ordinal == 1
+        })
+        try #require(resume.asyncFunclet?.parent != nil)
+        for text in [resume.renderStructured(), resume.renderPseudo()] {
+            #expect(text.contains(wanted), Comment(rawValue: text))
+            #expect(!text.contains(forbidden), Comment(rawValue: text))
+            #expect(!text.contains("machine_return()"), Comment(rawValue: text))
+        }
+    }
+}
+
+@Test func anEscapedInteriorContextCannotProveAMergedParentExitIfPresent() async throws {
     let path = "Fixtures/Sample/libTypedThrowsAwait.opt.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     let resume = try #require(functions.first {
         $0.displayName.contains("codeAsync") && $0.asyncFunclet?.ordinal == 2
     })
+    try #require(resume.instructions.contains { DisassembledFunction.calleeName(of: $0) == "swift_willThrowTypedImpl" })
+    let jump = try #require(resume.instructions.last { $0.detail?.id == AARCH64_INS_BR })
+    #expect(jump.controlFlow == .branch)
+    #expect(jump.branchTarget == nil)
     for text in [resume.renderStructured(), resume.renderPseudo()] {
-        #expect(text.contains("machine_return()"), Comment(rawValue: text))
+        #expect(text.contains("indirect_jump(?)"), Comment(rawValue: text))
+        #expect(!text.contains("machine_return()"), Comment(rawValue: text))
         #expect(!text.contains("return ?"), Comment(rawValue: text))
     }
 }
@@ -179,7 +218,7 @@ import Ccapstone
 /// Exit notes ride on `ret` and on async ResumeParent branches (rewritten
 /// to return flow); the name parser must never take one for a callee.
 @Test func exitNotesAreNeverCalleeNamesIfPresent() async throws {
-    for path in ["Fixtures/Sample/libErrorExitControls.dylib", "Fixtures/Sample/libTypedThrowsAwait.opt.dylib"] {
+    for path in ["Fixtures/Sample/libErrorExitControls.dylib", "Fixtures/Sample/libAsyncMergedExit.dylib"] {
         guard FileManager.default.fileExists(atPath: path) else { continue }
         let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
         let noted = functions.flatMap(\.instructions).filter { $0.annotation?.contains("swift-exit=") == true }

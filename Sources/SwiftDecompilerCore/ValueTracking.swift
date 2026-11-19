@@ -1883,6 +1883,10 @@ public struct ValueTracer: Sendable {
             // A fully decoded literal-store body cannot save an input pointer
             // into memory. Its explicit writes are invalidated separately.
             let keepsProjectedInputs = Self.hasLiteralProjectionFootprint(bodyEffect)
+            let borrowsContextInputs = Self.hasNoncapturingLiteralBody(bodyEffect)
+            // Register transport can retain an alias for a later call without
+            // adding writes to this complete body's current memory footprint.
+            let boundsContextWrites: Bool = if case .literalStores(_, _, .some)? = bodyEffect { true } else { false }
             if let effect = bodyEffect,
                let plan = completeCallPlan(effect, at: insn.address, call: call, before: beforeCall) {
                 applyCompleteCall(plan, at: insn.address, before: beforeCall, into: &registers,
@@ -1991,7 +1995,8 @@ public struct ValueTracer: Sendable {
                         // result buffer forwarded to its producer. Other
                         // argument/context aliases can escape independently.
                         if location == .x(8), Self.isResultPointer(value) { continue }
-                        Self.markEscape(value, into: &registers, keepingProjected: keepsProjectedInputs)
+                        Self.markEscape(value, into: &registers, keepingProjected: keepsProjectedInputs,
+                                        keepingContextBorrowed: borrowsContextInputs)
                     }
                 }
                 // A complete body can read nonstandard entry registers (or
@@ -2002,7 +2007,8 @@ public struct ValueTracer: Sendable {
                     for input in inputs where !(input.kind == .gpr && input.number == 30) {
                         let location = Location(input)
                         if !call.passedRegisters.contains(location), let value = beforeCall[location] {
-                            Self.markEscape(value, into: &registers, keepingProjected: keepsProjectedInputs)
+                            Self.markEscape(value, into: &registers, keepingProjected: keepsProjectedInputs,
+                                            keepingContextBorrowed: borrowsContextInputs)
                         }
                     }
                 }
@@ -2017,7 +2023,8 @@ public struct ValueTracer: Sendable {
                 // the context it points at.
                 if let target = insn.branchTarget, contextRegisterUsers.contains(target),
                    let context = registers[.x(22)] {
-                    Self.markEscape(context, into: &registers, keepingProjected: keepsProjectedInputs)
+                    Self.markEscape(context, into: &registers, keepingProjected: keepsProjectedInputs,
+                                    keepingContextBorrowed: borrowsContextInputs)
                 }
                 // Stack arguments are the words stored upward from sp at the
                 // call (`snapshot`); only a callee that can take any reads them,
@@ -2027,12 +2034,16 @@ public struct ValueTracer: Sendable {
                         let offset = base + Int64(slot * 8)
                         guard !facts.frame.saveSlots.contains(offset), let value = registers.frame[offset, .outgoing]
                         else { break }
-                        Self.markEscape(value, into: &registers, keepingProjected: keepsProjectedInputs)
+                        Self.markEscape(value, into: &registers, keepingProjected: keepsProjectedInputs,
+                                        keepingContextBorrowed: borrowsContextInputs)
                     }
                 }
                 if let memory {
                     for input in memory.inputs {
-                        if let value = beforeCall[Location(input)] { Self.markEscape(value, into: &registers, keepingProjected: keepsProjectedInputs) }
+                        if let value = beforeCall[Location(input)] {
+                            Self.markEscape(value, into: &registers, keepingProjected: keepsProjectedInputs,
+                                            keepingContextBorrowed: borrowsContextInputs)
+                        }
                     }
                     // These stores have no memory inputs; apply their proved
                     // literals in body order using the ordinary frame owner.
@@ -2045,20 +2056,23 @@ public struct ValueTracer: Sendable {
                 } else {
                     Self.forgetEscapedFrame(in: &registers, evidence: facts.frame.escapeEvidence)
                 }
-                // An escaped context pointer may be written through by any
-                // call, from its offset up.
-                let contextReach = registers.keys.compactMap { key -> Int64? in
-                    if case .contextEscaped(let offset) = key { offset } else { nil }
-                }.min()
-                if let contextReach {
-                    for key in registers.keys {
-                        if case .contextSlot(let offset) = key, Int64(offset) &+ 8 > contextReach {
-                            registers[key] = nil
-                        }
-                    }
+                // An escaped pointer into an allocation can be displaced
+                // backward as well as forward. Any marker therefore reaches
+                // the whole own context. A complete body has only
+                // the explicit footprints invalidated above; retain the marker
+                // for a later unproved call without applying it to this one.
+                let hasContextReach = registers.keys.contains { key in
+                    if case .contextEscaped = key { return true }
+                    return false
+                }
+                if hasContextReach, !boundsContextWrites {
+                    // An interior pointer can also reach the parent header
+                    // through a negative displacement. A previously loaded
+                    // register snapshot remains a separate value.
+                    for key in registers.keys where Self.isContextSlot(key) { registers[key] = nil }
                     recordUnboundedMemoryWrite?()
                 }
-                if registers[Self.calleeContextEscapeKey] != nil {
+                if registers[Self.calleeContextEscapeKey] != nil, !boundsContextWrites {
                     registers[Self.calleeParentKey] = nil
                 }
             }
@@ -2240,6 +2254,24 @@ public struct ValueTracer: Sendable {
                         } else {
                             registers[Self.frameEscapeAllKey] = .immediate(1)
                         }
+                    }
+                }
+            }
+            // A complete noncapturing body can borrow a context pointer, but
+            // the ordinary logical-result model may hide still-live physical
+            // bits in a caller-saved register. If that provenance disappeared
+            // without a proved literal overwrite, retain whole-context MAY
+            // reach for every later unproved call.
+            if borrowsContextInputs, case .literalStores(_, _, let outputs?) = bodyEffect {
+                for (key, value) in beforeCall.registerFacts.exactValues where Self.containsContext(value) {
+                    // A complete output list names every physical write.
+                    // BL itself replaces x30; all other untouched registers
+                    // may still contain their entry bits after logical ABI
+                    // clobbering has hidden their provenance.
+                    if key == .x(30) { continue }
+                    let overwritten = outputs.contains { Location($0.destination) == key }
+                    if !overwritten, !Self.containsContext(registers[key] ?? .unknown) {
+                        Self.markEscape(value, into: &registers)
                     }
                 }
             }
@@ -6440,9 +6472,9 @@ public struct ValueTracer: Sendable {
     /// context has its own marker: a call handed it (`swift_task_dealloc`)
     /// may rewrite that context, whose parent header is all that is known of
     /// it. MAY facts, like the frame markers.
-    /// `.contextEscaped(k)`: a pointer to offset k of the own context, which
-    /// reaches k and above (an `inout` slot handed to a call); k = 0 is the
-    /// whole context.
+    /// `.contextEscaped(k)`: a durable pointer into the own context. The
+    /// payload remains for state compatibility, but every value denotes the
+    /// whole allocation: unknown code may use a negative displacement.
     private static let calleeContextEscapeKey = Location.calleeContextEscaped
 
     /// A state key that is the only record of a value in a register, a frame
@@ -6479,7 +6511,8 @@ public struct ValueTracer: Sendable {
 
     /// A value leaves what the tracer follows: a result alias poisons its
     /// buffer; a frame address or async context pointer escapes.
-    private static func markEscape(_ value: AbstractValue, into registers: inout State, keepingProjected: Bool = false) {
+    private static func markEscape(_ value: AbstractValue, into registers: inout State,
+                                   keepingProjected: Bool = false, keepingContextBorrowed: Bool = false) {
         if !keepingProjected, projectedOrigin(of: value, in: registers) != nil {
             registers[frameEscapeAllKey] = .immediate(1)
             if hasResultContents(registers) { poisonResult(&registers) }
@@ -6489,13 +6522,27 @@ public struct ValueTracer: Sendable {
         // leave a whole-result claim that a later unknown call can overwrite.
         if isResultPointer(value) { poisonResult(&registers) }
         if containsFrame(value), hasResultContents(registers) { poisonResult(&registers) }
-        if contains(.asyncContext, in: value) {
-            let offset: Int64 = if case .binary(.add, .asyncContext, .immediate(let k)) = value,
-                                   k < UInt64(Int64.max) { Int64(k) } else { 0 }
-            registers[.contextEscaped(offset)] = .immediate(1)
+        if !keepingContextBorrowed, contains(.asyncContext, in: value) {
+            registers[.contextEscaped(0)] = .immediate(1)
         }
-        if contains(.asyncCalleeContext, in: value) { registers[calleeContextEscapeKey] = .immediate(1) }
+        if !keepingContextBorrowed, contains(.asyncCalleeContext, in: value) {
+            registers[calleeContextEscapeKey] = .immediate(1)
+        }
         markFrameEscape(value, into: &registers)
+    }
+
+    /// The complete producer accepts no loads, calls or nonliteral stores.
+    /// Literal/vector outputs cannot transport an input pointer into a new
+    /// register. Its input context aliases are therefore borrowed for this
+    /// call, while its exact store footprints still invalidate memory.
+    private static func hasNoncapturingLiteralBody(_ effect: CalleeMemoryEffect?) -> Bool {
+        guard case .literalStores(_, _, let outputs?)? = effect else { return false }
+        return outputs.allSatisfy {
+            switch $0.value {
+            case .literal, .vector128: return true
+            case .input, .unknown: return false
+            }
+        }
     }
 
     private static func hasLiteralProjectionFootprint(_ effect: CalleeMemoryEffect?) -> Bool {

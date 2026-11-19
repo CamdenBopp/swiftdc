@@ -27,6 +27,10 @@ private let binary = URL(fileURLWithPath: ".build/debug/swiftdc")
 /// Swift metadata, the ObjC index, field layout, and the call graph. Each runs
 /// in well under a tenth of a second, so repeating them is cheap.
 private let cases: [(label: String, arguments: [String])] = [
+    ("disasm --structured interior async context reach", ["disasm", "Fixtures/Sample/libAsyncInteriorReach.dylib", "--structured"]),
+    ("disasm --pseudo interior async context reach", ["disasm", "Fixtures/Sample/libAsyncInteriorReach.dylib", "--pseudo"]),
+    ("disasm listing interior async context reach", ["disasm", "Fixtures/Sample/libAsyncInteriorReach.dylib"]),
+    ("disasm --json interior async context reach", ["disasm", "Fixtures/Sample/libAsyncInteriorReach.dylib", "--json"]),
     ("disasm --structured callee stack lifetime", ["disasm", "Fixtures/Sample/libStackLifetime.dylib", "--structured"]),
     ("disasm --pseudo callee stack lifetime", ["disasm", "Fixtures/Sample/libStackLifetime.dylib", "--pseudo"]),
     ("disasm listing callee stack lifetime", ["disasm", "Fixtures/Sample/libStackLifetime.dylib"]),

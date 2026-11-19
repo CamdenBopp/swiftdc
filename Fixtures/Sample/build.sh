@@ -242,6 +242,15 @@ $CLANG -arch arm64 -dynamiclib error_exit_controls.s -o libErrorExitControls.dyl
 echo "==> async context slots across calls (async_call_effects.s) — escaped and interior context pointers"
 $CLANG -arch arm64 -dynamiclib async_call_effects.s -o libAsyncCallEffects.dylib
 
+echo "==> whole-context reach from interior pointers (async_interior_reach.s)"
+$CLANG -arch arm64 -dynamiclib async_interior_reach.s -o libAsyncInteriorReach.dylib
+
+echo "==> typed async status at a proved parent jump (async_merged_exit.s) — merged, success and error"
+ASYNC_MERGE_SWIFT_LIB=$($SWIFTC -print-target-info | python3 -c 'import json,sys; print(json.load(sys.stdin)["paths"]["runtimeLibraryPaths"][0])')
+$CLANG -arch arm64 -dynamiclib -x assembler-with-cpp async_merged_exit.s -L "$ASYNC_MERGE_SWIFT_LIB" -lswift_Concurrency -o libAsyncMergedExit.dylib
+$CLANG -arch arm64 -dynamiclib -x assembler-with-cpp async_merged_exit.s -DFIXED_STATUS=0 -L "$ASYNC_MERGE_SWIFT_LIB" -lswift_Concurrency -o libAsyncMergedExit.success.dylib
+$CLANG -arch arm64 -dynamiclib -x assembler-with-cpp async_merged_exit.s -DFIXED_STATUS=1 -L "$ASYNC_MERGE_SWIFT_LIB" -lswift_Concurrency -o libAsyncMergedExit.error.dylib
+
 echo "==> frame slots reachable through escaped addresses (frame_escape_controls.s)"
 $CLANG -arch arm64 -dynamiclib frame_escape_controls.s -o libFrameEscapeControls.dylib
 

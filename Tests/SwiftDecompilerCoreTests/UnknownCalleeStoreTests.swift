@@ -97,10 +97,16 @@ private func unknownStoreBody(_ words: [UInt32], at start: UInt64) throws -> Dis
         0xf9400ac0, 0xf94006c1, 0xd61f0020], at: 0x1000)
     let own = AbstractValue.binary(.add, .asyncContext, .immediate(16))
     let callee = AbstractValue.binary(.add, .asyncCalleeContext, .immediate(16))
-    let cases: [(AbstractValue, Int64, Int64, Bool)] = [(own, 0, 8, true), (own, 8, 8, true),
-        (own, -8, 8, false), (own, -9, 2, false), (own, Int64.max, 8, false),
-        (own, 0, Int64.max, false), (callee, 0, 8, false)]
-    for (input, offset, bytes, parentSurvives) in cases {
+    // The failed transaction installs no literal, but its complete store
+    // footprints still prove which existing words were not overwritten.
+    // Register transport may retain MAY reach for a later unproved call.
+    let cases: [(AbstractValue, Int64, Int64, Bool, AbstractValue)] = [
+        (own, 0, 8, true, .unknown), (own, 8, 8, true, .immediate(7)),
+        (own, -8, 8, false, .immediate(7)), (own, -9, 2, false, .immediate(7)),
+        (own, Int64.max, 8, false, .unknown), (own, 0, Int64.max, false, .unknown),
+        (callee, 0, 8, false, .unknown),
+    ]
+    for (input, offset, bytes, parentSurvives, expectedValue) in cases {
         var tracer = ValueTracer()
         tracer.calleeConventions[0x1008] = .direct
         tracer.calleeMemoryEffects[0x3000] = .literalStores([
@@ -108,7 +114,9 @@ private func unknownStoreBody(_ words: [UInt32], at start: UInt64) throws -> Dis
         ], inputs: [base, untracked], outputs: [.init(destination: output, value: .input(untracked, 0))])
         let analysis = tracer.analyze(caller, entry: .asyncFunclet(base: .swiftFunction(scalarArguments: [:]),
             seededRegisters: ["x22": .asyncContext, "x10": input]))
-        #expect(analysis.exitValues[0x1014] != .immediate(7))
+        let exitValue = analysis.exitValues[0x1014] ?? .unknown
+        #expect(exitValue == expectedValue)
+        #expect(exitValue != .immediate(99))
         #expect((analysis.indirectControlFlowTargets[0x1014] == .asyncResumeParent) == parentSurvives)
     }
     // An unrelated argument-relative pointer cannot borrow the callee
