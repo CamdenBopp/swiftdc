@@ -14503,9 +14503,26 @@ Frozen release SHA256 (baseline / candidate):
 The baseline directly matches published `b5d0724`'s actual gate release
 across all 3,072 corpus view/exit pairs and four SDK workloads.
 
-**PUBLICATION PENDING:** this code and its terminal-handoff dependency still
-require the original integration gate and hosted verification. The earlier
-published `b5d0724` batch's terminal hosted success covers earlier code.
+**VERIFIED original gate and publication at `3ee39290da522ab29a6be737787f6c2b72797421`:**
+this fix and terminal-handoff code `04efb1f` passed the original gate's
+independently rebuilt **2,038 tests / 43 suites (950.150 s)**. Both gate release
+sides match the reviewed local outputs across all **3,072 corpus view/exit
+pairs and four SDK workloads per side**. The publication audit confirmed the
+actual remote head and clean, matching main/gate snapshots of **1,182 public
+files / 907 products**. No development worktree was added.
+
+All **3,076 paired gate cost rows** pass default limits without override,
+comparing actual published `b5d0724` with this complete batch:
+**8,714,059,703,805 -> 8,763,087,727,947 instructions (+0.562631%)**;
+summed per-run physical peaks **29,088,833,832 -> 29,184,991,576 bytes
+(+0.330566%)**. Independent gate release SHA256:
+`4d7b9cf3b1efc053772b8f6bc84a41327160d717416a051be612679e70e17f4d`.
+
+**HOSTED PENDING:** [run 44560327218](https://github.com/CamdenBopp/swiftdc/actions/runs/44560327218)
+is in progress at published `3ee3929`, job `135687513029`. No hosted test pass
+is claimed. The preceding published `b5d0724` batch's hosted success covers
+earlier code. Hold the next push until this run is terminal so a docs update
+does not cancel it.
 **OPEN:** values carried across awaits, other runtime wrappers, and general
 context escape/lifetime effects. No scoring table or readiness percentage is
 recomputed.
@@ -14566,10 +14583,14 @@ Frozen release SHA256 (baseline / candidate):
 `534664ebffc03232cfdda78f598397c9d24a39b6392435e23e6ba3f7a4f3e2a1` /
 `dc42ee93dc0517664ff39ed453412e1ca0c084a54f9d02994bd8498e235427ee`.
 
-**PUBLICATION PENDING:** this code has not passed the original integration
-gate or hosted CI. The prior published batch at `b5d0724` has terminal hosted
-success, which does not cover this change. The specific outlined allocator
-prefix is qualified separately by `5c4ede235078ba6effcb66166c91ba4b8c7047f8`.
+**PUBLISHED with the allocator fix at `3ee39290da522ab29a6be737787f6c2b72797421`:**
+the original gate passed both changes with **2,038 tests / 43 suites
+(950.150 s)** and all default cost limits. Both releases, corpus/SDK outputs,
+clean snapshots and actual remote head were independently checked; see the
+allocator record for the full publication measurements. Hosted run
+`44560327218` is in progress at that head; hosted verification remains pending.
+The specific outlined allocator prefix is qualified separately by
+`5c4ede235078ba6effcb66166c91ba4b8c7047f8`.
 **OPEN:** other runtime wrappers, values carried across awaits, and general
 context escape/lifetime effects. No readiness percentage or scoring table is
 recomputed.
