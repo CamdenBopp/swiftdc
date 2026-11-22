@@ -221,9 +221,10 @@ person from retrying it.
 
 ## Reporting a bug
 
-Use the [bug report form](https://github.com/CamdenBopp/swiftdc/issues/new?template=bug.yml)
-to collect the command, revision and evidence. Unknown environment details
-are accepted; a shareable binary upload is optional.
+Use the [bug report fields](.github/ISSUE_TEMPLATE/bug.yml) to collect the
+command, revision and evidence when [opening an issue](https://github.com/CamdenBopp/swiftdc/issues/new).
+Unknown environment details are accepted; a shareable binary upload is optional.
+The guided form becomes available on GitHub when it reaches the default branch.
 
 For a wrong body, see [Debug a wrong pseudocode render](docs/DEBUGGING-PSEUDOCODE.md)
 for a fixture walkthrough and a focused regression test.
