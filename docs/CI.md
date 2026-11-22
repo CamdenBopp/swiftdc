@@ -9,15 +9,16 @@ A nonzero build fails the step even without an `error:` message, so the
 suite cannot run an older test binary after that failure. The `suite-log`
 artifact retains `build.log` and any `suite.log` produced by the run.
 
-The latest published revision, `408ca9a`, passed its original release gate
-with **2,078 tests / 43 suites**. Its
-[hosted run 45019821118](https://github.com/CamdenBopp/swiftdc/actions/runs/45019821118)
-completed successfully with **2,078 fixture-enforced tests / 43 suites
-(2,380.181 s)**. The decoded job log confirms the exact published commit;
-Build and Enforcing suite both passed and the suite-log artifact was
-uploaded. Earlier `72c9879` passed 2,075 tests / 43 suites (1,583.991 s).
-Local FP raw-bit fix `a065ae1` passes 2,082 enforcing tests / 43 suites;
-its own original-gate publication and hosted CI remain pending.
+The latest published revision, `c3b0c5e`, passed its original release gate
+with **2,082 tests / 43 suites (968.002 s)**. Its
+[hosted run 45027421151](https://github.com/CamdenBopp/swiftdc/actions/runs/45027421151)
+is in progress. The latest completed successful hosted result is
+[`408ca9a`](https://github.com/CamdenBopp/swiftdc/actions/runs/45019821118):
+**2,078 fixture-enforced tests / 43 suites (2,380.181 s)**. Decoded logs bind
+that exact commit, and both Build and Enforcing suite passed with uploaded
+logs. Local publication checks for the newer binary match all 260 CLI
+outputs and the five original guarded app renders; those are separate from
+hosted CI.
 See [current status](STATUS.md#current-status) for later qualifications.
 The older job notes below are historical, including their pending labels.
 
