@@ -2,17 +2,24 @@
 
 ## Current status
 
-Updated 2026-11-22. The Go build-ID streaming fix at `9341f33`
-passed local qualification on Darwin arm64. The enforcing run passed
+Updated 2026-11-22. Published `3c9b005` includes the Go build-ID
+streaming fix at `9341f33`. The original integration gate passed
+**2,091 enforcing tests / 43 suites (1,451.119 s)** and **3,180 cost rows**
+within default budgets. All **3,176 corpus renders** from the gate artifact
+match the locally qualified output. Published-binary verification passed
+**1,092 CLI invocations**, eight serial runs and ten guarded app runs. App
+output and **84,833 ordered headers per binary** match, with **225 MB**
+maximum sampled footprint. Hosted CI is pending.
+
+The Darwin arm64 local qualification preceded the publication gate. The enforcing run passed
 **2,091 tests / 43 suites (1,326.776 s)** and all **3,180 cost rows**
 met default budgets against published `65a627b`. Eight render changes
 across four Go fixtures preserve the named build-ID row with an empty
 instruction body. Postchecks passed **1,092 CLI invocations**, eight
 serial Go runs and ten guarded runs across five original apps, with no
 unresolved differences. App outputs and **84,833 ordered function headers
-per binary** matched at **228 MB** maximum sampled footprint. The original
-integration gate and publication verification are pending.
-[Local Go qualification](PRODUCTION-READINESS.md#2026-11-22-local-go-build-id-streaming-fix)
+per binary** matched at **228 MB** maximum sampled footprint.
+[Go qualification and publication gate](PRODUCTION-READINESS.md#2026-11-22-local-go-build-id-streaming-fix)
 
 Published `65a627b` includes the typed-error guard
 from `6959523`, which stops an inactive X0 from naming the error on the
@@ -23,8 +30,8 @@ covered **988 CLI checks** and **10 guarded runs across five original
 apps**. App output matched the qualified artifact, with **84,833 ordered
 function headers per binary** and **224 MB** peak sampled footprint.
 The historical verification recorded four cross-input render differences
-for stripped Go data. The locally qualified streaming fix addresses the
-data-as-code defect at `9341f33`.
+for stripped Go data. Published `3c9b005` includes the correction at
+`9341f33`.
 [Qualification and remaining scope](PRODUCTION-READINESS.md#2026-11-22-local-indirect-typed-error-guard)
 
 Hosted CI for `65a627b` passed **2,090 fixture-enforced tests / 43 suites
@@ -261,8 +268,10 @@ private output stays outside the public repository.
 
 `-O0` ARC-local adoption, named strong-field adoption through
 `objc_storeStrong` and optimized opaque C consumer arguments remain
-completeness limits. This is local qualification; integration-gate
-publication and hosted verification for this revision are still pending.
+completeness limits. This section retains the original local qualification.
+The fix later shipped in `72c9879` and passed hosted CI; the
+[publication record](PRODUCTION-READINESS.md#2026-11-22-test-tier-guidance-and-published-super-result-verification)
+supersedes its earlier pending status.
 The [ABI plan](ABI-CLOSURE-PLAN.md) tracks the remaining mechanisms.
 
 ## Latest local verification: converged async branch witnesses

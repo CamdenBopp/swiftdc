@@ -63,7 +63,7 @@ results do not replace previously recorded release performance measurements.
 
 ## 2026-11-22: local Go build-ID streaming fix
 
-**Locally qualified at `9341f33`** on Darwin arm64. The function
+**Fixed at `9341f33`, published in `3c9b005`** on Darwin arm64. The function
 table must identify `go:buildid`, its bytes must carry the Go build-ID
 prefix, and the next streaming boundary must agree with the table's
 span. The streaming path retains the named empty row, clears the
@@ -96,8 +96,31 @@ pairs changed: the eight Go data blocks and two unstripped unreferenced
 build-ID names. The other output bytes are unchanged. Both binaries
 produced **84,833 ordered app function headers**, with identical app
 stdout and stderr and **228 MB** maximum sampled footprint. Independent
-raw-evidence audits passed with no unresolved differences. The original
-integration gate and verification of its published artifact remain pending.
+raw-evidence audits passed with no unresolved differences.
+
+The original integration gate for `3c9b005eff019458dd0aa897f2c1e5c6bdd36b3e`
+passed **2,091 enforcing tests / 43 suites (1,451.119 s)** and all
+**3,180 cost rows** met default budgets. Against the published `65a627b`
+baseline on the gate inputs, total retired instructions decreased by
+**0.00334908546%** and summed per-run peak footprints increased by
+**0.2449156142%**.
+
+The gate binary SHA-256 is
+`8a10abfa2b3f390359bbf78a8a09244b16cc36c14e352cebed85c6a6c646ab66`.
+Independent gate review found byte equality with the qualified
+artifact across all **3,176 corpus renders**. The four Go fixtures
+retain the empty named data entry and the first executable function
+after it. This includes the stripped oracle whose changed build-ID
+bytes exposed the prior error.
+
+Separate verification of the published executable passed **1,092 CLI
+invocations**, **eight serial streaming invocations** and **ten guarded
+app runs**. All stdout and stderr bytes match the qualified artifact.
+The original five apps retain **84,833 ordered function headers per binary**;
+the maximum sampled footprint is **225 MB**. Independent review checked
+all 2,220 losslessly retained output streams and 18 guard logs, the original
+app identities, and both source and native-fixture inventories. No runtime
+output difference remains. Hosted CI for this commit is pending.
 
 ## 2026-11-22: local indirect typed-error guard
 
@@ -155,9 +178,9 @@ Hosted CI for `65a627b` passed **2,090 fixture-enforced tests / 43 suites
 between the qualified overlay and the fresh gate cache for
 `x8-entry-go-stripped-oracle`. Both the baseline and candidate rendered Go
 data as code in structured and pseudocode output. Different fixture bytes
-exposed the same defect in each binary. The [local fix at
-`9341f33`](#2026-11-22-local-go-build-id-streaming-fix) addresses the
-streamed data-as-code defect.
+exposed the same defect in each binary. The
+[fix at `9341f33`, published in `3c9b005`](#2026-11-22-local-go-build-id-streaming-fix)
+corrects the streamed data-as-code defect.
 
 Reproduce the public fixture checks with:
 

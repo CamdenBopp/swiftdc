@@ -9,6 +9,15 @@ A nonzero build fails the step even without an `error:` message, so the
 suite cannot run an older test binary after that failure. The `suite-log`
 artifact retains `build.log` and any `suite.log` produced by the run.
 
+The original integration gate for published `3c9b005` passed
+**2,091 fixture-enforced tests / 43 suites (1,451.119 s)** and all
+**3,180 cost rows** met default budgets. The
+[Go build-ID publication record](PRODUCTION-READINESS.md#2026-11-22-local-go-build-id-streaming-fix)
+separately tracks verification of the published binary.
+
+Hosted CI for `3c9b005` is pending.
+[Hosted run 45080738370](https://github.com/CamdenBopp/swiftdc/actions/runs/45080738370)
+
 Hosted CI for `65a627b` passed **2,090 fixture-enforced tests / 43 suites
 (2,251.762 s)**. The decoded job log confirms the checkout and suite result.
 GitHub records a `suite-log` artifact for the run.
