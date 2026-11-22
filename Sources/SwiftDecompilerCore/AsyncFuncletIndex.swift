@@ -109,6 +109,33 @@ struct AsyncFuncletIndex: Sendable {
         let isExecutorHop: Bool
     }
 
+    /// A recovered resume handoff. Several edges can leave through the same
+    /// instruction, and a continuation init can establish ownership before
+    /// the instruction that actually suspends. A handoff is control-flow
+    /// evidence and does not prove that context storage survives the transfer.
+    struct TransferEdge: Sendable, Equatable {
+        enum Kind: Sendable, Equatable {
+            case awaitCall
+            case executorHop
+            case runtimeWait(String)
+            case ownershipOnly
+        }
+
+        let source: UInt64
+        let site: UInt64
+        let resume: UInt64
+        let kind: Kind
+        let callee: UInt64?
+        let calleeName: String?
+        /// The destination ABI according to this specific handoff and the hints.
+        let resumeKind: AsyncResumeKind
+
+        var runtimeWait: String? {
+            if case .runtimeWait(let name) = kind { return name }
+            return nil
+        }
+    }
+
     struct Funclet: Sendable, Equatable {
         let parent: UInt64?
         let ordinal: Int
@@ -124,6 +151,11 @@ struct AsyncFuncletIndex: Sendable {
     private(set) var chains: [UInt64: [UInt64]] = [:]
     /// Suspension instruction address → what it suspends into.
     private(set) var suspensions: [UInt64: Suspension] = [:]
+    /// Source funclet → recovered handoffs, including ambiguous sites and
+    /// destinations that have no unique owner. The bounded scan does not
+    /// establish a complete predecessor set and excludes self-handoffs.
+    /// `suspensions` is for rendering.
+    private(set) var transfers: [UInt64: [TransferEdge]] = [:]
     /// Declared resume funclets no predecessor was found for, sorted.
     private(set) var orphans: [UInt64] = []
     /// Whether the hint sections were present (the oracle), as opposed to the
@@ -897,6 +929,20 @@ struct AsyncFuncletIndex: Sendable {
         // `AsyncCompactMapSequence.Iterator.next()` re-awaits into resume #1
         // from resume #4): the owner holds, but no single predecessor does.
         edges = edges.mapValues { items in items.filter { $0.suspensionAddress != nil } }
+        for source in edges.keys.sorted() {
+            guard let items = edges[source], !items.isEmpty else { continue }
+            index.transfers[source] = items.compactMap { item in
+                guard let site = item.suspensionAddress else { return nil }
+                let kind: TransferEdge.Kind
+                if !item.recordsSuspension { kind = .ownershipOnly }
+                else if item.isExecutorHop { kind = .executorHop }
+                else if let wait = item.runtimeWait { kind = .runtimeWait(wait) }
+                else { kind = .awaitCall }
+                return TransferEdge(source: source, site: site, resume: item.resume,
+                                    kind: kind, callee: item.callee, calleeName: item.callee.flatMap(nameOf),
+                                    resumeKind: resumeKind(item.resume, item))
+            }
+        }
         // Paths that share a tail share its suspension instruction: two awaits
         // built in different blocks of `AsyncFlatMapSequence.Iterator.next()`'s
         // resume #1 both leave through one `braa`. That instruction resumes
