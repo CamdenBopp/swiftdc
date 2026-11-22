@@ -46,7 +46,9 @@ jobs:
             exit 1
           }
       - name: Build
-        run: swift build --build-tests 2>&1 | tee build.log; ! grep -q "error:" build.log
+        run: |
+          set -o pipefail
+          swift build --build-tests 2>&1 | tee build.log
       - name: Enforcing suite
         run: |
           set -o pipefail
