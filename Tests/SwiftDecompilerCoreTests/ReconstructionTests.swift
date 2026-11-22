@@ -1,3 +1,4 @@
+import Ccapstone
 import Testing
 import Foundation
 import Darwin
@@ -1492,8 +1493,37 @@ private func structuredText(_ name: String, in fixture: String) async throws -> 
         } else {
             #expect(label.contains("return (\(alpha) ? \"first\" : (\(beta) ? \"second\" : \"third\"))"), "\(level): \(label)")
         }
-        let witness = try text("protocol witness for ResilientSelf.Kind.peek")
-        #expect(witness.contains("return (self & 0xffffffff)"), "\(level): \(witness)")
+        let witness = try #require(functions.first {
+            $0.symbol == "_$s13ResilientSelf3AsmOAA4KindA2aDP4peekSiyFTW" &&
+                $0.displayName.hasPrefix("protocol witness for ResilientSelf.Kind.peek() -> Swift.Int")
+        })
+        let witnessComment = Comment(rawValue: level + " Asm.peek tag witness")
+        try #require(witness.instructions.count == 2, witnessComment)
+        let load = witness.instructions[0]
+        let tail = witness.instructions[1]
+        let detail = try #require(load.detail, witnessComment)
+        try #require(detail.id == AARCH64_INS_LDRB && detail.operands.count == 2 &&
+                     !detail.writeback && !detail.postIndex, witnessComment)
+        let w0 = PhysReg(kind: .gpr, number: 0, widthBits: 32)
+        let x20 = PhysReg(kind: .gpr, number: 20, widthBits: 64)
+        try #require(detail.operands[0].operand.register == w0, witnessComment)
+        let readsTag: Bool
+        if case .memory(let base, nil, 0) = detail.operands[1].operand {
+            readsTag = base == x20
+        } else {
+            readsTag = false
+        }
+        try #require(readsTag && tail.detail?.id == AARCH64_INS_RET && tail.controlFlow == .return,
+                     witnessComment)
+        let trace = ValueTracer().analyze(witness, entry: .swiftInstance(scalarArguments: [:]))
+        let access = try #require(trace.selfFieldAccesses[load.address], witnessComment)
+        try #require(trace.selfFieldAccesses.count == 1 && access.offset == 0 && access.bytes == 1 &&
+                     !access.isWrite && !access.isAddressOf, witnessComment)
+        #expect(trace.exitValues[tail.address] ==
+                .binary(.bitAnd, .selfFieldValue(offset: 0), .immediate(0xff)), witnessComment)
+        for body in [witness.renderStructured(), witness.renderPseudo()] {
+            #expect(body.contains("return (self & 255)"), Comment(rawValue: level + ": " + body))
+        }
         let rank = try text("ResilientSelf.Mode.rank(")
         #expect(rank.contains("self") && rank.contains("arg0"), "\(level): \(rank)")
         let none = try text("ResilientSelf.Payload.isNone.getter")

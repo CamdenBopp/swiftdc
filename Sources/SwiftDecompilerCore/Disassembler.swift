@@ -11134,6 +11134,18 @@ public struct Disassembler: Sendable {
                 // A Bool parameter is a boolean value (0/1); `!b` and truthiness
                 // tests fold against it, and its raw form is just `arg`.
                 return negated ? "!arg\(index)" : "arg\(index)"
+            case .selfFieldValue(let offset) where objcFieldSyntax:
+                // A whole Objective-C _Bool is 0/1. Require a decoded
+                // one-byte read and no conflicting access or alias width.
+                guard selfFieldReadWidths[offset] == Set([1]), let fieldMap,
+                      case .success(.whole(let name, "B")) = fieldMap.lookup(offset: offset, bytes: 1),
+                      analysis.selfFieldAccesses.values.contains(where: {
+                          $0.offset == offset && $0.bytes == 1 && $0.registerBytes == nil
+                              && !$0.isWrite && !$0.isAddressOf
+                      })
+                else { return nil }
+                let path = fieldPath(name)
+                return negated ? "!\(path)" : path
             case .binary(.bitAnd, let lhs, .immediate(let mask))
                 where mask & 1 == 1 && isBooleanValued(lhs):
                 // Word normalization is redundant only for a proven 0/1 value.
@@ -12169,12 +12181,193 @@ public struct Disassembler: Sendable {
             return Self.narrowedResult(Self.floatingPointValue(value, type: returnTypeName), type: returnTypeName)
         }
 
+        /// Admit only whole-body self-load proofs. Offset-only trace atoms
+        /// cannot identify their producers without this def-use evidence.
+        func projectedSelfLoadReturn(_ value: AbstractValue, at address: UInt64, type: String) -> String? {
+            guard function.objcMethod == nil, case .swiftInstance? = entry,
+                  Self.isSwiftMangled(function.symbol),
+                  let owner = Self.qualifiedSelfTypeFromDemangledName(function.demangledName),
+                  let bank = functionReturnRegister, returnsDirectly,
+                  type == "Swift.Int64" || type == "Swift.UInt64" || type == "Swift.Float",
+                  (2...5).contains(function.instructions.count),
+                  let load = function.instructions.first, load.address == function.startAddress,
+                  let tail = function.instructions.last, tail.address == address,
+                  tail.detail?.id == AARCH64_INS_RET, tail.controlFlow == .return,
+                  let detail = load.detail, load.controlFlow == .sequential,
+                  function.instructions.enumerated().allSatisfy({
+                      $0.element.address == load.address + UInt64($0.offset * 4)
+                  }),
+                  !detail.writeback, !detail.postIndex, detail.operands.count == 2,
+                  let destination = detail.operands[0].operand.register,
+                  case .memory(let base, nil, let displacement) = detail.operands[1].operand,
+                  base == PhysReg(kind: .gpr, number: 20, widthBits: 64),
+                  let offset = Int(exactly: displacement), offset >= 0
+            else { return nil }
+
+            let signedBits = ValueTracer.signedLoadBits(detail)
+            let zeroBits = ValueTracer.zeroExtendingSubwordLoadBits(detail)
+            let isWordLoad = detail.id == AARCH64_INS_LDR
+                && destination == PhysReg(kind: .gpr, number: 0, widthBits: 32)
+            guard signedBits != nil || zeroBits != nil || isWordLoad else { return nil }
+
+            // The admitted body does not save or restore a register. Its
+            // load can only write a scratch GPR that preserves the caller's
+            // reserved/preserved registers, self and link register.
+            let link = PhysReg(kind: .gpr, number: 30, widthBits: 64)
+            guard let ret = tail.detail,
+                  ret.operands.isEmpty || (ret.operands.count == 1 && ret.operands[0].operand.register == link),
+                  (0...17).contains(destination.number)
+            else { return unknownRenderedValue() }
+
+            func fieldAccess(_ instruction: Instruction, bytes: Int) -> Bool {
+                guard let access = analysis.selfFieldAccesses[instruction.address] else { return false }
+                return !access.isWrite && !access.isAddressOf && access.registerBytes == nil
+                    && access.offset == offset && access.bytes == bytes
+            }
+
+            func primitive(_ mangled: String, name: String, in map: FieldMap) -> String {
+                let printable = FieldMap.printableTypeName(mangled: mangled, resolved: map.fieldTypeNames[name])
+                switch printable {
+                case "Sf": return "Swift.Float"
+                case "s4Int8V": return "Swift.Int8"
+                case "s5Int16V": return "Swift.Int16"
+                case "s5Int32V": return "Swift.Int32"
+                case "s5UInt8V": return "Swift.UInt8"
+                case "s6UInt16V": return "Swift.UInt16"
+                case "s6UInt32V": return "Swift.UInt32"
+                default: return printable
+                }
+            }
+
+            let field = AbstractValue.selfFieldValue(offset: offset)
+            let map = typeFieldMaps[owner].flatMap {
+                $0.isStruct == true && $0.isGeneric == false && $0.trustLimitReason == nil ? $0 : nil
+            }
+            let instructions = function.instructions
+            if instructions.count == 5, type == "Swift.UInt64", case .integer = bank,
+               detail.id == AARCH64_INS_LDRB, destination.kind == .gpr, destination.widthBits == 32,
+               destination.number != 0 {
+                let w0 = PhysReg(kind: .gpr, number: 0, widthBits: 32)
+                let x0 = PhysReg(kind: .gpr, number: 0, widthBits: 64)
+                let xByte = PhysReg(kind: .gpr, number: destination.number, widthBits: 64)
+                let wordLoad = instructions[1]
+                let shift = instructions[2]
+                let combine = instructions[3]
+                guard let word = wordLoad.detail, wordLoad.controlFlow == .sequential,
+                      word.id == AARCH64_INS_LDR, !word.writeback, !word.postIndex, word.operands.count == 2,
+                      word.operands[0].operand.register == w0,
+                      case .memory(let wordBase, nil, let wordOffset) = word.operands[1].operand,
+                      wordBase == base, wordOffset == displacement,
+                      let shiftDetail = shift.detail, shift.controlFlow == .sequential,
+                      shiftDetail.id == AARCH64_INS_LSL, shiftDetail.operands.count == 3,
+                      shiftDetail.operands.compactMap({ $0.operand.register }) == [xByte, xByte],
+                      shiftDetail.operands[2].shiftedImmediate == 32,
+                      let or = combine.detail, combine.controlFlow == .sequential,
+                      or.id == AARCH64_INS_ORR, or.operands.count == 3,
+                      or.operands.compactMap({ $0.operand.register }) == [x0, x0, xByte],
+                      or.operands.allSatisfy({ $0.shift.type == AARCH64_SFT_INVALID
+                          && $0.extender == AARCH64_EXT_INVALID })
+                else { return nil }
+                let low = AbstractValue.binary(.bitAnd, field, .immediate(0xffff_ffff))
+                let byte = AbstractValue.binary(.bitAnd, field, .immediate(0xff))
+                let high = AbstractValue.binary(.shiftLeft, byte, .immediate(32))
+                guard let map, fieldAccess(load, bytes: 1), fieldAccess(wordLoad, bytes: 4),
+                      case .success(.whole(let name, let mangled)) = map.lookup(offset: offset, bytes: 4),
+                      primitive(mangled, name: name, in: map) == "Swift.UInt32",
+                      case .success(.part(let byteName, let byteType, 0, 1)) = map.lookup(offset: offset, bytes: 1),
+                      byteName == name, byteType == mangled,
+                      value == .binary(.bitOr, low, high) || value == .binary(.bitOr, high, low)
+                else { return unknownRenderedValue() }
+                let path = fieldPath(name)
+                return "(UInt64(\(path)) | (UInt64(UInt8(truncatingIfNeeded: \(path))) << 32))"
+            }
+
+            let middle = instructions.dropFirst().dropLast().filter {
+                $0.detail?.id != AARCH64_INS_ALIAS_NOP || $0.detail?.operands.isEmpty != true
+                    || $0.controlFlow != .sequential
+            }
+            let width: Int
+            let rawField: AbstractValue
+            if let signedBits {
+                width = signedBits
+                let shift = AbstractValue.immediate(UInt64(64 - signedBits))
+                rawField = .binary(.arithmeticShiftRight, .binary(.shiftLeft, field, shift), shift)
+            } else if let zeroBits {
+                width = zeroBits
+                rawField = .binary(.bitAnd, field, .immediate((UInt64(1) << zeroBits) - 1))
+            } else if isWordLoad {
+                width = 32
+                rawField = .binary(.bitAnd, field, .immediate(0xffff_ffff))
+            } else {
+                return nil
+            }
+
+            let expected: AbstractValue
+            switch (bank, type) {
+            case (.integer, "Swift.Int64") where signedBits != nil && destination.widthBits == 64:
+                guard middle.isEmpty, destination.number == 0 else { return nil }
+                expected = rawField
+            case (.integer, "Swift.UInt64") where destination.widthBits == 32:
+                guard middle.isEmpty, destination.number == 0 else { return nil }
+                expected = signedBits == nil ? rawField : .binary(.bitAnd, rawField, .immediate(0xffff_ffff))
+            case (.floating, "Swift.Float"):
+                guard signedBits != nil, middle.count == 1, let move = middle.first,
+                      move.controlFlow == .sequential, let moveDetail = move.detail,
+                      moveDetail.id == AARCH64_INS_FMOV, moveDetail.operands.count == 2,
+                      moveDetail.operands[0].operand.register == PhysReg(kind: .vector, number: 0, widthBits: 32),
+                      moveDetail.operands[1].operand.register == PhysReg(kind: .gpr, number: destination.number, widthBits: 32)
+                else { return nil }
+                // The exact low-view fold takes the sign extension away
+                // for a word, but the byte and halfword still replicate.
+                let bits = width == 32 ? field : rawField
+                expected = .unary(.floatResult(bits: 32, upperZero: true), .unary(.floatFromBits(bits: 32), bits))
+            default:
+                return nil
+            }
+            guard let map, fieldAccess(load, bytes: width / 8),
+                  case .success(.whole(let name, let mangled)) = map.lookup(offset: offset, bytes: width / 8)
+            else { return signedBits == nil && zeroBits == nil ? nil : unknownRenderedValue() }
+
+            let path = fieldPath(name)
+            let storage = primitive(mangled, name: name, in: map)
+            let signedStorage = storage == "Swift.Int\(width)"
+            let unsignedStorage = storage == "Swift.UInt\(width)"
+            let projected: String
+            switch (type, storage, width) {
+            case ("Swift.Int64", _, _) where signedStorage:
+                projected = "Int64(\(path))"
+            case ("Swift.Int64", _, _) where unsignedStorage:
+                projected = "Int64(Int\(width)(bitPattern: \(path)))"
+            case ("Swift.Int64", "Swift.Float", 32):
+                projected = "Int64(Int32(bitPattern: \(path).bitPattern))"
+            case ("Swift.UInt64", "Swift.Float", 32) where signedBits == nil && zeroBits == nil:
+                projected = "UInt64(\(path).bitPattern)"
+            case ("Swift.UInt64", _, _) where unsignedStorage && zeroBits != nil:
+                projected = "UInt64(\(path))"
+            case ("Swift.UInt64", _, _) where signedStorage && signedBits != nil:
+                projected = "UInt64(UInt32(bitPattern: Int32(\(path))))"
+            case ("Swift.Float", _, _) where signedStorage && width < 32:
+                projected = "Float(bitPattern: UInt32(bitPattern: Int32(\(path))))"
+            case ("Swift.Float", "Swift.Float", 32):
+                projected = path
+            default:
+                return signedBits == nil && zeroBits == nil ? nil : unknownRenderedValue()
+            }
+            // An entry seed, different leaf or later rewrite cannot stand in
+            // for this load. Only spell the independently matched trace.
+            return value == expected ? projected : unknownRenderedValue()
+        }
+
         func renderReturnValue(_ rawValue: AbstractValue, before address: UInt64) -> String {
             let initialUnknowns = unknownRenderCount
             defer {
                 if trackReturnRendering { completeReturnRendering[address] = unknownRenderCount == initialUnknowns }
             }
             let value = sanitizeValue(rawValue)
+            if let returnTypeName,
+               let projected = projectedSelfLoadReturn(value, at: address, type: returnTypeName) {
+                return projected
+            }
             // An immediate returned from an enum-typed function is that enum's
             // case tag: name it (`return Color.green`) instead of printing the
             // raw discriminant. Declines — leaving the integer — for payload

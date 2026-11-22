@@ -4641,7 +4641,19 @@ public struct ValueTracer: Sendable {
                 } else {
                     write(dest, isPointerLoad ? .loaded(address) : .unknown, into: &registers)
                 }
-            case .selfField(let offset): write(dest, .selfFieldValue(offset: offset), into: &registers)
+            case .selfField(let offset):
+                let field = AbstractValue.selfFieldValue(offset: offset)
+                let value: AbstractValue
+                if let bits = Self.signedLoadBits(detail) {
+                    // Sign-extend from the memory width. write(W) separately
+                    // clears the high word, as it does for other W producers.
+                    value = signExtended(field, bits: bits)
+                } else if let bits = Self.zeroExtendingSubwordLoadBits(detail) {
+                    value = narrowed(field, bits: bits)
+                } else {
+                    value = field
+                }
+                write(dest, value, into: &registers)
             case .throughStaticPointer(let slot, let offset):
                 let isPointerLoad = (detail.id == AARCH64_INS_LDR || detail.id == AARCH64_INS_LDUR)
                     && dest.kind == .gpr && dest.widthBits == 64
@@ -6638,6 +6650,35 @@ public struct ValueTracer: Sendable {
         case .asyncContext: return .asyncSlot(Int(effective))
         case .asyncCalleeContext: return .asyncCalleeSlot(Int(effective))
         default: return nil
+        }
+    }
+
+    /// Exact memory width of the signed subword GPR load family.
+    static func signedLoadBits(_ detail: StructuredInsn) -> Int? {
+        guard let destination = detail.operands.first?.operand.register,
+              destination.kind == .gpr, [32, 64].contains(destination.widthBits)
+        else { return nil }
+        switch detail.id {
+        case AARCH64_INS_LDRSB, AARCH64_INS_LDURSB,
+             AARCH64_INS_LDRSH, AARCH64_INS_LDURSH:
+            return accessBytes(detail).map { $0 * 8 }
+        case AARCH64_INS_LDRSW, AARCH64_INS_LDURSW:
+            return destination.widthBits == 64 ? 32 : nil
+        default:
+            return nil
+        }
+    }
+
+    /// LDRB/H write a W register, but their memory view is smaller still.
+    static func zeroExtendingSubwordLoadBits(_ detail: StructuredInsn) -> Int? {
+        guard let destination = detail.operands.first?.operand.register,
+              destination.kind == .gpr, destination.widthBits == 32
+        else { return nil }
+        switch detail.id {
+        case AARCH64_INS_LDRB, AARCH64_INS_LDURB, AARCH64_INS_LDRH, AARCH64_INS_LDURH:
+            return accessBytes(detail).map { $0 * 8 }
+        default:
+            return nil
         }
     }
 

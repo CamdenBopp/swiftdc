@@ -1,3 +1,4 @@
+import Ccapstone
 import Foundation
 import Testing
 @testable import SwiftDecompilerCore
@@ -65,8 +66,42 @@ import Testing
     #expect(second.renderPseudo().contains("return self.pair[8..<16]"), Comment(rawValue: second.renderPseudo()))
     let objc = try await withStableDependencies { try await Disassembler().disassemble(path: objcPath) }
     let mixed = try #require(objc.first { $0.displayName == "-[SDFieldCopy mixed]" })
-    #expect(mixed.renderPseudo().contains("return ((self->_pair[8...] & 0xffffffff) + self->_pair[8...])"),
-            Comment(rawValue: mixed.renderPseudo()))
+    let trace = ValueTracer().analyze(mixed, entry: .objectiveC(argumentCount: 0))
+    let reads = trace.selfFieldAccesses.filter { !$0.value.isWrite && !$0.value.isAddressOf }
+    try #require(reads.count == 2)
+    let byte = try #require(reads.first { $0.value.bytes == 1 })
+    let word = try #require(reads.first { $0.value.bytes == 8 })
+    try #require(byte.key != word.key && byte.value.offset == word.value.offset)
+    let byteLoad = try #require(mixed.instructions.first { $0.address == byte.key })
+    let wordLoad = try #require(mixed.instructions.first { $0.address == word.key })
+    let byteDetail = try #require(byteLoad.detail)
+    let wordDetail = try #require(wordLoad.detail)
+    try #require(byteDetail.id == AARCH64_INS_LDRB && wordDetail.id == AARCH64_INS_LDR)
+    for (detail, width) in [(byteDetail, 32), (wordDetail, 64)] {
+        try #require(!detail.writeback && !detail.postIndex && detail.operands.count == 2)
+        let destination = try #require(detail.operands[0].operand.register)
+        try #require(destination.kind == .gpr && destination.widthBits == width)
+        guard case .memory(let base, nil, let displacement) = detail.operands[1].operand else {
+            Issue.record("Expected a direct scalar load")
+            return
+        }
+        let physicalBase = try #require(base)
+        try #require(physicalBase.kind == .gpr && physicalBase.widthBits == 64 && displacement == Int64(byte.value.offset))
+    }
+
+    let tail = try #require(mixed.instructions.last)
+    try #require(tail.controlFlow == .return && tail.detail?.id == AARCH64_INS_RET)
+    let sameField = AbstractValue.selfFieldValue(offset: byte.value.offset)
+    let lowByte = AbstractValue.binary(.bitAnd, sameField, .immediate(0xff))
+    #expect(trace.exitValues[tail.address] == .binary(.add, lowByte, sameField))
+
+    for text in [mixed.renderPseudo(), mixed.renderStructured()] {
+        #expect(text.contains("return ((self->_pair[8...] & 255) + self->_pair[8...])"),
+                Comment(rawValue: text))
+    }
+
+    #expect(byteLoad.annotation == "self->_pair[8..<9]")
+    #expect(wordLoad.annotation == "self->_pair[8..<16]")
     let listing = mixed.render()
     #expect(listing.contains("; self->_pair[8..<9]") && listing.contains("; self->_pair[8..<16]"),
             Comment(rawValue: listing))
