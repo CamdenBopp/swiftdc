@@ -5602,10 +5602,19 @@ public struct ValueTracer: Sendable {
                 ? .binary(.bitAnd, value, .immediate((UInt64(1) << bits) - 1)) : value
             guard expressionDepth(raw) < 8 else { return .unknown }
             return .unary(.floatFromBits(bits: bits), raw)
-        case .unary(.floatResult(let width, let zero), _) where width != bits:
+        case .unary(.floatResult(let width, let zero), let scalar) where width != bits:
             guard [16, 32, 64].contains(width), bits < width || zero else { return .unknown }
             var raw = bitPattern(of: value, bits: width)
-            if bits < width { raw = .binary(.bitAnd, raw, .immediate((UInt64(1) << bits) - 1)) }
+            if bits < width {
+                raw = .binary(.bitAnd, raw, .immediate((UInt64(1) << bits) - 1))
+            } else if case .unary(.floatFromBits(let source), _) = scalar, source == width {
+                // bitPattern peels matching constructors. The resulting
+                // raw expression still supplies only the original low bits.
+                let mask = (UInt64(1) << width) - 1
+                if !fitsLowMask(raw, mask: mask) {
+                    raw = .binary(.bitAnd, raw, .immediate(mask))
+                }
+            }
             guard expressionDepth(raw) < 8 else { return .unknown }
             return .unary(.floatFromBits(bits: bits), raw)
         case .unary(.floatFromBits(let width), let integer) where bits != width:
