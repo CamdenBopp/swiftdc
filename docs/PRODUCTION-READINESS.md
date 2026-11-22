@@ -61,6 +61,23 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-22: authoritative CI build status
+
+**FIXED locally at `f25575fdce9a348d9e90b6ec9bb6e4b279d85fcc`:** the CI
+Build pipeline previously discarded Swift's failure behind `tee`, then
+used an `error:` log grep as its status. An independent Bash probe of the
+exact old/new workflow commands makes silent exit 17 change from success
+to exit 17, keeps success at zero and preserves diagnostic exit 23 instead
+of the grep's exit 1. Visible and saved logs match. The Build step now ends
+at the pipeline with `pipefail` enabled.
+
+After rebuilding, the enforcing suite passes **2,075 tests / 43 suites
+(954.827 s)**. All **1,206 public / 915 fixture product hashes** stay fixed;
+the debug binary and frozen S01 release are byte-identical. This validation
+change introduces no decompiler output or cost difference. Original-gate
+publication and the patched hosted workflow run remain pending. See the
+[CI guide](CI.md) for log artifacts and the current published result.
+
 ## 2026-11-22: qualified Objective-C super-result adoption
 
 **FIXED locally at `d8a00e038263bcc28b2d340ea42dcd7c81d83cf5`:** an ordinary

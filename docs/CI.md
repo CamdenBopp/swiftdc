@@ -4,6 +4,19 @@ CI runs one thing: the enforcing test suite, on every push to `dev` and
 every pull request. "Enforcing" means a missing fixture fails the run
 instead of skipping its test.
 
+The Build step keeps Swift's real exit status while logging through `tee`.
+A nonzero build fails the step even without an `error:` message, so the
+suite cannot run an older test binary after that failure. The `suite-log`
+artifact retains `build.log` and any `suite.log` produced by the run.
+
+The latest verified published result is
+[run 44998598514 at `1fc51d3`](https://github.com/CamdenBopp/swiftdc/actions/runs/44998598514):
+**2,069 fixture-enforced tests / 43 suites (1,893.323 s)**. The local
+exit-status fix `f25575f` passes 2,075 tests and its shell failure controls;
+publication and hosted verification of that change remain pending.
+See [current status](STATUS.md#current-status) for later qualifications.
+The older job notes below are historical, including their pending labels.
+
 The suite needs Swift 6.4 or newer because its fixtures are compiled from
 source. The hosted workflow requests GitHub's documented `xcode-27` ARM64
 preview image and selects `/Applications/Xcode_27.1.app`, the locally tested

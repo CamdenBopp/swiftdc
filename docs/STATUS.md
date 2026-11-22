@@ -17,6 +17,9 @@ gate and completed hosted CI each passed **2,069 tests / 43 suites**.
   A's copy witness B. The ordinary-class control labels A correctly.
   [Reproduction](research/abi-audit-2026-11-22/probes/README.md)
 - **Open transport gap.** The targeted await case still declines its value.
+- **CI build status.** Local `f25575f` propagates Swift failure through
+  logging and passes the same 2,075-test enforcing suite plus independent
+  shell failure controls. [CI behavior and logs](CI.md)
 - **Next gates.** Publish the qualified super-result fix through the
   original gate, then qualify the scalar metadata guard separately.
   [ABI closure plan](ABI-CLOSURE-PLAN.md)
