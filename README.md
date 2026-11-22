@@ -526,8 +526,9 @@ script that totals them are in `Tools/ghidra-compare/`.
 
 ## Design notes and research
 
-[docs/STATUS.md](docs/STATUS.md) is the short current record: what was
-measured, at which commit, and what is open. Quote that.
+Start with [current status](docs/STATUS.md#current-status) for the qualified
+code, published revision and next gate. The [ABI closure plan](docs/ABI-CLOSURE-PLAN.md)
+links the compiler evidence, reproductions and implementation order.
 
 [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md) is the running
 list of what stands between swiftdc and a decompiler you can trust without

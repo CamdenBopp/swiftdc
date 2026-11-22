@@ -1,13 +1,33 @@
 # swiftdc status
 
-The short, current record for anyone assessing swiftdc from outside,
-including automated reviewers. It holds only what was measured, each with
-its commit, its denominator and the command that reproduces it. The long
-history is [PRODUCTION-READINESS.md](PRODUCTION-READINESS.md); this page
-is what to quote.
+## Current status
 
-Updated 2026-11-22. Each measurement names its commit; the benchmark
-tables retain their original measurements.
+Updated 2026-11-22. Local code `d8a00e0` fixes false Objective-C super-result
+adoption and is qualified by **2,075 enforcing tests / 43 suites**, the
+775-input four-view/default-cost comparison, CLI matrix and original
+guarded apps. Its original-gate publication and hosted run are pending.
+[Local verification](#latest-local-verification-super-result-adoption)
+
+The last published qualified revision is `1fc51d3`: its original release
+gate and completed hosted CI each passed **2,069 tests / 43 suites**.
+[Published gate](#latest-local-verification-converged-async-branch-witnesses) ·
+[Hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/44998598514)
+
+- **Next reproduced defect.** A generic class with a type pack can label
+  A's copy witness B. The ordinary-class control labels A correctly.
+  [Reproduction](research/abi-audit-2026-11-22/probes/README.md)
+- **Open transport gap.** The targeted await case still declines its value.
+- **Next gates.** Publish the qualified super-result fix through the
+  original gate, then qualify the scalar metadata guard separately.
+  [ABI closure plan](ABI-CLOSURE-PLAN.md)
+- **Measurements and history.** Historical scores keep their original
+  revision and denominator. [Scored corpus](#decompilation-outcomes-against-ghidra-122) ·
+  [Compiler entry oracle](#entry-conventions-against-the-compiler) ·
+  [Hosted CI history](#hosted-ci-configuration-and-hosted-verification) ·
+  [Production-readiness record](PRODUCTION-READINESS.md)
+
+This index reports measured evidence. It supplies no readiness percentage
+or ABI coverage score; the sections below retain the underlying records.
 
 ## What to report, and what not to
 
