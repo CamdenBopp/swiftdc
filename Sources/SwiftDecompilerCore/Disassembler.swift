@@ -5246,6 +5246,62 @@ public struct Disassembler: Sendable {
             return symbol.hasPrefix("_") ? String(symbol.dropFirst()) : symbol
         }
 
+        /// Super2 starts above the current class, so its search reference
+        /// must name that exact class, without using presentation names.
+        func objCSuperReferenceSlots(to ownerAddress: UInt64) -> Set<UInt64> {
+            guard let fileRanges else { return [] }
+            var slots = Set<UInt64>()
+            for section in machO.sections where section.sectionName == "__objc_superrefs" {
+                let start = UInt64(section.address)
+                let (end, overflow) = start.addingReportingOverflow(UInt64(section.size))
+                guard !overflow, let size = Int(exactly: section.size), size >= 8,
+                      size.isMultiple(of: 8), fileRanges.holdsBytes(at: start, count: size)
+                else { continue }
+                for slot in stride(from: start, to: end, by: 8) {
+                    if pointerTarget(at: slot) == ownerAddress {
+                        slots.insert(slot)
+                    }
+                }
+            }
+            return slots
+        }
+
+        /// Validate the Darwin arm64 selector island: load the actual selref
+        /// into x1 and the fixed import into x16 before branching through it.
+        /// Clang's nullary method declaration has no variadic parameters.
+        func isProvenNullaryObjCStub(at address: UInt64, engine: CapstoneEngine) -> Bool {
+            let bytes = 20
+            guard machO.sections.contains(where: { section in
+                let start = UInt64(section.address)
+                return section.sectionName == "__objc_stubs" && section.size >= bytes
+                    && address >= start && address - start <= UInt64(section.size - bytes)
+            }), let file = fileRanges?.fileBytes(at: address), file.available >= bytes,
+               let code: [UInt8] = try? machO.readElements(offset: file.offset, numberOfElements: bytes)
+            else { return false }
+            let instructions = engine.disassemble(Data(code), address: address)
+            guard instructions.count == 5, let branch = instructions[4].detail,
+                  branch.id == AARCH64_INS_BR, branch.operands.count == 1,
+                  branch.operands.first?.operand.register?.key == "x16"
+            else { return false }
+            for (first, register) in [(0, "x1"), (2, "x16")] {
+                guard let adrp = instructions[first].detail, adrp.id == AARCH64_INS_ADRP,
+                      adrp.operands.first?.operand.register?.key == register,
+                      let load = instructions[first + 1].detail, load.id == AARCH64_INS_LDR,
+                      load.operands.count == 2, !load.writeback, !load.postIndex,
+                      load.operands.first?.operand.register?.key == register,
+                      load.operands.first?.operand.register?.widthBits == 64,
+                      case .memory(let base?, nil, _) = load.operands[1].operand, base.key == register
+                else { return false }
+            }
+            let state = ValueTracer().finalState(of: instructions.prefix(4).map {
+                Instruction(address: $0.address, text: $0.text, controlFlow: $0.controlFlow, detail: $0.detail)
+            })
+            guard case .loaded(let slot)? = state["x1"], let selector = selectors.bySelref[slot],
+                  !selector.contains(":"), let target = state["x16"]
+            else { return false }
+            return namedABIContract(for: target, named: "objc_msgSend")
+        }
+
         private static let classSymbolPrefix = "_OBJC_CLASS_$_"
 
         /// The eight bytes at `address` when it lies inside a `__TEXT` literal
@@ -6316,6 +6372,82 @@ public struct Disassembler: Sendable {
         return isInitializer
             ? .objectiveCInitializer(argumentCount: argumentCount)
             : .objectiveC(argumentCount: argumentCount)
+    }
+
+    /// A duplicated runtime class name does not establish object identity.
+    static func uniqueObjCClassObject(named name: String, in objects: [UInt64: String]) -> UInt64? {
+        var match: UInt64?
+        for (address, candidate) in objects where candidate == name {
+            guard match == nil else { return nil }
+            match = address
+        }
+        return match
+    }
+
+    /// The conventional family ignores leading underscores and uses an ASCII
+    /// word boundary. A declaration may override this classification.
+    private static func isObjCInitFamily(_ selector: String) -> Bool {
+        let name = selector.utf8.drop(while: { $0 == UInt8(ascii: "_") })
+        guard name.starts(with: "init".utf8) else { return false }
+        let lowercases = UInt8(ascii: "a")...UInt8(ascii: "z")
+        return name.dropFirst(4).first.map { !lowercases.contains($0) } ?? true
+    }
+
+    /// Follow the replacement through all subsequent paths. A retained
+    /// carrier for the original receiver must be rebound on the successful
+    /// path. A call whose result stays in x0 needs no register copy.
+    static func forwardsObjCSuperResultAsSelf(
+        at site: UInt64, in function: DisassembledFunction, cfg: FunctionCFG, analysis: FunctionAnalysis
+    ) -> Bool {
+        let instructions = function.instructions
+        // A method may reach an earlier published frame address even when
+        // its own ordinary ABI has no incoming stack arguments.
+        guard !analysis.objcFrameAddressMayHaveEscaped,
+              !(analysis.objcPrivateFrameAddressSpilled && analysis.objcCallMayReadIncomingStack),
+              let index = instructions.firstIndex(where: { $0.address == site }),
+              let candidate = analysis.callSites[site], candidate.isObjCSuperInitCandidate,
+              case .frame(let receiverOffset)? = candidate.arguments.first
+        else { return false }
+        var originalFrame = analysis.objcOriginalSelfFrame
+        originalFrame.append(.init(start: receiverOffset, bytes: 8))
+
+        let base = cfg.blockOfInstruction[index]
+        var pending = [base]
+        var visited = Set<Int>()
+        var sawResult = false
+        var sawRebinding = false
+        while let blockID = pending.popLast() {
+            guard visited.insert(blockID).inserted else { continue }
+            let block = cfg.blocks[blockID]
+            let start = blockID == base ? index + 1 : block.range.lowerBound
+            guard !(start..<block.range.upperBound).contains(where: {
+                let instruction = instructions[$0]
+                if instruction.detail == nil || analysis.objcSelfReads.contains(instruction.address) {
+                    return true
+                }
+                guard let read = analysis.objcFrameReadEffects[instruction.address] else { return false }
+                return analysis.objcOriginalSelfMayBeAnywhereInFrame
+                    || originalFrame.contains(where: read.mayInvalidate)
+            }) else { return false }
+            sawRebinding = sawRebinding || (start..<block.range.upperBound).contains {
+                analysis.objcSelfRebindings[instructions[$0].address] == site
+            }
+            let terminator = instructions[block.terminator]
+            if terminator.controlFlow == .return {
+                switch analysis.exitValues[terminator.address] {
+                case .callResult(site)?: sawResult = true
+                case .immediate(0)?: break
+                default: return false
+                }
+            } else {
+                guard !block.successorIDs.isEmpty,
+                      block.successorIDs.count == block.successorAddresses.count,
+                      block.successorIDs.allSatisfy({ $0 > blockID })
+                else { return false }
+                pending.append(contentsOf: block.successorIDs)
+            }
+        }
+        return sawResult && (!candidate.savesOriginalObjCSelf || sawRebinding)
     }
 
     /// The owning class name from a method symbol, category suffix stripped
@@ -8836,6 +8968,36 @@ public struct Disassembler: Sendable {
         tracer.callResultBank = { callee in
             Self.callResultBank(of: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cache: callResultBanks)
         }
+        if let method = function.objcMethod, entry?.isObjectiveCInitializer == true, !method.isClassMethod,
+           let classObjects = objcIndex?.classObjectNames,
+           let ownerAddress = Self.uniqueObjCClassObject(named: method.className, in: classObjects),
+           let result = ObjCArgumentABI.returnType(encoding: method.typeEncoding),
+           result == "@" || result.hasPrefix("@\"") {
+            let selectors = resolver.selectors.bySelref
+            let searchSlots = resolver.objCSuperReferenceSlots(to: ownerAddress)
+            tracer.objcInitializerSelectors = selectors
+            if let engine = CapstoneEngine() {
+                var nullaryStubs = [UInt64: Bool]()
+                for instruction in function.instructions where instruction.controlFlow == .call {
+                    guard let target = instruction.branchTarget else { continue }
+                    let valid = nullaryStubs[target] ?? resolver.isProvenNullaryObjCStub(at: target, engine: engine)
+                    nullaryStubs[target] = valid
+                    if valid { tracer.objcProvenNullaryStubSites.insert(instruction.address) }
+                }
+            }
+            tracer.provesObjCSuperInitializer = { selectorSlot, searchClass in
+                guard let selector = selectors[selectorSlot], Self.isObjCInitFamily(selector)
+                else { return false }
+                switch searchClass {
+                case .address(let address):
+                    return address == ownerAddress
+                case .loaded(let slot):
+                    return searchSlots.contains(slot)
+                default:
+                    return false
+                }
+            }
+        }
         if let objcIndex {
             let selectors = resolver.selectors.bySelref
             let method = function.objcMethod
@@ -9111,6 +9273,27 @@ public struct Disassembler: Sendable {
             tracer.voidCallSites = resolvedVoidCalls
             analysis = tracer.reanalyze(function, entry: entry, cfg: cfg)
         }
+        if tracer.provesObjCSuperInitializer != nil, let fieldMap {
+            // An init-family spelling is a candidate. A declaration can
+            // override that family, and a forwarded result needs no self
+            // assignment. Look for the returned object re-used as the
+            // receiver for this class's own ivar initialization.
+            var considered = Set<UInt64>()
+            for write in analysis.memoryWrites.values {
+                guard case .callResult(let site) = write.base,
+                      analysis.callSites[site]?.isObjCSuperInitCandidate == true,
+                      !write.indexed, write.indexRegister == nil,
+                      let offset = Int(exactly: write.displacement),
+                      case .success = fieldMap.lookup(offset: offset, bytes: write.bytes),
+                      considered.insert(site).inserted,
+                      Self.forwardsObjCSuperResultAsSelf(at: site, in: function, cfg: cfg, analysis: analysis)
+                else { continue }
+                tracer.objcSuperResultAdoptions.insert(site)
+            }
+            if !tracer.objcSuperResultAdoptions.isEmpty {
+                analysis = tracer.reanalyze(function, entry: entry, cfg: cfg)
+            }
+        }
         Probe.observe(analysis, of: function, cfg: cfg)
         if Probe.isActive {
             for insn in function.instructions where insn.branchTarget == nil
@@ -9180,6 +9363,9 @@ public struct Disassembler: Sendable {
             return Self.swiftReturnRegister(forReturnType: type)
         }()
         var sites = analysis.callSites
+        let adoptedObjCSuperResults = Set(sites.compactMap { address, site in
+            site.adoptsObjCSuperResult ? address : nil
+        })
         for insn in function.instructions where insn.controlFlow == .call || insn.controlFlow == .branch {
             guard let callee = DisassembledFunction.calleeName(of: insn),
                   Self.callResultBank(of: callee, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex, cache: callResultBanks) == .notOneRegister
@@ -11096,6 +11282,7 @@ public struct Disassembler: Sendable {
             // otherwise exhausts a small worker stack before its depth bound.
             var value = rawValue
             while case .unary(.floatResult, let operand) = value { value = operand }
+            if case .callResult(let site) = value, adoptedObjCSuperResults.contains(site) { return "self" }
             // A whole aggregate is not the scalar word read from the send.
             // Check before name-based idioms too: an ObjC selector may contain
             // a Swift helper's spelling without having its scalar result.
@@ -12236,6 +12423,8 @@ public struct Disassembler: Sendable {
 
         func collectCallResults(in value: AbstractValue, into consumed: inout Set<UInt64>) {
             switch value {
+            case .callResult(let address) where adoptedObjCSuperResults.contains(address):
+                break
             case .callResult(let address) where multiWordResultSites.contains(address) || nonScalarObjCResultSites.contains(address):
                 // One part of a multi-word result renders `?`, so the call
                 // still needs its own statement.
@@ -12670,7 +12859,7 @@ public struct Disassembler: Sendable {
         func countDirectUses(_ value: AbstractValue, at consumer: UInt64) {
             switch value {
             case .callResult(let site):
-                guard !nonScalarObjCResultSites.contains(site) else { return }
+                guard !nonScalarObjCResultSites.contains(site), !adoptedObjCSuperResults.contains(site) else { return }
                 directUses[site, default: 0] += 1
                 directConsumers[site, default: []].insert(consumer)
             case .binary(_, let lhs, let rhs): countDirectUses(lhs, at: consumer); countDirectUses(rhs, at: consumer)
@@ -13394,9 +13583,8 @@ public struct Disassembler: Sendable {
                 }
             }
 
-            if function.objcMethod?.isInitializer == true,
-               insn.controlFlow == .call,
-               let callee, callee.hasPrefix("objc_msgSendSuper"),
+            if analysis.callSites[insn.address]?.adoptsObjCSuperResult == true,
+               let callee,
                let values = argumentsByAddress[insn.address] {
                 noteStatement(.selfInitialization(callExpression(callee: callee, values: values)))
             }

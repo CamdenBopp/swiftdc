@@ -342,6 +342,11 @@ echo "==> an ARC factory that configures the object it returns through a tail ob
 $CLANG -fobjc-arc -O2 -dynamiclib -framework Foundation objc_factory_return.m -o libObjCFactoryReturn.dylib
 $CLANG -fobjc-arc -O0 -dynamiclib -framework Foundation objc_factory_return.m -o libObjCFactoryReturn.O0.dylib
 
+echo "==> ordinary super results and receiver adoption inside ObjC initializers (objc_super_initializer.m, -O0/-O2/-Os)"
+$CLANG -fobjc-arc -O0 -dynamiclib -framework Foundation objc_super_initializer.m -o libObjCSuperInitializer.O0.dylib
+$CLANG -fobjc-arc -O2 -dynamiclib -framework Foundation objc_super_initializer.m -o libObjCSuperInitializer.dylib
+$CLANG -fobjc-arc -Os -dynamiclib -framework Foundation objc_super_initializer.m -o libObjCSuperInitializer.Os.dylib
+
 echo "==> paired stores covering two ivars, aligned or not with them (objc_pair_stores.m, -O2)"
 $CLANG -fobjc-arc -O2 -dynamiclib -framework Foundation objc_pair_stores.m -o libObjCPairStores.dylib
 

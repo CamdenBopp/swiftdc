@@ -431,6 +431,12 @@ public struct CallSite: Equatable, Sendable {
     /// receiver of a callee proven to take `self` there (a class instance
     /// member), which a value left in x20 from an earlier call still is.
     public var x20Value: AbstractValue = .unknown
+    /// A provider-bound super send from an initializer, with a resolved
+    /// init-family selector and the current receiver in the objc_super pair.
+    var isObjCSuperInitCandidate = false
+    var savesOriginalObjCSelf = false
+    /// The caller also uses the result as its replacement receiver.
+    var adoptsObjCSuperResult = false
 
     /// Whether nothing at all was inferred (so there's nothing worth showing).
     public var isEmpty: Bool {
@@ -530,6 +536,16 @@ struct AsyncBranchWitness: Equatable, Sendable {
 /// Everything one pass over a function recovers.
 public struct FunctionAnalysis: Sendable {
     public var callSites: [UInt64: CallSite] = [:]
+    /// Dataflow witnesses used only when recovering Objective-C self adoption.
+    var objcSelfReads: Set<UInt64> = []
+    var objcSelfRebindings: [UInt64: UInt64] = [:]
+    // MAY facts. Forgetting a frame value at a call does not clear bytes.
+    var objcOriginalSelfFrame = [FrameMemoryExtent]()
+    var objcOriginalSelfMayBeAnywhereInFrame = false
+    var objcFrameReadEffects: [UInt64: FrameMemoryEffect] = [:]
+    var objcFrameAddressMayHaveEscaped = false
+    var objcPrivateFrameAddressSpilled = false
+    var objcCallMayReadIncomingStack = false
     /// Register-derived call/tail-call targets at indirect control-flow sites.
     /// A value such as `.loaded(slot)` is still only an address provenance fact;
     /// the Mach-O enrichment pass decides whether that slot provably contains a
@@ -741,6 +757,11 @@ public struct ValueTracer: Sendable {
     /// never proof of its return convention.
     var voidCallSites = Set<UInt64>()
     var callReturnsVoid: (@Sendable (_ callee: String, CallSite) -> Bool)?
+    /// Checks the selector and search-class provenance of an objc_super pair.
+    var provesObjCSuperInitializer: (@Sendable (_ selectorSlot: UInt64, _ searchClass: AbstractValue) -> Bool)?
+    var objcInitializerSelectors: [UInt64: String] = [:]
+    var objcProvenNullaryStubSites: Set<UInt64> = []
+    var objcSuperResultAdoptions: Set<UInt64> = []
 
     /// Where a Swift callee's printed result type puts the whole result.
     enum CallResultBank: Sendable, Equatable {
@@ -1097,7 +1118,6 @@ public struct ValueTracer: Sendable {
         let allocatesArray: Bool
         /// A Swift signature returning `()`, or a setter.
         let returnsVoidByName: Bool
-        let isSuperSend: Bool
         let hasTupleResult: Bool
         /// A Swift signature returning a String (or `String?`), whose second
         /// word comes back in x1.
@@ -1144,7 +1164,6 @@ public struct ValueTracer: Sendable {
             returnsVoidByName = DisassembledFunction.splitSignature(callee)?.result == "()"
                 || DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == false
                 || ValueTracer.voidRuntimeCalls.contains(runtimeName)
-            isSuperSend = callee.hasPrefix("objc_msgSendSuper")
             hasTupleResult = DisassembledFunction.hasTupleResult(callee)
             // A getter prints its type after ` : `, with no arrow:
             // `CustomStringConvertible.description.getter : Swift.String`.
@@ -1545,6 +1564,30 @@ public struct ValueTracer: Sendable {
         for block in blocks {
             var registers = inState[block.startAddress] ?? [:]
             for insn in block.instructions {
+                let captureObjCSelf = provesObjCSuperInitializer != nil && objcSuperResultAdoptions.isEmpty
+                let overwrittenSelf: Location? = if captureObjCSelf, let detail = insn.detail,
+                   detail.id == AARCH64_INS_MOV,
+                   let destination = detail.operands.first?.operand.register, destination.widthBits == 64,
+                   registers[Location(destination)] == .selfPointer {
+                    Location(destination)
+                } else { nil }
+                if captureObjCSelf, let detail = insn.detail,
+                   detail.readRegisterKeys.contains(where: { key in
+                       Location(key: key).map { registers[$0].map(Self.referencesOriginalObjCSelf) == true } ?? false
+                   }) {
+                    result.objcSelfReads.insert(insn.address)
+                }
+                if captureObjCSelf, let detail = insn.detail,
+                   let read = objcFrameReadEffect(detail, in: registers) {
+                    result.objcFrameReadEffects[insn.address] = read
+                }
+                if captureObjCSelf, insn.controlFlow == .call {
+                    let reads = objcCallReadEffects(facts.call(insn), at: insn.address, in: registers)
+                    if reads.originalSelf { result.objcSelfReads.insert(insn.address) }
+                    if !reads.frame.isEmpty { result.objcFrameReadEffects[insn.address] = reads.frame }
+                    result.objcFrameAddressMayHaveEscaped = result.objcFrameAddressMayHaveEscaped || reads.publishesFrame
+                    result.objcCallMayReadIncomingStack = result.objcCallMayReadIncomingStack || reads.stack
+                }
                 if insn.branchTarget == nil,
                    insn.controlFlow == .call || insn.controlFlow == .branch,
                    let target = Self.indirectTarget(of: insn, in: registers),
@@ -1612,6 +1655,44 @@ public struct ValueTracer: Sendable {
                 }
                 if let detail = insn.detail, let write = memoryWrite(detail, in: registers) {
                     result.memoryWrites[insn.address] = write
+                    if captureObjCSelf, write.values.contains(where: Self.containsFrame) {
+                        if write.kind == "frame" { result.objcPrivateFrameAddressSpilled = true }
+                        else { result.objcFrameAddressMayHaveEscaped = true }
+                    }
+                    if captureObjCSelf, Self.containsFrame(write.base) {
+                        for (index, value) in write.values.enumerated() where Self.referencesOriginalObjCSelf(value) {
+                            if case .frame(let base) = write.base, !write.indexed, write.indexRegister == nil,
+                               case let (offset, false) = base.addingReportingOverflow(write.displacement),
+                               case let (slot, false) = offset.addingReportingOverflow(Int64(index * write.bytes)) {
+                                result.objcOriginalSelfFrame.append(.init(start: slot, bytes: Int64(write.bytes)))
+                            } else {
+                                result.objcOriginalSelfMayBeAnywhereInFrame = true
+                            }
+                        }
+                    }
+                } else if captureObjCSelf, let detail = insn.detail,
+                          !Self.readOnlyMemoryIDs.contains(detail.id.rawValue),
+                          detail.operands.contains(where: { $0.operand.isMemory }) {
+                    // An unmodeled memory operation can store an input even
+                    // when its access flags omit that effect (for example,
+                    // exclusive stores and atomic read-modify-write).
+                    let frameDestination: Bool = if case .stackSlot? = memoryTarget(detail, in: registers) {
+                        true
+                    } else {
+                        false
+                    }
+                    for operand in detail.operands {
+                        guard let register = operand.operand.register, let value = registers[Location(register)] else {
+                            continue
+                        }
+                        if Self.containsFrame(value) {
+                            if frameDestination { result.objcPrivateFrameAddressSpilled = true }
+                            else { result.objcFrameAddressMayHaveEscaped = true }
+                        }
+                        if frameDestination && Self.referencesOriginalObjCSelf(value) {
+                            result.objcOriginalSelfMayBeAnywhereInFrame = true
+                        }
+                    }
                 }
                 let before = Probe.isActive ? registers : nil
                 let writes = before == nil ? nil : TracerWriteLog()
@@ -1626,6 +1707,9 @@ public struct ValueTracer: Sendable {
                     initializerEntry: entry?.isObjectiveCInitializer == true,
                     facts: facts
                 ) }
+                if let overwrittenSelf, case .callResult(let site)? = registers[overwrittenSelf] {
+                    result.objcSelfRebindings[insn.address] = site
+                }
                 if let before, let writes { Self.checkWritesModelled(insn, before: before, written: writes.keys) }
             }
         }
@@ -1947,6 +2031,18 @@ public struct ValueTracer: Sendable {
             let call = facts.call(insn)
             var site = Self.snapshot(registers, saveSlots: facts.frame.saveSlots)
             if let source = call.retainedRegister { site.retainedValue = registers[.x(source)] ?? .unknown }
+            if initializerEntry, call.namedABIContract,
+               call.callee == "objc_msgSendSuper2",
+               case .loaded(let slot)? = registers[.x(1)],
+               case .frame(let offset)? = registers[.x(0)], offset <= Int64.max - 8,
+               Self.stackValue(at: offset, bytes: 8, in: registers) == .selfPointer,
+               provesObjCSuperInitializer?(slot, Self.stackValue(at: offset + 8, bytes: 8, in: registers)) == true {
+                site.isObjCSuperInitCandidate = true
+                site.savesOriginalObjCSelf = (19...29).contains {
+                    registers[.x($0)].map(Self.referencesOriginalObjCSelf) == true
+                }
+                site.adoptsObjCSuperResult = objcSuperResultAdoptions.contains(insn.address)
+            }
             if let record {
                 if !site.isEmpty { record(insn.address, site) }
             }
@@ -2262,11 +2358,6 @@ public struct ValueTracer: Sendable {
                 // that takes nothing after `_combine(Swift.UInt) -> ()`.
                 registers[.x(0)] = .unknown
                 registers[.v(0)] = nil
-            } else if initializerEntry, call.isSuperSend {
-                // `self = [super init…]`: after the assignment, the returned
-                // object is the initializer's current self even if the runtime
-                // chose a different allocation.
-                registers[.x(0)] = .selfPointer
             } else if call.hasTupleResult {
                 // A register can be a tuple component, not the complete call
                 // expression. Project it only when its ABI layout is proven.
@@ -6048,6 +6139,90 @@ public struct ValueTracer: Sendable {
         }
     }
 
+    private static func referencesOriginalObjCSelf(_ value: AbstractValue) -> Bool {
+        switch value {
+        case .selfPointer, .selfField, .selfFieldValue, .selfVTableMethod, .selfIsaSnapshot:
+            return true
+        case .unary(_, let operand), .loadedFrom(let operand, _):
+            return referencesOriginalObjCSelf(operand)
+        case .binary(_, let lhs, let rhs):
+            return referencesOriginalObjCSelf(lhs) || referencesOriginalObjCSelf(rhs)
+        case .select(let condition, let yes, let no):
+            return referencesOriginalObjCSelf(condition) || referencesOriginalObjCSelf(yes)
+                || referencesOriginalObjCSelf(no)
+        case .aggregate(let values):
+            return values.contains(where: referencesOriginalObjCSelf)
+        default:
+            return false
+        }
+    }
+
+    private func objcFrameReadEffect(_ detail: StructuredInsn, in registers: State) -> FrameMemoryEffect? {
+        guard !Self.plainStoreIDs.contains(detail.id.rawValue), detail.operands.contains(where: {
+            guard case .memory(let base?, let index, _) = $0.operand else { return false }
+            if base.kind == .stackPointer { return true }
+            let baseValue = registers[Location(base)] ?? .unknown
+            if Self.containsFrame(baseValue) || (baseValue == .unknown && registers.reach.logicalCount > 0) {
+                return true
+            }
+            return index.flatMap { registers[Location($0)] }.map(Self.containsFrame) == true
+        }) else { return nil }
+        guard case .stackSlot(.stack(let offset))? = memoryTarget(detail, in: registers),
+              let bytes = Self.accessBytes(detail), bytes > 0,
+              case let (end, false) = offset.addingReportingOverflow(Int64(bytes))
+        else { return FrameMemoryEffect(arithmetic: .checked, everything: true) }
+        return FrameMemoryEffect(.finite(lower: offset, upper: end), arithmetic: .checked)
+    }
+
+    private func objcCallReadEffects(
+        _ call: CallFacts, at address: UInt64, in registers: State
+    ) -> (originalSelf: Bool, frame: FrameMemoryEffect, publishesFrame: Bool, stack: Bool) {
+        let superSend = call.namedABIContract && call.callee == "objc_msgSendSuper2"
+        let nullary: Bool
+        if objcProvenNullaryStubSites.contains(address) {
+            nullary = true
+        } else if call.namedABIContract, superSend || call.callee == "objc_msgSend",
+                  case .loaded(let slot)? = registers[.x(1)], let selector = objcInitializerSelectors[slot] {
+            nullary = !selector.contains(":")
+        } else {
+            nullary = false
+        }
+        let wholeFrame = FrameMemoryEffect(arithmetic: .checked, everything: true)
+        var effect = FrameMemoryEffect(arithmetic: .checked)
+        let stack = !nullary && call.retainedRegister == nil && !call.passesNoStackArguments
+        if stack {
+            if case .frame(let sp)? = registers[.sp] {
+                effect = FrameMemoryEffect(.atOrAbove(sp), arithmetic: .checked)
+            } else {
+                effect = wholeFrame
+            }
+        }
+        let passed = if let retained = call.retainedRegister {
+            [Location.x(retained)]
+        } else if nullary {
+            [Location.x(0), .x(8)]
+        } else {
+            call.passedRegisters
+        }
+        var originalSelf = false
+        var publishesFrame = false
+        for (register, value) in registers.registerFacts.selected(passed) {
+            guard let value else { continue }
+            originalSelf = originalSelf || Self.referencesOriginalObjCSelf(value)
+            guard Self.containsFrame(value) else { continue }
+            if register == .x(0), superSend, case .frame(let offset) = value,
+               case let (end, false) = offset.addingReportingOverflow(16) {
+                // Super2 consumes the header itself and sends the installed
+                // object receiver to the IMP. Other frame inputs can escape.
+                effect = effect.union(FrameMemoryEffect(.finite(lower: offset, upper: end), arithmetic: .checked))
+            } else {
+                effect = wholeFrame
+                publishesFrame = true
+            }
+        }
+        return (originalSelf, effect, publishesFrame, stack)
+    }
+
     /// A byte copy reads encodings, including for bare FP arguments whose
     /// interpretation is supplied only by the register bank of their store.
     private static func stackBits(at offset: Int64, bytes: Int, in registers: State) -> AbstractValue {
@@ -6375,6 +6550,9 @@ public struct ValueTracer: Sendable {
         else { return nil }
         // Post-index accesses the base itself; the displacement applies after.
         let effective = detail.postIndex ? 0 : displacement
+        if case .callResult(let site)? = registers[Location(base)], objcSuperResultAdoptions.contains(site) {
+            return .selfField(Int(effective))
+        }
         switch registers[Location(base)] {
         case .frame(let offset):
             return .stackSlot(Self.stackKey(FrameCoordinatePlanner.exactStart(
