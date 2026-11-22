@@ -2,7 +2,15 @@
 
 ## Current status
 
-Updated 2026-11-22. Signed self-storage fix `eb129da` passed the local
+Updated 2026-11-22. The local typed-error guard at `6959523`
+stops an inactive X0 from naming the error on the measured Darwin arm64
+indirect-result path. The local candidate passed **2,090 enforcing tests /
+43 suites**, **3,180 cost rows** within default budgets, and **988 CLI
+invocations**. The five original guarded app comparisons preserve identical
+output and **84,833 ordered function headers per binary**.
+[Qualification and remaining scope](PRODUCTION-READINESS.md#2026-11-22-local-indirect-typed-error-guard)
+
+Signed self-storage fix `eb129da` passed the local
 **2,088-test / 43-suite** enforcing run and all **3,144 cost rows** against
 published `b7bd1fa`, plus **754 CLI invocations** and five original guarded
 pseudocode app comparisons. See the [local qualification and remaining
@@ -31,11 +39,16 @@ and the five original guarded apps. The original release gate also passed;
 the published binary matched all 247 CLI checks and five guarded app renders.
 [Qualification and remaining scope](PRODUCTION-READINESS.md#2026-11-22-scalar-class-metadata-admission)
 
+Hosted CI for published `27258f9`, the baseline preceding this local
+typed-error slice, passed **2,088 fixture-enforced tests / 43 suites
+(1,736.528 s)**. The decoded job log confirms the checkout and suite result.
+[Hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/45053370299)
+
 Hosted CI for `b7bd1fa` passed **2,084 fixture-enforced tests / 43 suites
 (2,515.900 s)**. Build, Enforcing suite and suite-log upload succeeded.
 [Hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/45035744076)
 
-The preceding hosted run passed **2,082 fixture-enforced tests / 43 suites
+The earlier hosted run passed **2,082 fixture-enforced tests / 43 suites
 (1,857.356 s)** at `c3b0c5e`. Build and Enforcing suite passed, and decoded
 logs and artifact metadata confirm the commit.
 [Preceding hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/45027421151)

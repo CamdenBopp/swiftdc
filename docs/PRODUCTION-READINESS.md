@@ -61,6 +61,58 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-22: local indirect typed-error guard
+
+**FIXED locally at `6959523`** for ordinary synchronous,
+nongeneric native Swift free functions on Darwin arm64 whose exact
+same-module nominal result is five contiguous `Swift.UInt64` fields. The
+result requires indirect transport. The throw edge remains proven and renders
+`throw ?` while the indirect error payload is unresolved.
+
+The authored ABI-valid [veneer](../Fixtures/Sample/typed_error_inactive_veneer.S)
+writes two different inactive W0 values on the throw edge. The separately
+compiled [caller](../Fixtures/Sample/typed_error_inactive_client.swift) and
+[provider](../Fixtures/Sample/typed_error_inactive_provider.swift) agree on
+the actual outcomes in **54 native observations** across `-Onone`,
+`-O` and `-Osize`. The linked boundary for this signature has separate
+success and typed-error storage in X8 and X1, with X21 carrying the error
+flag. The baseline chose two different error names from the inactive word.
+Both variants return the same native errors and success values. The direct
+mixed-bank result and four-word result retain their direct error names.
+Removing the guard alone reproduces the false case and restoring it passes.
+The compiler-owned indirect probe declined on the archived baseline. The
+measured wrong case is from the authored veneer.
+
+The local enforcing suite passed **2,090 tests / 43 suites (923.138 s)**,
+with two tests added and none removed. The four-view comparison changed
+**24 streams across six new fixture images**, with the same bounded
+unresolved error statement. The SDK comparison outputs were unchanged.
+All **3,180 raw cost rows** meet default budgets. Total instructions changed
+by **−0.0244679808%** and summed per-run footprint peaks by
+**−0.1354506061%** against the published `27258f9` release.
+
+All **988 CLI invocations** pass across 38 inputs and 13 routes. The 42
+changed output pairs contain only the same error-name correction; direct
+controls and ordered function headers are preserved. Ten guarded pseudocode
+runs of the five original apps have identical output and **84,833 ordered
+headers per binary**, with a maximum sampled footprint of **217 MB**.
+Independent review reconstructs the raw costs, complete outputs, native
+return addresses and final source and fixture snapshot.
+
+Reproduce the public fixture checks with:
+
+```sh
+Tools/fixtures.sh
+swift build --build-tests
+SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter 'inactiveX0CannotNameAnIndirectTypedError|indirectTypedErrorNeedsAnExactClosedNativeResultLayout'
+```
+
+**OPEN:** recover the actual indirect error buffer and its initialized byte
+on the producing edge. General direct and indirect typed success/error
+placement, resilience, generic and wrapper conventions, async error
+continuations, and the ordered native oracle remain open. The bound above
+does not establish an X1 rule for another signature or any helper's effects.
+
 ## 2026-11-22: local signed self-storage qualification
 
 **FIXED at `eb129dad01c21faf92a4f8cd136f8bd62cbcf1c6`:** scalar self loads

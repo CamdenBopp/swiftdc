@@ -9,13 +9,19 @@ A nonzero build fails the step even without an `error:` message, so the
 suite cannot run an older test binary after that failure. The `suite-log`
 artifact retains `build.log` and any `suite.log` produced by the run.
 
+Published `27258f9` completed hosted CI with **2,088 fixture-enforced tests
+/ 43 suites (1,736.528 s)**. The decoded job log confirms the exact checkout
+and terminal suite line. This is the published baseline for the later local
+typed-error qualification.
+[Hosted run 45053370299](https://github.com/CamdenBopp/swiftdc/actions/runs/45053370299)
+
 Published `b7bd1fa` passed its original release gate with **2,084
 fixture-enforced tests / 43 suites (975.059 s)**. Hosted Build and Enforcing
 suite passed **2,084 tests / 43 suites (2,515.900 s)** with a suite-log
 artifact. The checkout log and artifact metadata bind this result to
 `b7bd1fa`. [Hosted run 45035744076](https://github.com/CamdenBopp/swiftdc/actions/runs/45035744076)
 
-The preceding published revision, `c3b0c5e`, passed **2,082 tests / 43
+The earlier published revision, `c3b0c5e`, passed **2,082 tests / 43
 suites (968.002 s)** at its original release gate and **2,082 fixture-enforced
 tests / 43 suites (1,857.356 s)** on hosted CI. Build and Enforcing suite
 passed, and the suite-log artifact was uploaded. Decoded logs and artifact
@@ -103,6 +109,26 @@ by `Tools/fixtures.sh`. Its cache key includes every fixture input, the
 Swift and Clang versions, both SDK builds, the host OS build, and the Go
 version. A change to those recorded versions changes the key, and a cache
 miss triggers a build; clearing the cache after an Xcode change is unnecessary.
+
+## Dependency maintenance
+
+[Package.swift](../Package.swift) explains why each direct dependency or
+interim fork is needed. [Package.resolved](../Package.resolved) records the
+exact sources and revisions used by the build. For a pin change, record the
+affected packages, which upstream changes replace the fork, and the checks
+that protect those behaviors. Keep the related package identities compatible
+when changing the resolved graph.
+
+| Interim changes | Checks before retiring the override |
+|---|---|
+| MachOKitExtensions mappings, MachOKit chained fixups, and MachOSwiftSection and MachOObjCSection relative metadata | Compare slid images with their flat twins, check fixups against the platform's `dyld_info`, and exercise zero-fill targets and cross-segment Swift records and Objective-C method lists. Include the 64-bit fat slice control for a MachOKit change. [Recorded segment behavior](PRODUCTION-READINESS.md#2026-11-03-segments-at-different-vm-to-file-slides) · [SlidSegmentTests](../Tests/SwiftDecompilerCoreTests/SlidSegmentTests.swift) · [FatArch64Tests](../Tests/SwiftDecompilerCoreTests/FatArch64Tests.swift) |
+| MachOSwiftSection interface fixes | Verify concrete declarations and reject old wrong forms in the interface fixture. Build both the fixture and the debug CLI first, since the fixture test returns early if either is missing. [InterfaceFactsTests](../Tests/SwiftDecompilerCoreTests/InterfaceFactsTests.swift) |
+| MachOKit negative dyld-cache lookup memoization | Compare release cost for `layout`, `dump` and `interface` on the same standalone Swift-heavy image. Check that the image is not repeatedly opened as a dyld cache and that output is unchanged. [Package rationale and prior measurements](../Package.swift) |
+| Unaligned file reads in the Mach-O, binary parsing and file I/O forks | Run ThreadSanitizer with the proposed resolved graph on fixture-backed `disasm --structured`, `objc`, `dump`, `xrefs`, `interface` and `layout` cases. Confirm the reads neither trap on unaligned bytes nor introduce races. Compare the release fixture views against the prior pins. [Validation history](PRODUCTION-READINESS.md) |
+
+Run the focused cases before the enforcing full suite and release comparison
+for the pin change. Preserve the test inputs and exact resolved graph when
+recording results.
 
 ## Running the suite by hand
 

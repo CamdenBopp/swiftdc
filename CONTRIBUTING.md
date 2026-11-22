@@ -102,6 +102,8 @@ expect it to take a while.
 `Tools/fixtures.sh` restores a content-addressed fixture build. It runs
 `Fixtures/Sample/build.sh` on a cache miss or with `--rebuild`.
 
+See [dependency maintenance](docs/CI.md#dependency-maintenance) before changing a package pin.
+
 ## Running tests
 
 ```bash
