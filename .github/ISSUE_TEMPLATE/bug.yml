@@ -1,0 +1,45 @@
+name: Bug report
+description: Report wrong output, a missing result, a crash, or a hang.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For help isolating wrong output, see [Debug a wrong pseudocode render](https://github.com/CamdenBopp/swiftdc/blob/dev/docs/DEBUGGING-PSEUDOCODE.md).
+
+        Share only source, binaries, and output you have permission to publish. Remove private paths, symbols, and code from excerpts. An upload is optional.
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command
+      description: Include all flags and any function filter. Replace private paths with placeholders.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Revision and toolchain
+      description: Give the swiftdc commit or release, macOS version, and binary architecture. If you built the input, include its compiler version and optimization flags. Mark any details you do not know.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Identify the affected function or operation. Include a short shareable excerpt of the result or diagnostics and the exit status if known. For a hang, say how long you waited.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: Describe the expected behavior and how you checked it, such as from source, disassembly, or a native run.
+    validations:
+      required: true
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Reproducer or supporting evidence
+      description: Provide a small shareable source, existing fixture, public link, or sanitized excerpt. If you cannot share the input or its output, describe the smallest pattern you can share and say what is unavailable.
+    validations:
+      required: true
