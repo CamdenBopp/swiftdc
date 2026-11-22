@@ -136,7 +136,52 @@ code `8a15928`; the local receiver change requires its own gate/publication
 and hosted result. See [CI setup and image sources](CI.md).
 No decompilation benchmark or readiness percentage changes.
 
-## Latest local verification: whole-context reach from interior async pointers
+## Latest local verification: recovered async transfer edges
+
+**VERIFIED locally at `1167e836216d79a3e764243e4080e67dbf3bc8e0`:** the
+async index retains each recovered source, site, destination, transfer kind,
+callee and destination ABI separately from rendering. Shared tails, multiple
+sites and shared descendants retain their edges before owner pruning.
+Continuation initialization and runtime waits retain their distinct meanings.
+This enabling refactor changes no rendered output and adds no value recovery.
+The bounded scanner excludes self-handoffs and does not establish a complete
+predecessor set or prove memory preservation.
+
+Eight new tests cover those cases, a two-resume cycle and conflicting ABI hints.
+Independent LLVM disassembly confirms their branch and ADR targets. All existing
+test files are unchanged. Disabling capture produced five issues; pruning
+shared edges produced three; misclassifying continuation initialization produced
+one. Exact restoration rebuilds **27 focused tests** green. The enforcing suite
+passes **2,060 tests / 43 suites (945.271 s)**, with **1,186 public inputs /
+911 products** frozen.
+
+All **772 inputs in four views / 3,088 render pairs** are identical, including
+35 expected preflight declines checked against raw headers. Four SDK workloads
+match. All **3,092 default cost rows** pass without override: instructions
+**8,763,190,467,784 -> 8,768,312,118,376 (+0.058445%)**; summed physical peaks
+**29,009,332,384 -> 29,102,120,392 bytes (+0.319856%)**. All **416 CLI runs /
+16 inputs / 13 paths** match stdout, stderr and function headers. Four guarded
+SDK rerenders and ten original-five-app renders match; all **84,833 app
+function headers/order** remain, no kills, maximum sampled footprint **237 MB**.
+
+Frozen published-baseline/candidate release SHA256:
+`4c1e3e8540b1e9658b324838c2f1c0da44af12e0d0bbbbf15b7ab01243d4f0d4` /
+`b3fc8cbbe973e57a3e889e218e6fde41cc4a7eae84a77f61cdae0b14166de2b3`.
+**PUBLICATION PENDING:** this refactor needs the original integration gate and
+its own hosted result. Values carried across awaits remain open. No scoring
+table or readiness percentage changes.
+
+Published baseline `5bf8fc5` completed
+[hosted run 44988698470](https://github.com/CamdenBopp/swiftdc/actions/runs/44988698470):
+the rebuilt enforcing **2,052 tests / 43 suites passed (1,704.894 s)**.
+That result covers the earlier interior-reach code.
+
+Reproduce after `swift build --build-tests` with
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter 'AsyncTransferEdgeTests|AsyncHandoffShapeTests|AsyncAmbiguityTests'`;
+full suite: `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/1167e836216d79a3e764243e4080e67dbf3bc8e0).
+
+## Previous local verification: whole-context reach from interior async pointers
 
 **FIXED locally at `4de8391a16d535b94e738dc051ba6825b7422d9a`:** escaped
 interior pointers now carry whole-async-context MAY reach, including earlier
