@@ -109,19 +109,26 @@ changed. Calling `build.sh` directly also works.
 Tools/test.sh affected
 ```
 
-That runs the tests for the subsystems your change touches. The other tiers:
+Affected mode selects mapped subsystems, changed test files, Determinism
+and FixturePresence. It checks branch changes against origin/dev as well as
+staged, unstaged and untracked changes. Unmapped source and shared test/build
+inputs trigger the full suite.
 
 | Command | Runs |
 |---|---|
 | `Tools/test.sh file <NameTests>` | One test file |
 | `Tools/test.sh <subsystem>` | One of `arm64 abi tracer cflow meta render audit` |
-| `Tools/test.sh quick` | Nearly everything, in about 100 seconds |
+| `Tools/test.sh quick` | The suite with the dyld-cache memory and selected Go tests skipped for iteration |
 | `Tools/test.sh full` | The enforcing suite. Run this before you open a pull request |
 
 Most tests need fixtures, and they skip quietly when the fixtures are missing,
 so a plain `swift test` on a fresh clone is green but proves little. Every
 `Tools/test.sh` tier sets `SWIFTDC_REQUIRE_FIXTURES=1`, which turns a missing
 fixture into a failure.
+
+Run `bash Tools/test-tier-contract.sh` to check test selection and fallback
+behavior with a Swift stub in an isolated Git repository. This self-test
+requires Bash, Git and Python 3. It runs without decompiler tests or fixtures.
 
 ## Making a change
 

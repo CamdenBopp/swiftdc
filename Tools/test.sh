@@ -3,18 +3,15 @@
 #
 #   Tools/test.sh file <NameTests>...   tier 1: those test files
 #   Tools/test.sh <subsystem>...        tier 2: a subsystem's tests
-#   Tools/test.sh affected              tier 3: subsystems of the files changed
-#                                       against origin/dev, plus Determinism
-#                                       and FixturePresence
+#   Tools/test.sh affected             tier 3: mapped changes against origin/dev
+#                                      and local changes, plus Determinism and
+#                                      FixturePresence. Unknown sources run full.
 #   Tools/test.sh full                  tier 4: the enforcing suite (the gate's)
-#   Tools/test.sh quick                 tier 4 minus the 76 s dyld-cache memory
-#                                       test and the Go tests (about 96 s
-#                                       against 145 s); never before a push
+#   Tools/test.sh quick                tier 4 except the dyld-cache memory and
+#                                      selected Go tests. For iteration only.
 #
 # Subsystems: arm64 abi tracer cflow meta render audit. Every tier builds
-# first (`--build-tests`), because `--skip-build` runs whatever is there.
-# SwiftPM's `swift test` has no tag filter on this toolchain, so the tiers
-# are regexes over test and file names.
+# tests first and requires fixtures. Before a push, run Tools/test.sh full.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -46,7 +43,11 @@ subsystem_of() { # path -> subsystem names
   esac
 }
 
-[ $# -ge 1 ] || { sed -n 2,17p "$0"; exit 2; }
+if [ $# -eq 0 ] || [[ $1 == --help || $1 == -h ]]; then
+  sed -n '/^# Run one test tier/,/^set /{ /^set /d; s/^# \{0,1\}//; p; }' "$0"
+  if [ $# -gt 0 ]; then exit 0; fi
+  exit 2
+fi
 args=()
 case $1 in
   full) args=() ;;
@@ -88,7 +89,8 @@ case $1 in
     if ! $needs_full; then
       subs=$(printf '%s\n' $subs | sort -u | tr '\n' ' ')
       for s in $subs; do re="$re|$(filter_for "$s")"; done
-      echo "test.sh: affected subsystems: ${subs:-none}" >&2
+      display_subs=${subs% }
+      echo "test.sh: affected subsystems: ${display_subs:-none}" >&2
       args=(--filter "$re")
     fi ;;
   *)
@@ -96,6 +98,20 @@ case $1 in
     for s in "$@"; do f=$(filter_for "$s") || { echo "unknown subsystem: $s" >&2; exit 2; }; re="$re|$f"; done
     args=(--filter "${re#|}") ;;
 esac
+
+case ${args[0]-} in
+  --filter)
+    printf 'test.sh: selecting test names and files matching %s; other tests are omitted\n' "${args[1]}" >&2 ;;
+  --skip)
+    echo "test.sh: skipping the dyld-cache memory test and selected Go tests for iteration" >&2
+    printf 'test.sh: exclusion regex %s\n' "${args[1]}" >&2 ;;
+  *)
+    echo "test.sh: running the full enforcing suite" >&2 ;;
+esac
+if [ -n "${args[0]-}" ]; then
+  echo "test.sh: before a push, run Tools/test.sh full" >&2
+fi
+echo "test.sh: building tests; missing required fixtures fail the test step" >&2
 
 if ! log=$(swift build --build-tests 2>&1); then
   echo "$log" | grep -E "error:" >&2 || echo "$log" | tail -20 >&2
