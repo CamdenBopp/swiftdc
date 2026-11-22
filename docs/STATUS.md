@@ -2,7 +2,19 @@
 
 ## Current status
 
-Updated 2026-11-22. Published `65a627b` includes the typed-error guard
+Updated 2026-11-22. The Go build-ID streaming fix at `9341f33`
+passed local qualification on Darwin arm64. The enforcing run passed
+**2,091 tests / 43 suites (1,326.776 s)** and all **3,180 cost rows**
+met default budgets against published `65a627b`. Eight render changes
+across four Go fixtures preserve the named build-ID row with an empty
+instruction body. Postchecks passed **1,092 CLI invocations**, eight
+serial Go runs and ten guarded runs across five original apps, with no
+unresolved differences. App outputs and **84,833 ordered function headers
+per binary** matched at **228 MB** maximum sampled footprint. The original
+integration gate and publication verification are pending.
+[Local Go qualification](PRODUCTION-READINESS.md#2026-11-22-local-go-build-id-streaming-fix)
+
+Published `65a627b` includes the typed-error guard
 from `6959523`, which stops an inactive X0 from naming the error on the
 measured Darwin arm64 indirect-result path. The original integration gate
 passed **2,090 enforcing tests / 43 suites (1,057.716 s)** and all
@@ -10,9 +22,14 @@ passed **2,090 enforcing tests / 43 suites (1,057.716 s)** and all
 covered **988 CLI checks** and **10 guarded runs across five original
 apps**. App output matched the qualified artifact, with **84,833 ordered
 function headers per binary** and **224 MB** peak sampled footprint.
-Four cross-input render differences for stripped Go data remain open.
-They reproduce with both the baseline and candidate.
+The historical verification recorded four cross-input render differences
+for stripped Go data. The locally qualified streaming fix addresses the
+data-as-code defect at `9341f33`.
 [Qualification and remaining scope](PRODUCTION-READINESS.md#2026-11-22-local-indirect-typed-error-guard)
+
+Hosted CI for `65a627b` passed **2,090 fixture-enforced tests / 43 suites
+(2,251.762 s)**. The decoded job log confirms the checkout and suite result.
+[Hosted run 45063952031](https://github.com/CamdenBopp/swiftdc/actions/runs/45063952031)
 
 Signed self-storage fix `eb129da` passed the local
 **2,088-test / 43-suite** enforcing run and all **3,144 cost rows** against

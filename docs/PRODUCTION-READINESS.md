@@ -61,6 +61,44 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-22: local Go build-ID streaming fix
+
+**Locally qualified at `9341f33`** on Darwin arm64. The function
+table must identify `go:buildid`, its bytes must carry the Go build-ID
+prefix, and the next streaming boundary must agree with the table's
+span. The streaming path retains the named empty row, clears the
+same-address symbol fold and excludes the data start from executable
+call-target analysis. The established array and filtered behavior is
+unchanged.
+
+The expanded integration test covers four Go binaries across the
+listing, array, filtered and streaming APIs. A new test exercises
+exclusion from callable starts. The compiled baseline produced six
+issues. Re-enabling only data decoding produced four issues. Re-admitting
+only the data start to callable membership produced one. Removing
+streaming label normalization failed the pseudocode and structured
+output checks. Both CLI commands exited successfully.
+The restored focused tests and both label checks passed. The change
+expands one test, adds one and removes none.
+
+The local enforcing run passed **2,091 tests / 43 suites (1,326.776 s)**.
+All **3,180 cost rows** met default budgets against the published
+`65a627b` release. Total retired instructions decreased by **0.0246212089%**
+and the sum of per-run peak footprints increased by **0.7476131036%**.
+Eight renders changed, one structured and one pseudocode output per
+Go fixture. Each difference is confined to the first data block and
+its header. The remaining bytes and function order are identical.
+Listing and JSON outputs and all four SDK output digests are unchanged.
+
+Postchecks passed **1,092 CLI invocations**, **eight serial streaming
+invocations** and **ten guarded runs across five original apps**. Ten CLI
+pairs changed: the eight Go data blocks and two unstripped unreferenced
+build-ID names. The other output bytes are unchanged. Both binaries
+produced **84,833 ordered app function headers**, with identical app
+stdout and stderr and **228 MB** maximum sampled footprint. Independent
+raw-evidence audits passed with no unresolved differences. The original
+integration gate and verification of its published artifact remain pending.
+
 ## 2026-11-22: local indirect typed-error guard
 
 **FIXED at `6959523`, published in `65a627b`**, for ordinary synchronous,
@@ -109,10 +147,17 @@ products retain the linked code and dependency records. Their SDK version
 field, UUID and signature payload differ between the qualified overlay and
 the fresh gate cache. The gate rechecked the native outcomes.
 
-**OPEN:** four cross-input renders differ between the qualified overlay and
-the fresh gate cache for `x8-entry-go-stripped-oracle`. Both the baseline
-and candidate render Go data as code in the structured and pseudocode views.
-The same defect is exposed by the changed fixture bytes in each binary.
+Hosted CI for `65a627b` passed **2,090 fixture-enforced tests / 43 suites
+(2,251.762 s)**. The decoded job log confirms the checkout and suite result.
+[Hosted run 45063952031](https://github.com/CamdenBopp/swiftdc/actions/runs/45063952031)
+
+**Historical open finding at `65a627b`:** four cross-input renders differed
+between the qualified overlay and the fresh gate cache for
+`x8-entry-go-stripped-oracle`. Both the baseline and candidate rendered Go
+data as code in structured and pseudocode output. Different fixture bytes
+exposed the same defect in each binary. The [local fix at
+`9341f33`](#2026-11-22-local-go-build-id-streaming-fix) addresses the
+streamed data-as-code defect.
 
 Reproduce the public fixture checks with:
 
@@ -9243,6 +9288,8 @@ now reads `accessorLike(…)`.
   decode, it keeps the name `_go:buildid`, and it renders as no code,
   whole and filtered. Tests `theGoBuildIDIsDataNotCodeIfPresent`,
   `aBuildIDSpanNeedsItsNameAndItsBytes`.
+  The [streaming follow-up](#2026-11-22-local-go-build-id-streaming-fix)
+  records the remaining route defect and its later local qualification.
 
 ## 2026-10-31: boundaries the corpus measures but nothing supplies
 
