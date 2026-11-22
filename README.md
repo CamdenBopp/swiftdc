@@ -18,13 +18,21 @@ it. Returns follow the same rule. `return ?` means the function returns
 something swiftdc couldn't recover. A bare `return` means it returns nothing,
 or that its signature wasn't recoverable enough to tell.
 
+**Development happens on [`dev`](https://github.com/CamdenBopp/swiftdc/blob/dev/README.md).**
+The default `master` branch contains the last `dev` snapshot judged stable.
+Newer work stays on `dev` until the next stable snapshot.
+[Contributing guide](https://github.com/CamdenBopp/swiftdc/blob/dev/CONTRIBUTING.md)
+· [CI status](https://github.com/CamdenBopp/swiftdc/actions/workflows/ci.yml?query=branch%3Adev)
+· [Issues](https://github.com/CamdenBopp/swiftdc/issues)
+
 ## Quickstart
 
 Use an Apple Silicon Mac with the [tested toolchain](#requirements-and-build).
 Clone and build a release binary, then put it on your `PATH` for this shell:
 
 ```bash
-git clone https://github.com/CamdenBopp/swiftdc.git && cd swiftdc
+git clone --branch dev https://github.com/CamdenBopp/swiftdc.git
+cd swiftdc
 swift build -c release --scratch-path .build-release
 export PATH="$PWD/.build-release/release:$PATH"
 ```
@@ -41,10 +49,31 @@ swiftdc objc MyApp.app --methods         # ObjC headers and recovered bodies
 `swiftdc <path>` with no subcommand runs `analyze`.
 
 The examples below run on the test fixtures in `Fixtures/Sample/`, which
-aren't checked in. Build them with `Tools/fixtures.sh` to run the examples
-yourself.
+aren't checked in. Install Go if needed and run `Tools/fixtures.sh` from the
+repository root. See the [fixture prerequisites](CONTRIBUTING.md#setup).
 
 ### What the output looks like
+
+The [Swift fixture](Fixtures/Sample/sample.swift) defines `Point.distance(to:)`:
+
+```swift
+public func distance(to other: Point) -> Double {
+    let dx = x - other.x
+    let dy = y - other.y
+    return (dx * dx + dy * dy).squareRoot()
+}
+```
+
+The optimized binary still contains enough information to recover the receiver
+and argument fields. The structured view shows the arithmetic as it was
+compiled:
+
+```text
+$ swiftdc disasm Fixtures/Sample/sample.release --function 'Point.distance' --structured
+sample.Point.distance(to: sample.Point) -> Swift.Double {
+    return sqrt((((self.x - arg0.x) * (self.x - arg0.x)) + ((self.y - arg0.y) * (self.y - arg0.y))))
+}
+```
 
 Swift declarations, rebuilt from metadata alone:
 

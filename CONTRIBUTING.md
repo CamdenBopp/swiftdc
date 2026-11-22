@@ -4,12 +4,21 @@ Thanks for helping. swiftdc is trying to be a decompiler whose output you can
 trust without checking it by hand, and most of what follows exists to protect
 that.
 
-If you want somewhere to start, take an issue labelled
-[good first issue](https://github.com/CamdenBopp/swiftdc/labels/good%20first%20issue).
-Each one says what's wrong, how to see it, and what done looks like.
-[help wanted](https://github.com/CamdenBopp/swiftdc/labels/help%20wanted)
-issues are bigger. Comment on an issue before you start, so two people don't
-do the same work.
+## Start here
+
+Try the [Swift fixture walkthrough](README.md#what-the-output-looks-like) on
+`dev`. For a wrong result, compare a single rendered function with its fixture
+source or annotated disassembly. Capture the exact command and a short,
+shareable excerpt using the [bug report fields](.github/ISSUE_TEMPLATE/bug.yml).
+
+For a smaller check without a Swift build, run
+`bash Tools/test-tier-contract.sh` with Bash, Git and Python 3. It checks test
+selection in a temporary Git repository. A focused correction to a documented
+command or fixture example is also welcome.
+
+Browse the [open issues](https://github.com/CamdenBopp/swiftdc/issues) for
+work tagged `good first issue` or `help wanted`. Comment on an issue before
+starting so contributors can coordinate.
 
 By contributing, you agree your work is released under the [MIT license](LICENSE)
 and that you'll follow the [code of conduct](CODE_OF_CONDUCT.md).
@@ -68,15 +77,8 @@ snapshot commits that dev doesn't have. `Tools/test.sh affected` also compares y
 against `origin/dev`, so `origin` should point here:
 
 ```bash
-git clone https://github.com/CamdenBopp/swiftdc.git
-```
-
-```bash
+git clone --branch dev https://github.com/CamdenBopp/swiftdc.git
 cd swiftdc
-```
-
-```bash
-git switch dev
 ```
 
 Then fork on GitHub and add the fork as a second remote, which is where
