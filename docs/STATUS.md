@@ -2,7 +2,13 @@
 
 ## Current status
 
-Updated 2026-11-22. Published `b7bd1fa` includes exact narrow scalar reads
+Updated 2026-11-22. Signed self-storage fix `eb129da` passed the local
+**2,088-test / 43-suite** enforcing run and all **3,144 cost rows** against
+published `b7bd1fa`, plus **754 CLI invocations** and five original guarded
+pseudocode app comparisons. See the [local qualification and remaining
+listing limit](PRODUCTION-READINESS.md#2026-11-22-local-signed-self-storage-qualification).
+
+Published `b7bd1fa` includes exact narrow scalar reads
 from `859c38e`, recovering six Float32 field returns and simplifying two
 unsigned tail results. The original release gate passed **2,084 enforcing
 tests / 43 suites (975.059 s)** and all **3,132 cost rows** met default
@@ -25,8 +31,9 @@ and the five original guarded apps. The original release gate also passed;
 the published binary matched all 247 CLI checks and five guarded app renders.
 [Qualification and remaining scope](PRODUCTION-READINESS.md#2026-11-22-scalar-class-metadata-admission)
 
-Hosted CI for `b7bd1fa` is in progress.
-[Current hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/45035744076)
+Hosted CI for `b7bd1fa` passed **2,084 fixture-enforced tests / 43 suites
+(2,515.900 s)**. Build, Enforcing suite and suite-log upload succeeded.
+[Hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/45035744076)
 
 The preceding hosted run passed **2,082 fixture-enforced tests / 43 suites
 (1,857.356 s)** at `c3b0c5e`. Build and Enforcing suite passed, and decoded

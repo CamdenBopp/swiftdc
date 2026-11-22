@@ -99,9 +99,8 @@ swift build
 The first run of each fetches and compiles everything from scratch, so
 expect it to take a while.
 
-`Tools/fixtures.sh` caches fixture builds by content, so it only runs
-`Fixtures/Sample/build.sh` when the fixture sources or toolchain have
-changed. Calling `build.sh` directly also works.
+`Tools/fixtures.sh` restores a content-addressed fixture build. It runs
+`Fixtures/Sample/build.sh` on a cache miss or with `--rebuild`.
 
 ## Running tests
 
@@ -145,9 +144,8 @@ proven through one subcommand isn't proven for the others. Some reach the
 binary through `llvm-objdump` and some go straight to the parser, so they
 fail differently.
 
-**Check both optimization levels.** `-Onone` and `-O` compile the same source
-very differently. Fixtures are usually built at both, and a fix proven at one
-level is untested at the other.
+**Check all three Swift optimization levels.** Test `-Onone`, `-O` and
+`-Osize` for ABI changes. The same source can lower differently at each level.
 
 **Explain every changed line of output.** `Tools/blast-radius.sh` renders
 every fixture with two swiftdc binaries and diffs the results:
@@ -156,7 +154,8 @@ every fixture with two swiftdc binaries and diffs the results:
 Tools/blast-radius.sh <old-swiftdc> <new-swiftdc> <outdir>
 ```
 
-Copy each binary out of `.build` before running it. Every line that changes
+Build releases with `--scratch-path .build-release` and copy both binaries
+out before running the comparison. Every line that changes
 belongs in your commit message, whether you meant to change it or not.
 
 **Fix stale docs in the same change.** `docs/PRODUCTION-READINESS.md` tracks

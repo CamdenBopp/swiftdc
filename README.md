@@ -20,7 +20,7 @@ or that its signature wasn't recoverable enough to tell.
 
 ## Quickstart
 
-You need an Apple Silicon Mac with Xcode 26 ([requirements](#requirements-and-build)).
+Use an Apple Silicon Mac with the [tested toolchain](#requirements-and-build).
 Clone and build a release binary, then put it on your `PATH` for this shell:
 
 ```bash
@@ -410,8 +410,9 @@ Treat that listing as a sample, not an inventory, and please report it.
 ## Requirements and build
 
 - macOS on Apple Silicon.
-- Xcode 26 with Swift 6.3, which supplies `swiftc`, `llvm-objdump` and
-  `swift-demangle`.
+- Xcode supplies `swiftc`, `llvm-objdump` and `swift-demangle`. The package
+  declares Swift tools version 6.2. The fixture-enforced suite requires Swift
+  6.4 or newer and is tested with Xcode 27.1.
 - Capstone 6, which SwiftPM builds from source. It's the same `capstone`
   package MachOSwiftSection links, and there's nothing to install. It's the
   decoder behind CFG recovery.
@@ -434,11 +435,9 @@ debug, release and stripped variants, along with the other fixtures, and
 caches them. [CONTRIBUTING.md](CONTRIBUTING.md) covers running the tests
 properly.
 
-Continuous integration runs the same suite on a Mac you register for your
-copy of the repository, since GitHub's hosted images carry too old a Swift.
-`Tools/ci/environment.sh` checks a machine and prints its toolchain, and
-`Tools/ci/setup-runner.sh` walks through the setup; see
-[docs/CI.md](docs/CI.md).
+Continuous integration runs the fixture-enforced suite on GitHub's arm64
+Xcode 27 preview image. A fork can also configure an Apple Silicon runner.
+See [CI setup and toolchain checks](docs/CI.md).
 
 ## Architecture
 

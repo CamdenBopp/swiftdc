@@ -10,8 +10,10 @@ suite cannot run an older test binary after that failure. The `suite-log`
 artifact retains `build.log` and any `suite.log` produced by the run.
 
 Published `b7bd1fa` passed its original release gate with **2,084
-fixture-enforced tests / 43 suites (975.059 s)**. Its hosted run is in
-progress. [Hosted run 45035744076](https://github.com/CamdenBopp/swiftdc/actions/runs/45035744076)
+fixture-enforced tests / 43 suites (975.059 s)**. Hosted Build and Enforcing
+suite passed **2,084 tests / 43 suites (2,515.900 s)** with a suite-log
+artifact. The checkout log and artifact metadata bind this result to
+`b7bd1fa`. [Hosted run 45035744076](https://github.com/CamdenBopp/swiftdc/actions/runs/45035744076)
 
 The preceding published revision, `c3b0c5e`, passed **2,082 tests / 43
 suites (968.002 s)** at its original release gate and **2,082 fixture-enforced

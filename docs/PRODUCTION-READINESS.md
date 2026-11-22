@@ -61,6 +61,57 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-22: local signed self-storage qualification
+
+**FIXED at `eb129dad01c21faf92a4f8cd136f8bd62cbcf1c6`:** scalar self loads
+preserve their signed or zero-extending memory view before W-register
+normalization. The owned [Swift fixture](../Fixtures/Sample/SignedSelfLoad.swift)
+and [assembly](../Fixtures/Sample/signed_self_load.s) expose the former
+Float-as-integer return and duplicated full-word upper lane. Exact leaf-body,
+storage-type, return-bank, LR and scratch proofs now produce the appropriate
+conversion or separate byte/word lanes. The fixture checks 276 native
+observations across three Swift optimization levels. Subword loads no longer
+supply class ISA identity to the tested witness dispatch. Class-image mutations
+are analyzer-only; full-width metadata and the established Float32 round trip
+remain controls. No tests were removed. The isolated native tests and full
+enforcing suite pass. Eleven compiled mutation reds and the restored focused
+pass were independently checked from their logs. The mutation driver itself
+returned a failure when its parser rejected the singular final diagnostic.
+
+The local suite passed **2,088 tests / 43 suites (916.941 s)**. The 785-input
+four-view comparison retains 35 unchanged preflight declines. It and the
+four SDK rows met default budgets, with
+**3,144 cost rows**, total instructions **−0.039265%**, and the sum of
+per-run footprint peaks **+0.096846%** against published `b7bd1fa`.
+
+All **754 CLI invocations / 377 pairs** pass. All 60 changed CLI pairs match
+the reviewed corpus or exact lab producer checks. The five original guarded
+pseudocode app comparisons preserve **84,833 ordered function headers per
+binary**, with **216 MB** peak sampled footprint. All 114 changed app lines
+were checked against decoded loads, uses, Boolean metadata and receiver paths.
+These checks cover the local candidate; the hosted result below covers the
+earlier published `b7bd1fa`.
+
+**OPEN:** an additional unrestricted GoodLinks plain listing exceeded the
+unchanged **2,000 MB** guard on both baseline and candidate. These censored
+runs do not establish eventual peaks or performance equivalence. Ten guarded
+function-group captures covered all 32 changed GoodLinks functions, peaking
+at **259 MB**, to complete the instruction review.
+
+Reproduce the public fixture checks after rebuilding:
+
+```sh
+Tools/fixtures.sh
+swift build --build-tests
+SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter 'signedSelfLoads|selfStorageLoads|narrowClassISAReads|selfLoadTypedReturns'
+```
+
+The SDK Radix change preserves finite discriminator ordering. Its named
+ordering expression is pseudocode for a tag comparison. Swift source
+expressibility still needs a tag-explicit spelling. General receiver
+freshness, wider and partial FP field views, ordered native result roles,
+typed error storage and cross-await transport remain open.
+
 ## 2026-11-22: recover exact narrow scalar views
 
 **FIXED at `859c38e7e5a8e67d50cee06248808a8ae46b46fa`, published in
@@ -129,7 +180,8 @@ The published binary matches all **338 CLI checks** and five original
 guarded apps: **84,833 ordered function headers**, identical output and
 stderr, and **215 MB** peak sampled footprint. The independent audit binds
 the release digest, native fixtures, source scope and retained evidence.
-Hosted CI is in progress.
+Hosted Build and Enforcing suite passed **2,084 tests / 43 suites
+(2,515.900 s)** and uploaded suite-log.
 [Hosted run 45035744076](https://github.com/CamdenBopp/swiftdc/actions/runs/45035744076)
 
 Reproduce the fixture-backed controls with:
