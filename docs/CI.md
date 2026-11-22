@@ -9,7 +9,10 @@ A nonzero build fails the step even without an `error:` message, so the
 suite cannot run an older test binary after that failure. The `suite-log`
 artifact retains `build.log` and any `suite.log` produced by the run.
 
-The latest verified published result is
+The latest published revision, `408ca9a`, passed its original release gate
+with **2,078 tests / 43 suites**. Its
+[hosted run 45019821118](https://github.com/CamdenBopp/swiftdc/actions/runs/45019821118)
+is in progress. The latest completed successful hosted result is
 [run 45012625048 at `72c9879`](https://github.com/CamdenBopp/swiftdc/actions/runs/45012625048):
 **2,075 fixture-enforced tests / 43 suites (1,583.991 s)**. The
 exit-status fix `f25575f` passed 2,075 local tests and its shell failure

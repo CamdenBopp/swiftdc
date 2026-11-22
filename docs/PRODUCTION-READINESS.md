@@ -61,9 +61,36 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-22: published scalar metadata and test-tooling verification
+
+**PUBLISHED at `408ca9a8ccbf24c5bcd2fb157ad1655132c15377`:** the original
+integration gate passed **2,078 tests / 43 suites (959.233 s)** and published
+the scalar-admission fix and preceding test-tooling changes. Independent
+Git-blob checks match **1,129 compiled-scope paths** to the qualified tree,
+with only the recorded documentation update between `e795299` and `408ca9a`.
+All **918 fixture products** match. The actual published binary's SHA-256 is
+`de5eda75771365342dadd2b23225819822303656777197b1c2cca7e376daea30`.
+
+All **3,112 render streams** and **four SDK outputs** match the reviewed
+local candidate. All **3,116 original-gate cost rows** pass default budgets
+against published `72c9879`: instructions **8,797,833,006,057 →
+8,796,346,643,358 (−0.01689%)**; summed peak physical footprints
+**29,179,054,720 → 29,231,841,120 bytes (+0.18091%)**. These are the gate's
+fresh-build measurements, separate from the local qualification below.
+
+Published-binary reruns match all **247 CLI outputs** and the **five
+original guarded app renders / 84,833 function headers**. All stderr and
+header ordering match; peak sampled app footprint is **201 MB**, with no
+guard kills. No app bodies are committed.
+
+The [hosted run for `408ca9a`](https://github.com/CamdenBopp/swiftdc/actions/runs/45019821118)
+is in progress; no hosted pass is claimed. This record supersedes pending
+publication statements for `e795299`, `0376d7d` and `f5a4471`, while their
+original local measurements remain intact. Positive G07 recovery remains open.
+
 ## 2026-11-22: scalar class metadata admission
 
-**FIXED locally at `e79529936abfe05855add423752f32bd6e9504e1`:**
+**FIXED at `e79529936abfe05855add423752f32bd6e9504e1`, published in `408ca9a`:**
 `PackBox<A, each T>.identityA` uses A's copy witness, but the scalar class
 index called it B. The [paired fixture](../Fixtures/Sample/generic_class_packs.swift)
 and independently decoded descriptor/instructions show the pack shape
@@ -103,8 +130,8 @@ app bodies or strings are committed.
 
 **OPEN:** G07 positive scalar metadata recovery in pack/value layouts.
 This fix declines unproved names; it does not implement shape-class,
-metadata-pack or witness-pack roles. Publication and hosted verification
-of this change remain pending.
+metadata-pack or witness-pack roles. Its publication is recorded above;
+hosted verification of `408ca9a` remains pending.
 
 ## 2026-11-22: test-tier guidance and published super-result verification
 

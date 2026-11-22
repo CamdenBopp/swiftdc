@@ -62,7 +62,8 @@ swiftdc disasm work/abi-gap-audit-repro/libGenericPackProbe.dylib --structured -
 
 The published gate binary incorrectly labels the copy witness B on the original Xcode Swift 6.4.0 probe and the command-line Swift 6.4.2 paired fixture. The latter also includes the same noinline `identityA` method in an ordinary `PlainBox<A, B>`, whose copy witness is correctly named A. The distinct `typeOfA` probe has no witness call and still renders `return ?`. The narrow G07 fix must remove the false B label, preserve the ordinary A label, and decline the scalar metadata index when the descriptor's pack/value header or parameter kind prevents proof.
 
-Local follow-up `e795299` removes the false name and preserves the ordinary
+Follow-up `e795299`, published in `408ca9a`, removes the false name and
+preserves the ordinary
 A control. The committed paired source is now
 [`Fixtures/Sample/generic_class_packs.swift`](../../../../Fixtures/Sample/generic_class_packs.swift),
 built at all three optimization levels. Reproduce its enforcing checks and

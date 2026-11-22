@@ -2,19 +2,21 @@
 
 ## Current status
 
-Updated 2026-11-22. Local `e795299` prevents a class pack length from
+Updated 2026-11-22. Published `e795299`, included in `408ca9a`, prevents a
+class pack length from
 shifting A's metadata name to B. It passes **2,078 enforcing tests / 43
 suites**, the 778-input four-view/default-cost comparison, 494 CLI runs
-and the five original guarded apps. Publication is pending.
+and the five original guarded apps. The original release gate also passed;
+the published binary matched all 247 CLI checks and five guarded app renders.
 [Qualification and remaining scope](PRODUCTION-READINESS.md#2026-11-22-scalar-class-metadata-admission)
 
-The latest published revision is `72c9879`: its original release gate passed
-**2,075 tests / 43 suites**. Its [hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/45012625048)
-also passed **2,075 fixture-enforced tests / 43 suites (1,583.991 s)**.
-It includes the [super-result fix](#latest-local-verification-super-result-adoption)
-and authoritative CI build status.
+The latest published revision is `408ca9a`: its original release gate passed
+**2,078 tests / 43 suites (959.233 s)**. Its [hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/45019821118)
+is in progress. The latest completed successful hosted run remains
+[`72c9879`](https://github.com/CamdenBopp/swiftdc/actions/runs/45012625048),
+with **2,075 fixture-enforced tests / 43 suites (1,583.991 s)**.
 
-- **Pack metadata.** Local `e795299` removes the reproduced false B
+- **Pack metadata.** Published `e795299` removes the reproduced false B
   witness label and preserves the ordinary-class A control. Positive
   scalar recovery within packed layouts remains open.
   [Reproduction and fix](research/abi-audit-2026-11-22/probes/README.md)
@@ -22,16 +24,15 @@ and authoritative CI build status.
 - **CI build status.** Published `f25575f` propagates Swift failure through
   logging and passes the same 2,075-test enforcing suite plus independent
   shell failure controls. [CI behavior and logs](CI.md)
-- **Contributor checks.** Local `0376d7d` makes affected selection include
+- **Contributor checks.** Published `0376d7d` makes affected selection include
   untracked files and fall back to full for unmapped/shared inputs. Its
   isolated regression and 2,075-test enforcing suite pass. Run
   `bash Tools/test-tier-contract.sh` for the fixture-free tooling check;
   this checks test selection, not decompiler behavior.
-- **Test command guidance.** Local `f5a4471` prints selected filters or
+- **Test command guidance.** Published `f5a4471` prints selected filters or
   exclusions, provides `--help`, and names the full enforcing command.
-  The rebuilt 2,075-test enforcing suite passes; publication is pending.
-- **Next gates.** Publish the qualified scalar metadata guard and local
-  tooling changes through the original integration gate. Qualify pointer
+  Its rebuilt 2,075-test qualification passes; the later release gate passed 2,078.
+- **Next gates.** Complete hosted verification of `408ca9a`. Qualify pointer
   provenance and ordered physical roles before broader positive recovery.
   [ABI closure plan](ABI-CLOSURE-PLAN.md)
 - **Measurements and history.** Historical scores keep their original
