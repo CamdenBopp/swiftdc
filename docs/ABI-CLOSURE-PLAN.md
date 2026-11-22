@@ -77,7 +77,7 @@ targeted captures complete the changed-function review. This result does not
 close general receiver freshness, ordered result/error roles or cross-await
 transport, and does not change readiness estimates.
 
-The [local E03 guard](PRODUCTION-READINESS.md#2026-11-22-local-indirect-typed-error-guard)
+The [E03 guard published in `65a627b`](PRODUCTION-READINESS.md#2026-11-22-local-indirect-typed-error-guard)
 blocks a reproduced wrong error name from an inactive X0 in an ABI-valid
 authored veneer. The proved scope is a synchronous nongeneric native free
 function on Darwin arm64 with a same-module nominal result of five contiguous

@@ -2,12 +2,16 @@
 
 ## Current status
 
-Updated 2026-11-22. The local typed-error guard at `6959523`
-stops an inactive X0 from naming the error on the measured Darwin arm64
-indirect-result path. The local candidate passed **2,090 enforcing tests /
-43 suites**, **3,180 cost rows** within default budgets, and **988 CLI
-invocations**. The five original guarded app comparisons preserve identical
-output and **84,833 ordered function headers per binary**.
+Updated 2026-11-22. Published `65a627b` includes the typed-error guard
+from `6959523`, which stops an inactive X0 from naming the error on the
+measured Darwin arm64 indirect-result path. The original integration gate
+passed **2,090 enforcing tests / 43 suites (1,057.716 s)** and all
+**3,180 cost rows** met default budgets. Published-artifact verification
+covered **988 CLI checks** and **10 guarded runs across five original
+apps**. App output matched the qualified artifact, with **84,833 ordered
+function headers per binary** and **224 MB** peak sampled footprint.
+Four cross-input render differences for stripped Go data remain open.
+They reproduce with both the baseline and candidate.
 [Qualification and remaining scope](PRODUCTION-READINESS.md#2026-11-22-local-indirect-typed-error-guard)
 
 Signed self-storage fix `eb129da` passed the local
@@ -39,8 +43,8 @@ and the five original guarded apps. The original release gate also passed;
 the published binary matched all 247 CLI checks and five guarded app renders.
 [Qualification and remaining scope](PRODUCTION-READINESS.md#2026-11-22-scalar-class-metadata-admission)
 
-Hosted CI for published `27258f9`, the baseline preceding this local
-typed-error slice, passed **2,088 fixture-enforced tests / 43 suites
+Hosted CI for published `27258f9`, the baseline preceding the published
+typed-error guard, passed **2,088 fixture-enforced tests / 43 suites
 (1,736.528 s)**. The decoded job log confirms the checkout and suite result.
 [Hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/45053370299)
 

@@ -11,9 +11,14 @@ artifact retains `build.log` and any `suite.log` produced by the run.
 
 Published `27258f9` completed hosted CI with **2,088 fixture-enforced tests
 / 43 suites (1,736.528 s)**. The decoded job log confirms the exact checkout
-and terminal suite line. This is the published baseline for the later local
-typed-error qualification.
+and terminal suite line. This revision preceded the E03 typed-error guard
+published in `65a627b`.
 [Hosted run 45053370299](https://github.com/CamdenBopp/swiftdc/actions/runs/45053370299)
+
+The original integration gate for `65a627b` passed **2,090 fixture-enforced
+tests / 43 suites (1,057.716 s)**. The [publication
+record](PRODUCTION-READINESS.md#2026-11-22-local-indirect-typed-error-guard)
+covers the gate and published binary checks.
 
 Published `b7bd1fa` passed its original release gate with **2,084
 fixture-enforced tests / 43 suites (975.059 s)**. Hosted Build and Enforcing

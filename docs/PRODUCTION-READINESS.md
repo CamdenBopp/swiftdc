@@ -63,7 +63,7 @@ results do not replace previously recorded release performance measurements.
 
 ## 2026-11-22: local indirect typed-error guard
 
-**FIXED locally at `6959523`** for ordinary synchronous,
+**FIXED at `6959523`, published in `65a627b`**, for ordinary synchronous,
 nongeneric native Swift free functions on Darwin arm64 whose exact
 same-module nominal result is five contiguous `Swift.UInt64` fields. The
 result requires indirect transport. The throw edge remains proven and renders
@@ -91,13 +91,28 @@ All **3,180 raw cost rows** meet default budgets. Total instructions changed
 by **−0.0244679808%** and summed per-run footprint peaks by
 **−0.1354506061%** against the published `27258f9` release.
 
-All **988 CLI invocations** pass across 38 inputs and 13 routes. The 42
+The local candidate passes **988 CLI invocations** across 38 inputs and 13 routes. The 42
 changed output pairs contain only the same error-name correction; direct
 controls and ordered function headers are preserved. Ten guarded pseudocode
 runs of the five original apps have identical output and **84,833 ordered
 headers per binary**, with a maximum sampled footprint of **217 MB**.
 Independent review reconstructs the raw costs, complete outputs, native
 return addresses and final source and fixture snapshot.
+
+The original integration gate for `65a627b` passed **2,090 enforcing tests
+/ 43 suites (1,057.716 s)** and **3,180 cost rows** within default budgets.
+Published-artifact verification covered **988 CLI checks** and **10
+guarded pseudocode runs across the five original apps**. App outputs matched
+the qualified artifact with **84,833 ordered function headers per binary**
+and a peak sampled footprint of **224 MB**. The nine typed-error fixture
+products retain the linked code and dependency records. Their SDK version
+field, UUID and signature payload differ between the qualified overlay and
+the fresh gate cache. The gate rechecked the native outcomes.
+
+**OPEN:** four cross-input renders differ between the qualified overlay and
+the fresh gate cache for `x8-entry-go-stripped-oracle`. Both the baseline
+and candidate render Go data as code in the structured and pseudocode views.
+The same defect is exposed by the changed fixture bytes in each binary.
 
 Reproduce the public fixture checks with:
 
