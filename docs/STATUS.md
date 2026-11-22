@@ -2,10 +2,12 @@
 
 ## Current status
 
-Updated 2026-11-22. Local `859c38e` recovers exact narrow scalar reads,
-including six Float32 field returns and two unsigned tail results. It passes
-**2,084 enforcing tests / 43 suites**, the 782-input four-view/default-cost
-comparison, 676 CLI runs and five original guarded apps. Publication is pending.
+Updated 2026-11-22. Published `b7bd1fa` includes exact narrow scalar reads
+from `859c38e`, recovering six Float32 field returns and simplifying two
+unsigned tail results. The original release gate passed **2,084 enforcing
+tests / 43 suites (975.059 s)** and all **3,132 cost rows** met default
+budgets. The published binary matches all **338 CLI checks** and five guarded apps
+(**84,833 ordered headers**; 215 MB peak sampled footprint).
 [Qualification and remaining scope](PRODUCTION-READINESS.md#2026-11-22-recover-exact-narrow-scalar-views)
 
 Published `a065ae1`, included in `c3b0c5e`, preserves
@@ -23,11 +25,13 @@ and the five original guarded apps. The original release gate also passed;
 the published binary matched all 247 CLI checks and five guarded app renders.
 [Qualification and remaining scope](PRODUCTION-READINESS.md#2026-11-22-scalar-class-metadata-admission)
 
-The latest published revision is `c3b0c5e`: its original release gate passed
-**2,082 tests / 43 suites (968.002 s)**. Its [hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/45027421151)
-completed successfully with **2,082 fixture-enforced tests / 43 suites
-(1,857.356 s)**. Build and Enforcing suite passed, with decoded logs and
-artifact metadata confirming the exact published commit.
+Hosted CI for `b7bd1fa` is in progress.
+[Current hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/45035744076)
+
+The preceding hosted run passed **2,082 fixture-enforced tests / 43 suites
+(1,857.356 s)** at `c3b0c5e`. Build and Enforcing suite passed, and decoded
+logs and artifact metadata confirm the commit.
+[Preceding hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/45027421151)
 
 - **Pack metadata.** Published `e795299` removes the reproduced false B
   witness label and preserves the ordinary-class A control. Positive
@@ -45,10 +49,8 @@ artifact metadata confirming the exact published commit.
 - **Test command guidance.** Published `f5a4471` prints selected filters or
   exclusions, provides `--help`, and names the full enforcing command.
   Its rebuilt 2,075-test qualification passes; the later release gate passed 2,078.
-- **Next gates.** Publish the qualified narrow-read fix through the original
-  integration gate. Qualify pointer
-  provenance and ordered physical roles before broader positive recovery.
-  [ABI closure plan](ABI-CLOSURE-PLAN.md)
+- **Next gates.** Qualify pointer provenance and ordered physical roles
+  before broader positive recovery. [ABI closure plan](ABI-CLOSURE-PLAN.md)
 - **Measurements and history.** Historical scores keep their original
   revision and denominator. [Scored corpus](#decompilation-outcomes-against-ghidra-122) ·
   [Compiler entry oracle](#entry-conventions-against-the-compiler) ·

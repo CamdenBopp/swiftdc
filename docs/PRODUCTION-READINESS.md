@@ -63,7 +63,8 @@ results do not replace previously recorded release performance measurements.
 
 ## 2026-11-22: recover exact narrow scalar views
 
-**FIXED at `859c38e7e5a8e67d50cee06248808a8ae46b46fa`:** the native
+**FIXED at `859c38e7e5a8e67d50cee06248808a8ae46b46fa`, published in
+`b7bd1fad06e84516be3d7a4d87314e1997d407c2`:** the native
 [`LoadBits.FloatBox`](../Fixtures/Sample/LoadBits.swift) methods
 `plain` and `masked` return their Float32 field unchanged, but the
 [matching assembly](../Fixtures/Sample/load_bits.s) made the renderer print
@@ -115,6 +116,22 @@ joins independently bind all old/current bytes: two retained Onone images
 change only UUID/signature bytes, as does the newly surveyed Onone tail
 image; optimized tail controls are byte-identical across fixture caches.
 
+The **original release gate** passed **2,084 enforcing tests / 43 suites
+(975.059 s)**. All **1,135 compiled-scope paths** and **921 fixture
+products** matched the local qualification. The published release
+SHA-256 is
+`40e01e1d4947be0145c2d33cd52693090ad10f5a8b7735e56b72193ad9436059`.
+Its **3,132 cost rows** met default budgets against `c3b0c5e`.
+Total instructions changed by **−0.019789%** and the sum of per-run
+physical footprint peaks changed by **+0.350021%**.
+
+The published binary matches all **338 CLI checks** and five original
+guarded apps: **84,833 ordered function headers**, identical output and
+stderr, and **215 MB** peak sampled footprint. The independent audit binds
+the release digest, native fixtures, source scope and retained evidence.
+Hosted CI is in progress.
+[Hosted run 45035744076](https://github.com/CamdenBopp/swiftdc/actions/runs/45035744076)
+
 Reproduce the fixture-backed controls with:
 
 ```sh
@@ -125,8 +142,7 @@ Tools/test.sh file ExactNarrowNativeTests IntegerTailReturnTests
 **OPEN:** signed subword ISA provenance, wider and partial FP field-bit
 projections, qualified nominal receiver identity/freshness, ordered result
 roles, positive pack recovery, typed-error storage and cross-await values.
-This exact scalar transport fix does not close those broader tasks.
-Original-gate publication and this revision's hosted CI remain pending.
+These tasks remain separate from the qualified exact scalar transport.
 
 ## 2026-11-22: published raw-bit transport verification
 

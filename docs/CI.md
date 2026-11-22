@@ -9,16 +9,18 @@ A nonzero build fails the step even without an `error:` message, so the
 suite cannot run an older test binary after that failure. The `suite-log`
 artifact retains `build.log` and any `suite.log` produced by the run.
 
-The latest published revision, `c3b0c5e`, passed its original release gate
-with **2,082 tests / 43 suites (968.002 s)** and then its
-[hosted run 45027421151](https://github.com/CamdenBopp/swiftdc/actions/runs/45027421151):
-**2,082 fixture-enforced tests / 43 suites (1,857.356 s)**. Build and
-Enforcing suite passed, and the suite-log artifact was uploaded. Decoded
-logs and artifact metadata confirm the exact published commit. The earlier
-`408ca9a` hosted run passed 2,078 tests / 43 suites (2,380.181 s).
-Local narrow-read fix `859c38e` passes **2,084 enforcing tests / 43 suites**,
-plus the full render/cost, 676 CLI and five-app checks. Its original-gate
-publication and hosted verification remain pending.
+Published `b7bd1fa` passed its original release gate with **2,084
+fixture-enforced tests / 43 suites (975.059 s)**. Its hosted run is in
+progress. [Hosted run 45035744076](https://github.com/CamdenBopp/swiftdc/actions/runs/45035744076)
+
+The preceding published revision, `c3b0c5e`, passed **2,082 tests / 43
+suites (968.002 s)** at its original release gate and **2,082 fixture-enforced
+tests / 43 suites (1,857.356 s)** on hosted CI. Build and Enforcing suite
+passed, and the suite-log artifact was uploaded. Decoded logs and artifact
+metadata confirm the exact published commit.
+[Hosted run 45027421151](https://github.com/CamdenBopp/swiftdc/actions/runs/45027421151)
+
+The earlier `408ca9a` hosted run passed 2,078 tests / 43 suites (2,380.181 s).
 See [current status](STATUS.md#current-status) for later qualifications.
 The older job notes below are historical, including their pending labels.
 
