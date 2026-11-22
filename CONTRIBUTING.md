@@ -42,7 +42,16 @@ soundness and verification apply to everyone.
 
 ## Setup
 
-You need an Apple Silicon Mac, Xcode 26 (Swift 6.3) and Go:
+The fixture-enforced suite requires an Apple Silicon Mac, Swift 6.4 or
+newer, Go on `PATH`, and at least 15 GB of free disk. The tested toolchain
+is Xcode 27.1 with Swift 6.4. Check your selected toolchain before
+building. [CI environment and toolchain](docs/CI.md#the-environment)
+
+```bash
+Tools/ci/environment.sh
+```
+
+Install Go if needed.
 
 ```bash
 brew install go
@@ -190,8 +199,10 @@ person from retrying it.
 
 - Push your branch to your fork and open the pull request against `dev`.
   That's where development happens; `master` is a periodic snapshot of it.
-- There's no CI yet, so nothing checks a pull request automatically. Run
-  `Tools/test.sh full` yourself before you open one.
+- GitHub Actions runs the fixture-enforced suite on pull requests and
+  pushes to `dev`. Fork pull requests can require a maintainer's approval
+  before running. Run `Tools/test.sh full` locally before opening a pull
+  request. [CI workflow and runner setup](docs/CI.md)
 - Include what you ran: the test tier, and the blast-radius counts if output
   changed.
 - Before merging, the maintainer runs `Tools/integration-gate.sh`: the full
@@ -202,6 +213,9 @@ person from retrying it.
   `Perf-cost: <reason>` line in the commit message.
 
 ## Reporting a bug
+
+For a wrong body, see [Debug a wrong pseudocode render](docs/DEBUGGING-PSEUDOCODE.md)
+for a fixture walkthrough and a focused regression test.
 
 Include the binary or the source that produces it, how you built it (compiler
 version and optimization level), the exact swiftdc command, what it printed,
