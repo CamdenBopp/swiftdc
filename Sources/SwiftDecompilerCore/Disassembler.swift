@@ -935,8 +935,9 @@ public struct Disassembler: Sendable {
         Probe.image(machO)
         warnOfUnreliableBoundaries(in: machO)
         let objcIndex = ObjCMetadataIndex.build(in: machO)
-        let labelByAddress = symbolLabels(in: machO)
+        var labelByAddress = symbolLabels(in: machO)
         var foldedByAddress = foldedSymbolAddresses(in: machO)
+        let candidateGoData = goFunctions(in: machO)?.dataSpans ?? [:]
         let sections = codeSections(in: machO)
         guard !sections.isEmpty else { return [] }
 
@@ -948,6 +949,8 @@ public struct Disassembler: Sendable {
         boundarySet.formUnion(sections.map(\.range.lowerBound))
         let boundaries = boundarySet.filter { CodeSection.containing($0, in: sections) != nil }.sorted()
         guard !boundaries.isEmpty else { return [] }
+        let (goData, callableStarts) = Self.streamingGoBoundaries(boundaries, dataSpans: candidateGoData)
+        Self.applyGoDataLabels(goData, labels: &labelByAddress, folded: &foldedByAddress)
 
         // Metadata names, on the same gate `assemble`/`matchedRanges` use.
         let unlabeled = Set(boundaries).subtracting(labelByAddress.keys)
@@ -997,8 +1000,7 @@ public struct Disassembler: Sendable {
         var indirectResultUses: [UInt64: IndirectResultUse] = [:]
         var registerSummaries: [UInt64: CalleeRegisterSummary] = [:]
         var outlinedFragments: [UInt64: OutlinedFragment] = [:]
-        let functionStarts = Set(boundaries)
-        let isFunction = { (target: UInt64) in functionStarts.contains(target) }
+        let isFunction = { (target: UInt64) in callableStarts.contains(target) }
         let arcReferences = arcFunctionReferences(in: machO)
         let namedABIReferences = nonThrowingABIFunctionReferences(in: machO)
         // Names and function membership are fixed for this summary pass.
@@ -1025,15 +1027,23 @@ public struct Disassembler: Sendable {
         swiftTargets.formUnion(swiftStubStarts)
         swiftTargets.formUnion(swiftStubAddresses(in: machO))
         swiftTargets.subtract(objcIndex.addresses)
+        swiftTargets.subtract(goData.keys)
         var hasEntryRoleConsumer = Self.needsEntryRegisterProofs(
             in: machO, names: names, folded: foldedByAddress, swiftTargets: swiftTargets)
         let section = textSection(in: machO)
-        func decode(_ span: (start: UInt64, stop: UInt64)) -> [Instruction] {
-            section?.instructions(span: span) ?? capstoneInstructions(in: machO, span: span)
+        func decode(_ span: (start: UInt64, stop: UInt64), using decoder: TextSection?) -> [Instruction] {
+            // Keep the data entry as an empty named row. The next independently
+            // recorded start still has its own span and normal decoder path.
+            guard goData[span.start] == nil else { return [] }
+            return decoder?.instructions(span: span) ?? capstoneInstructions(in: machO, span: span)
+        }
+        func decodeAt(_ address: UInt64) -> [Instruction] {
+            guard goData[address] == nil else { return [] }
+            return decodeFunction(at: address, boundaries: boundaries, in: machO, section: section)
         }
         for index in boundaries.indices {
             // Muted: pass 2 decodes the same span again and records its events.
-            let instructions = Probe.muted { decode(span(index)) }
+            let instructions = Probe.muted { decode(span(index), using: section) }
             hasEntryRoleConsumer = hasEntryRoleConsumer || Self.hasRawSwiftCall(in: instructions)
             collectUnnamedCallTargets(in: instructions, names: names, into: &targets)
             // The callee-side x8 fact every caller's analysis consults (see
@@ -1065,7 +1075,7 @@ public struct Disassembler: Sendable {
         CalleeRegisterSummary.refineMemory(&registerSummaries) { start, effects in
             guard let index = memorySpanIndex[start] else { return nil }
             return Probe.muted {
-                let function = makeFunction(start: start, instructions: decode(span(index)),
+                let function = makeFunction(start: start, instructions: decode(span(index), using: section),
                     labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
                     metadataNames: metadataNames, objcIndex: objcIndex, in: machO)
                 return CalleeRegisterSummary.of(Self.withJumpTables(function, machO: machO, ranges: fileRanges),
@@ -1084,7 +1094,7 @@ public struct Disassembler: Sendable {
         let spanIndex = Dictionary(boundaries.indices.map { (boundaries[$0], $0) }, uniquingKeysWith: { a, _ in a })
         CalleeRegisterSummary.closeOverCalls(&registerSummaries, rebuildingEntryRoles: rebuildingEntryRoles) { start, effects, readFacts, reusePreservation in
             guard let index = spanIndex[start] else { return nil }
-            let instructions = Probe.muted { decode(span(index)) }
+            let instructions = Probe.muted { decode(span(index), using: section) }
             guard !instructions.isEmpty else { return nil }
             let function = makeFunction(
                 start: start, instructions: instructions,
@@ -1132,7 +1142,7 @@ public struct Disassembler: Sendable {
         // funclets' own spans, so the grouping costs no whole-image residency.
         let asyncIndex = asyncFuncletIndex(
             in: machO, boundaries: Set(boundaries),
-            instructions: { self.decodeFunction(at: $0, boundaries: boundaries, in: machO, section: section) },
+            instructions: { decodeAt($0) },
             nameOf: { names[$0] }
         )
         let enumCaseIndex = EnumCaseIndex.build(in: machO)
@@ -1142,7 +1152,7 @@ public struct Disassembler: Sendable {
         let chainSlots = asyncChainSlots(
             index: asyncIndex,
             function: { address in
-                let instructions = self.decodeFunction(at: address, boundaries: boundaries, in: machO, section: section)
+                let instructions = decodeAt(address)
                 guard !instructions.isEmpty else { return nil }
                 let function = makeFunction(
                     start: address, instructions: instructions,
@@ -1161,7 +1171,7 @@ public struct Disassembler: Sendable {
                     return ValueTracer.hasNonThrowingLanguageContract(callee)
                         || resolver.nonThrowingABIContract(at: target, named: callee)
                 }, body: { start in
-                    let instructions = self.decodeFunction(at: start, boundaries: boundaries, in: machO, section: section)
+                    let instructions = decodeAt(start)
                     guard instructions.first?.address == start else { return nil }
                     return Self.withJumpTables(DisassembledFunction(symbol: "sub_\(String(start, radix: 16))",
                         demangledName: nil, startAddress: start, instructions: instructions, source: .address),
@@ -1196,13 +1206,12 @@ public struct Disassembler: Sendable {
             // handed to `transform` in input order: the same results, in the
             // same order, as the loop below.
             _ = machO.cache // resolve MachOKit's lazy memo once, before any reader thread
-            let frozenNames = names
+            let frozenNames = names, frozenLabels = labelByAddress, frozenFolds = foldedByAddress
             let work = ParallelPassTwo(section: section) { index, decoder in
-                let span = span(index)
-                let instructions = decoder?.instructions(span: span) ?? self.capstoneInstructions(in: machO, span: span)
+                let instructions = decode(span(index), using: decoder)
                 let function = self.makeFunction(
                     start: boundaries[index], instructions: instructions,
-                    labelByAddress: labelByAddress, foldedByAddress: foldedByAddress,
+                    labelByAddress: frozenLabels, foldedByAddress: frozenFolds,
                     metadataNames: metadataNames, objcIndex: objcIndex, in: machO
                 )
                 guard !instructions.isEmpty else { return function }
@@ -1223,7 +1232,7 @@ public struct Disassembler: Sendable {
             return rendered
         }
         for index in boundaries.indices {
-            let instructions = decode(span(index))
+            let instructions = decode(span(index), using: section)
             if instructions.isEmpty {
                 // A marked start whose bytes are not code is shown as such,
                 // not left out.
@@ -3721,6 +3730,30 @@ public struct Disassembler: Sendable {
 
     // MARK: - Segmentation
 
+    /// Keep the Go data row, but exclude it from executable analysis only
+    /// when the next streaming boundary agrees with the table's end.
+    static func streamingGoBoundaries(
+        _ boundaries: [UInt64], dataSpans: [UInt64: (end: UInt64, name: String)]
+    ) -> (data: [UInt64: (end: UInt64, name: String)], callable: Set<UInt64>) {
+        var data: [UInt64: (end: UInt64, name: String)] = [:]
+        if !dataSpans.isEmpty {
+            for (start, next) in zip(boundaries, boundaries.dropFirst()) {
+                if let span = dataSpans[start], span.end == next { data[start] = span }
+            }
+        }
+        return (data, Set(boundaries).subtracting(data.keys))
+    }
+
+    private static func applyGoDataLabels(
+        _ spans: [UInt64: (end: UInt64, name: String)],
+        labels: inout [UInt64: String], folded: inout [UInt64: [String]]
+    ) {
+        for (start, span) in spans {
+            folded[start] = nil
+            labels[start] = "_" + span.name
+        }
+    }
+
     private func segment(
         _ instructions: [Instruction],
         boundaries: Set<UInt64>,
@@ -3743,10 +3776,7 @@ public struct Disassembler: Sendable {
             !dataSpans.contains { insn.address >= $0.key && insn.address < $0.value.end }
         }
         var labelByAddress = labelByAddress, foldedByAddress = foldedByAddress
-        for (start, span) in dataSpans {
-            foldedByAddress[start] = nil
-            labelByAddress[start] = "_" + span.name
-        }
+        Self.applyGoDataLabels(dataSpans, labels: &labelByAddress, folded: &foldedByAddress)
         // Decoded one span at a time, a data span is a span with nothing.
         if instructions.isEmpty, let only = dataSpans.keys.first, dataSpans.count == 1 {
             return [makeFunction(start: only, instructions: [], labelByAddress: labelByAddress,
