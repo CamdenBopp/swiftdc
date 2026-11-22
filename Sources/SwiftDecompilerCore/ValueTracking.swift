@@ -505,6 +505,28 @@ public struct LoopInitialization: Sendable, Equatable {
     }
 }
 
+/// The modeled state immediately before an explicitly requested branch.
+/// Capture records local MAY facts. It says nothing about earlier funclets,
+/// and a child capture does not establish the reach of the child's Parent.
+struct AsyncBranchWitness: Equatable, Sendable {
+    enum ContextRegister: Equatable, Sendable {
+        case ownerBase
+        case childBase
+        case unproven
+    }
+
+    struct LocalCapture: OptionSet, Sendable {
+        let rawValue: UInt8
+        static let owner = Self(rawValue: 1 << 0)
+        static let child = Self(rawValue: 1 << 1)
+    }
+
+    let x22: ContextRegister
+    let continuationAddress: UInt64?
+    let ownerSlots: [Int: AbstractValue]
+    let localCapture: LocalCapture
+}
+
 /// Everything one pass over a function recovers.
 public struct FunctionAnalysis: Sendable {
     public var callSites: [UInt64: CallSite] = [:]
@@ -592,6 +614,7 @@ public struct FunctionAnalysis: Sendable {
     /// Definite own-context values immediately before each entry branch.
     /// Used to prove initialized slots at suspension, never to seed entry.
     public var asyncSlotFactsAtBranches: [UInt64: [Int: AbstractValue]] = [:]
+    var asyncBranchWitnesses: [UInt64: AsyncBranchWitness] = [:]
     /// An incomplete analysis cannot establish absence of context mutations.
     /// Completed snapshots set this false, then flag unbounded memory writes.
     public var asyncUnboundedMemoryWrites = true
@@ -624,6 +647,8 @@ public struct ValueTracer: Sendable {
     /// Only the chain pass requests entry transfer facts; ordinary analysis
     /// avoids scanning/copying slot state at every async branch.
     var asyncSlotFactBranches: Set<UInt64> = []
+    /// Opt-in branch observations from the converged tracer state.
+    var asyncWitnessBranches: Set<UInt64> = []
     /// The fixpoint's worklist bound, per block. Past it the analysis claims
     /// nothing (`values.fixpoint-cap`). Injectable so a test can force it.
     var iterationsPerBlock = 64
@@ -1485,6 +1510,10 @@ public struct ValueTracer: Sendable {
             }
         }
 
+        let asyncBranchWitnesses = snapshotAsyncBranches(
+            blocks, blockByStart: blockByStart, inState: inState, entry: entry, facts: facts
+        )
+
         // Value merging: a value that diverges across the two arms of a
         // conditional-branch diamond is that branch's select (`cond ? a : b`),
         // reconstructing a ternary / nil-coalescing. Enrich the merge blocks'
@@ -1508,6 +1537,7 @@ public struct ValueTracer: Sendable {
         // Snapshot pass: replay from each block's fixed entry state, recording
         // call arguments and self-field accesses.
         var result = FunctionAnalysis()
+        result.asyncBranchWitnesses = asyncBranchWitnesses
         result.asyncUnboundedMemoryWrites = false
         result.loopUpdates = loopBindings.updates
         result.loopInitializations = loopBindings.initializations
@@ -1560,11 +1590,7 @@ public struct ValueTracer: Sendable {
                 }
                 if insn.controlFlow == .branch {
                     if asyncSlotFactBranches.contains(insn.address) {
-                        result.asyncSlotFactsAtBranches[insn.address] = Dictionary(uniqueKeysWithValues:
-                            registers.compactMap { key, value -> (Int, AbstractValue)? in
-                                guard case .contextSlot(let offset) = key, value != .unknown else { return nil }
-                                return (offset, value)
-                            })
+                        result.asyncSlotFactsAtBranches[insn.address] = Self.asyncOwnerSlots(in: registers)
                     }
                     let site = Self.snapshot(registers, saveSlots: facts.frame.saveSlots)
                     if !site.isEmpty { result.branchSites[insn.address] = site }
@@ -1832,6 +1858,57 @@ public struct ValueTracer: Sendable {
         return registers[Location(register)] ?? .unknown
     }
 
+    /// Replay just the requested terminal blocks before the render snapshot
+    /// introduces selects and loop names. Consumers must qualify the edge.
+    private func snapshotAsyncBranches(
+        _ blocks: [BasicBlock], blockByStart: [UInt64: BasicBlock], inState: [UInt64: State],
+        entry: MethodEntryConvention?, facts: FunctionFacts
+    ) -> [UInt64: AsyncBranchWitness] {
+        guard !asyncWitnessBranches.isEmpty else { return [:] }
+        // An undecoded instruction can clear escape markers along with exact
+        // facts. Its modeled successors cannot witness absence of capture.
+        var incomplete = Set(blocks.lazy.filter { block in
+            block.instructions.contains { $0.detail == nil }
+        }.map(\.startAddress))
+        var pending = Array(incomplete)
+        while let address = pending.popLast(), let block = blockByStart[address] {
+            for successor in block.successors where blockByStart[successor] != nil {
+                if incomplete.insert(successor).inserted { pending.append(successor) }
+            }
+        }
+        return Probe.muted {
+            TracerWriteLog.$current.withValue(nil) {
+                var witnesses: [UInt64: AsyncBranchWitness] = [:]
+                for block in blocks {
+                    guard let branch = block.instructions.last, branch.controlFlow == .branch,
+                          asyncWitnessBranches.contains(branch.address), !incomplete.contains(block.startAddress),
+                          var registers = inState[block.startAddress]
+                    else { continue }
+                    for instruction in block.instructions.dropLast() {
+                        transfer(instruction, into: &registers, record: nil, recordAccess: nil,
+                                 initializerEntry: entry?.isObjectiveCInitializer == true, facts: facts)
+                    }
+                    witnesses[branch.address] = Self.asyncBranchWitness(in: registers)
+                }
+                return witnesses
+            }
+        }
+    }
+
+    private static func asyncBranchWitness(in registers: State) -> AsyncBranchWitness {
+        let context: AsyncBranchWitness.ContextRegister = switch registers[.x(22)] {
+        case .asyncContext?: .ownerBase
+        case .asyncCalleeContext?: .childBase
+        default: .unproven
+        }
+        let continuation: UInt64? = if case .address(let address)? = registers[.x(0)] { address } else { nil }
+        var capture: AsyncBranchWitness.LocalCapture = []
+        if hasAsyncOwnerReach(in: registers) { capture.insert(.owner) }
+        if registers[calleeContextEscapeKey] != nil { capture.insert(.child) }
+        return AsyncBranchWitness(x22: context, continuationAddress: continuation,
+                                  ownerSlots: asyncOwnerSlots(in: registers), localCapture: capture)
+    }
+
     /// Call sites only — the common case.
     public func callSites(in function: DisassembledFunction) -> [UInt64: CallSite] {
         analyze(function).callSites
@@ -2061,11 +2138,7 @@ public struct ValueTracer: Sendable {
                 // the whole own context. A complete body has only
                 // the explicit footprints invalidated above; retain the marker
                 // for a later unproved call without applying it to this one.
-                let hasContextReach = registers.keys.contains { key in
-                    if case .contextEscaped = key { return true }
-                    return false
-                }
-                if hasContextReach, !boundsContextWrites {
+                if Self.hasAsyncOwnerReach(in: registers), !boundsContextWrites {
                     // An interior pointer can also reach the parent header
                     // through a negative displacement. A previously loaded
                     // register snapshot remains a separate value.
@@ -6441,6 +6514,13 @@ public struct ValueTracer: Sendable {
         return false
     }
 
+    private static func asyncOwnerSlots(in registers: State) -> [Int: AbstractValue] {
+        Dictionary(uniqueKeysWithValues: registers.compactMap { key, value -> (Int, AbstractValue)? in
+            guard case .contextSlot(let offset) = key, value != .unknown else { return nil }
+            return (offset, value)
+        })
+    }
+
     private static func outgoingKey(_ frameOffset: Int64) -> Location { .outgoing(frameOffset) }
     private static func stackOffset(from key: Location) -> Int64? {
         if case .stack(let offset) = key { return offset }
@@ -6476,6 +6556,13 @@ public struct ValueTracer: Sendable {
     /// payload remains for state compatibility, but every value denotes the
     /// whole allocation: unknown code may use a negative displacement.
     private static let calleeContextEscapeKey = Location.calleeContextEscaped
+
+    private static func hasAsyncOwnerReach(in registers: State) -> Bool {
+        registers.keys.contains { key in
+            if case .contextEscaped = key { return true }
+            return false
+        }
+    }
 
     /// A state key that is the only record of a value in a register, a frame
     /// slot, a context slot or a result-buffer word.
