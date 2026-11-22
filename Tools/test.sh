@@ -42,7 +42,7 @@ subsystem_of() { # path -> subsystem names
     */Probe*) echo audit ;;
     # The shared contract and the god file reach every subsystem.
     */Disassembler.swift|*/Instruction*.swift) echo arm64 abi tracer cflow meta render audit ;;
-    Sources/*) echo abi tracer render ;;
+    *) return 1 ;;
   esac
 }
 
@@ -55,16 +55,42 @@ case $1 in
     shift; [ $# -ge 1 ] || { echo "test.sh file <NameTests>..." >&2; exit 2; }
     re=$(printf '%s\\.swift|' "$@"); args=(--filter "${re%|}") ;;
   affected)
-    subs=$(git diff --name-only origin/dev...HEAD; git diff --name-only HEAD)
-    subs=$(for f in $subs; do subsystem_of "$f"; done | tr ' ' '\n' | sort -u | tr '\n' ' ')
+    changed=$(mktemp)
+    trap 'rm -f "$changed"' EXIT
+    if ! git diff --no-renames --name-only -z origin/dev...HEAD > "$changed" ||
+       ! git diff --no-renames --name-only -z HEAD >> "$changed" ||
+       ! git ls-files --others --exclude-standard -z >> "$changed"; then
+      echo "test.sh: cannot determine changed paths; run Tools/test.sh full" >&2
+      exit 1
+    fi
     re='Determinism|FixturePresence'
-    for s in $subs; do re="$re|$(filter_for "$s")"; done
-    # A changed test file runs too.
-    for f in $(git diff --name-only origin/dev...HEAD -- Tests; git diff --name-only HEAD -- Tests); do
-      re="$re|$(basename "$f" .swift)\\.swift"
-    done
-    echo "test.sh: affected subsystems: ${subs:-none}" >&2
-    args=(--filter "$re") ;;
+    subs=
+    needs_full=false
+    while IFS= read -r -d '' path; do
+      case $path in
+        Sources/*)
+          if mapped=$(subsystem_of "$path"); then
+            subs="$subs $mapped"
+          else
+            needs_full=true
+            printf 'test.sh: unmapped source %q requires the full suite\n' "$path" >&2
+          fi ;;
+        Tests/*Tests.swift)
+          name=${path##*/}
+          name=$(printf '%s' "$name" | sed 's/[][\\.^$*+?(){}|]/\\&/g')
+          re="$re|$name" ;;
+        Tools/*.md) ;;
+        Tests/*|Fixtures/*|Tools/*|.github/workflows/*|Package.swift|Package.resolved)
+          needs_full=true
+          printf 'test.sh: shared test/build input %q requires the full suite\n' "$path" >&2 ;;
+      esac
+    done < "$changed"
+    if ! $needs_full; then
+      subs=$(printf '%s\n' $subs | sort -u | tr '\n' ' ')
+      for s in $subs; do re="$re|$(filter_for "$s")"; done
+      echo "test.sh: affected subsystems: ${subs:-none}" >&2
+      args=(--filter "$re")
+    fi ;;
   *)
     re=
     for s in "$@"; do f=$(filter_for "$s") || { echo "unknown subsystem: $s" >&2; exit 2; }; re="$re|$f"; done
