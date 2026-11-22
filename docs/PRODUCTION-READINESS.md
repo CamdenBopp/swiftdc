@@ -14785,9 +14785,10 @@ function headers/order** remain, no kills, maximum sampled footprint **237 MB**.
 Frozen published-baseline/candidate release SHA256:
 `4c1e3e8540b1e9658b324838c2f1c0da44af12e0d0bbbbf15b7ab01243d4f0d4` /
 `b3fc8cbbe973e57a3e889e218e6fde41cc4a7eae84a77f61cdae0b14166de2b3`.
-**PUBLICATION PENDING:** this refactor needs the original integration gate and
-its own hosted result. Values carried across awaits remain open. No scoring
-table or readiness percentage changes.
+**GATE PUBLISHED:** the original gate published `409165d`; its terminal
+results are recorded in the witness entry. Its hosted run remains in progress.
+Values carried across awaits remain open. No scoring table or readiness
+percentage changes.
 
 Published baseline `5bf8fc5` completed
 [hosted run 44988698470](https://github.com/CamdenBopp/swiftdc/actions/runs/44988698470):
@@ -14798,3 +14799,70 @@ Reproduce after `swift build --build-tests` with
 `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter 'AsyncTransferEdgeTests|AsyncHandoffShapeTests|AsyncAmbiguityTests'`;
 full suite: `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
 See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/1167e836216d79a3e764243e4080e67dbf3bc8e0).
+
+## Latest local verification: converged async branch witnesses
+
+**VERIFIED locally at `e639a66cc91af43e131ec4bcbbe3e53c0f808e7c`.** In
+`Fixtures/Sample/libAwaitResults.opt.dylib`, the first `useInt` resume
+stores the first awaited scalar at owner +0x18 before the executor hop.
+The recovered edge identifies a continuation, while the legacy slot path
+only observes render-enriched state. The opt-in witness reports the
+local state at an explicitly requested terminal branch. It replays that
+block from the converged tracer entry before select and loop enrichment
+and records exact x22 owner or child identity, a concrete x0 address
+fact, definite owner slots, and independent local MAY capture bits.
+An exact slot written after a join can coexist with an owner capture
+from an incoming path.
+
+The witness declines on iteration or state-budget exhaustion and in
+blocks with missing instruction detail or a modeled predecessor with
+missing detail. Edge completeness, inherited owner capture, reach via
+the child's Parent, runtime memory effects, and successor ownership
+still require separate proof. No production caller requests the witness.
+The prior slot and renderer paths remain in use. `useInt` still renders
+`sink(?)` and `AsyncOutlinedContext.sequence` still renders `return ?`.
+Awaited-value transport remains open.
+
+Nine test declarations cover sparse requests, private and escaped
+spills, conditional capture, owner and child identity, caps, missing
+detail, raw-state ordering, and full recorder equality. Removing the
+missing-detail veto produced two issues. Moving extraction after select
+enrichment produced one. Both were rebuilt eight-test mutation runs.
+The restored rebuild passed **50 focused tests (0.406 s)**. The enforcing
+suite passed **2,069 tests in 43 suites (1,039.324 s)**. Qualification
+froze **1,187 public inputs and 911 fixture products**, including
+**470 source/test paths**. Prior tests match `409165d`.
+
+The audited releases matched **3,088 render pairs across 772 inputs and
+four views**, including **35 checked preflight declines**. Four SDK
+performance-workload output hashes matched. All **3,092 cost pairs**
+passed the default budgets. Retired instructions changed from
+**8,768,312,118,376 to 8,764,841,261,051 (−0.03958%)**. Summed peak
+footprints changed from **29,102,120,392 to 29,140,376,720 bytes
+(+0.13146%)**. The local frozen edge baseline and witness candidate
+SHA-256 hashes were
+`b3fc8cbbe973e57a3e889e218e6fde41cc4a7eae84a77f61cdae0b14166de2b3`
+and `aad2983cbd6d04dc9a3e5adf12d7e9c04c35b7ed2095385cc5e9fe14b0c339ce`.
+
+**POST-REVIEW:** all **416 CLI runs / 16 inputs / 13 paths**, four guarded SDK rerenders and ten original-five-app renders match stdout, stderr and function headers. All **84,833 app headers/order** remain, no guard kills; maximum sampled app footprint **220 MB**.
+
+Reproduce after `swift build --build-tests` with
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter AsyncBranchWitnessTests`.
+Full suite: `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+Compare the frozen releases with
+`Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
+
+### Previous publication: recovered async transfer edges
+
+The original integration gate published
+`409165d41797d84a24b85c6a918eb22c8187c5a6` to `dev`. The gate's
+**469 source/test paths** match the commit. Its enforcing suite passed
+**2,060 tests in 43 suites (1,185.222 s)**. The published binary SHA-256 was
+`9e90b695406f273eaf6b8796b8f3bd1b41ddf9f7e42f277a21ecc5fdfd01c390`.
+The reviewed local release and the published release produced identical
+outputs on all **3,088 renders** and **four SDK workloads**, including
+the **35 checked preflight declines**. The gate passed **3,092 cost rows**.
+Versus its published baseline, instructions changed from
+**8,763,190,467,784 to 8,761,250,332,465 (−0.02214%)** and summed peaks
+from **29,009,332,384 to 29,271,933,456 bytes (+0.90523%)**.
+[Hosted run 44993492956](https://github.com/CamdenBopp/swiftdc/actions/runs/44993492956) for `409165d` remains in progress. This witness commit awaits its own original gate and hosted qualification. No readiness percentage changes.

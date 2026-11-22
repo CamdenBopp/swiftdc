@@ -136,6 +136,46 @@ code `8a15928`; the local receiver change requires its own gate/publication
 and hosted result. See [CI setup and image sources](CI.md).
 No decompilation benchmark or readiness percentage changes.
 
+## Latest local verification: converged async branch witnesses
+
+**VERIFIED locally at `e639a66cc91af43e131ec4bcbbe3e53c0f808e7c`.** The tracer can report the raw
+converged state at a requested terminal branch before select and loop
+enrichment. Its witness records exact x22 owner or child identity, a
+concrete x0 address fact, definite owner slots, and independent local
+MAY capture. Missing instruction detail vetoes the local block and its
+modeled successors. Both convergence limits decline. This is an
+internal refactor with no production caller. Inherited capture, child
+Parent reach, and transfer admission and effects still require proof
+before any carried scalar can be rendered.
+
+Nine new test declarations preserve the existing tests. Rebuilt
+mutations produced two issues for removing the missing-detail veto
+and one for extracting after select enrichment. Restored focus passed
+**50 tests (0.406 s)**. The enforcing suite passed **2,069 tests /
+43 suites (1,039.324 s)** with **1,187 public inputs / 911 fixture
+products** frozen. All **470 source/test paths** match the manifest.
+
+All **3,088 render pairs / 772 inputs / four views** and four SDK
+workload hashes matched, including **35 checked preflight declines**.
+The **3,092 cost pairs** passed default budgets. Instructions moved
+**8,768,312,118,376 → 8,764,841,261,051 (−0.03958%)** and summed peak
+footprints moved **29,102,120,392 → 29,140,376,720 bytes (+0.13146%)**.
+Frozen local edge baseline / witness candidate SHA-256:
+`b3fc8cbbe973e57a3e889e218e6fde41cc4a7eae84a77f61cdae0b14166de2b3` /
+`aad2983cbd6d04dc9a3e5adf12d7e9c04c35b7ed2095385cc5e9fe14b0c339ce`.
+
+**POST-REVIEW:** all **416 CLI runs / 16 inputs / 13 paths**, four guarded SDK rerenders and ten original-five-app renders match stdout, stderr and function headers. All **84,833 app headers/order** remain, no guard kills; maximum sampled app footprint **220 MB**.
+The witness still needs its original gate and hosted result. Transport
+of values across awaits remains open.
+
+**PREVIOUS GATE PUBLISHED:** the original gate published `409165d` to
+`dev` after **2,060 tests / 43 suites (1,185.222 s)**. All **469
+source/test paths** matched the published tree. Its release SHA-256 was
+`9e90b695406f273eaf6b8796b8f3bd1b41ddf9f7e42f277a21ecc5fdfd01c390`.
+The gate matched **3,088 render pairs** and **four SDK workload hashes**,
+including **35 verified preflight declines**, and passed **3,092 cost
+pairs**. [Hosted run 44993492956](https://github.com/CamdenBopp/swiftdc/actions/runs/44993492956) for `409165d` remains in progress. This witness commit awaits its own original gate and hosted qualification. No readiness percentage changes.
+
 ## Latest local verification: recovered async transfer edges
 
 **VERIFIED locally at `1167e836216d79a3e764243e4080e67dbf3bc8e0`:** the
@@ -167,9 +207,10 @@ function headers/order** remain, no kills, maximum sampled footprint **237 MB**.
 Frozen published-baseline/candidate release SHA256:
 `4c1e3e8540b1e9658b324838c2f1c0da44af12e0d0bbbbf15b7ab01243d4f0d4` /
 `b3fc8cbbe973e57a3e889e218e6fde41cc4a7eae84a77f61cdae0b14166de2b3`.
-**PUBLICATION PENDING:** this refactor needs the original integration gate and
-its own hosted result. Values carried across awaits remain open. No scoring
-table or readiness percentage changes.
+**GATE PUBLISHED:** the original gate published `409165d`; its terminal
+results are recorded in the witness entry. Its hosted run remains in progress.
+Values carried across awaits remain open. No scoring table or readiness
+percentage changes.
 
 Published baseline `5bf8fc5` completed
 [hosted run 44988698470](https://github.com/CamdenBopp/swiftdc/actions/runs/44988698470):
