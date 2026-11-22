@@ -120,7 +120,11 @@ The original five apps retain **84,833 ordered function headers per binary**;
 the maximum sampled footprint is **225 MB**. Independent review checked
 all 2,220 losslessly retained output streams and 18 guard logs, the original
 app identities, and both source and native-fixture inventories. No runtime
-output difference remains. Hosted CI for this commit is pending.
+output difference remains. Hosted CI for `3c9b005` passed **2,091
+fixture-enforced tests / 43 suites (2,370.145 s)**. The decoded checkout
+and enforcing command match that revision, and Build, Enforcing suite and
+Suite log succeeded. GitHub records the `suite-log` artifact.
+[Hosted run 45080738370](https://github.com/CamdenBopp/swiftdc/actions/runs/45080738370)
 
 ## 2026-11-22: local indirect typed-error guard
 

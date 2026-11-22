@@ -15,7 +15,10 @@ The original integration gate for published `3c9b005` passed
 [Go build-ID publication record](PRODUCTION-READINESS.md#2026-11-22-local-go-build-id-streaming-fix)
 separately tracks verification of the published binary.
 
-Hosted CI for `3c9b005` is pending.
+Hosted CI for `3c9b005` passed **2,091 fixture-enforced tests / 43 suites
+(2,370.145 s)**. Build, Enforcing suite and Suite log succeeded. The
+decoded checkout and test log bind the result to that commit; GitHub
+records its `suite-log` artifact.
 [Hosted run 45080738370](https://github.com/CamdenBopp/swiftdc/actions/runs/45080738370)
 
 Hosted CI for `65a627b` passed **2,090 fixture-enforced tests / 43 suites

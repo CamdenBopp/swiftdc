@@ -9,7 +9,9 @@ within default budgets. All **3,176 corpus renders** from the gate artifact
 match the locally qualified output. Published-binary verification passed
 **1,092 CLI invocations**, eight serial runs and ten guarded app runs. App
 output and **84,833 ordered headers per binary** match, with **225 MB**
-maximum sampled footprint. Hosted CI is pending.
+maximum sampled footprint. Hosted CI passed **2,091 fixture-enforced
+tests / 43 suites (2,370.145 s)**.
+[Hosted run 45080738370](https://github.com/CamdenBopp/swiftdc/actions/runs/45080738370)
 
 The Darwin arm64 local qualification preceded the publication gate. The enforcing run passed
 **2,091 tests / 43 suites (1,326.776 s)** and all **3,180 cost rows**
