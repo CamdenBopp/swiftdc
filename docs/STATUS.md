@@ -2,7 +2,13 @@
 
 ## Current status
 
-Updated 2026-11-22. Published `e795299`, included in `408ca9a`, prevents a
+Updated 2026-11-22. Local `a065ae1` preserves the original raw-bit
+mask through wider FP register views. It passes **2,082 enforcing tests /
+43 suites**, 779 inputs in four views with default cost budgets, 520 CLI
+runs and the five original guarded apps. Publication is pending.
+[Qualification and remaining scope](PRODUCTION-READINESS.md#2026-11-22-preserve-narrow-raw-bits-through-wider-fp-views)
+
+Published `e795299`, included in `408ca9a`, prevents a
 class pack length from
 shifting A's metadata name to B. It passes **2,078 enforcing tests / 43
 suites**, the 778-input four-view/default-cost comparison, 494 CLI runs
@@ -12,9 +18,9 @@ the published binary matched all 247 CLI checks and five guarded app renders.
 
 The latest published revision is `408ca9a`: its original release gate passed
 **2,078 tests / 43 suites (959.233 s)**. Its [hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/45019821118)
-is in progress. The latest completed successful hosted run remains
-[`72c9879`](https://github.com/CamdenBopp/swiftdc/actions/runs/45012625048),
-with **2,075 fixture-enforced tests / 43 suites (1,583.991 s)**.
+completed successfully with **2,078 fixture-enforced tests / 43 suites
+(2,380.181 s)**. Both Build and Enforcing suite passed; decoded logs confirm
+the exact published commit.
 
 - **Pack metadata.** Published `e795299` removes the reproduced false B
   witness label and preserves the ordinary-class A control. Positive
@@ -32,7 +38,8 @@ with **2,075 fixture-enforced tests / 43 suites (1,583.991 s)**.
 - **Test command guidance.** Published `f5a4471` prints selected filters or
   exclusions, provides `--help`, and names the full enforcing command.
   Its rebuilt 2,075-test qualification passes; the later release gate passed 2,078.
-- **Next gates.** Complete hosted verification of `408ca9a`. Qualify pointer
+- **Next gates.** Publish the qualified FP raw-bit fix through the original
+  release gate. Qualify pointer
   provenance and ordered physical roles before broader positive recovery.
   [ABI closure plan](ABI-CLOSURE-PLAN.md)
 - **Measurements and history.** Historical scores keep their original

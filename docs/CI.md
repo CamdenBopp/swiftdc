@@ -12,13 +12,12 @@ artifact retains `build.log` and any `suite.log` produced by the run.
 The latest published revision, `408ca9a`, passed its original release gate
 with **2,078 tests / 43 suites**. Its
 [hosted run 45019821118](https://github.com/CamdenBopp/swiftdc/actions/runs/45019821118)
-is in progress. The latest completed successful hosted result is
-[run 45012625048 at `72c9879`](https://github.com/CamdenBopp/swiftdc/actions/runs/45012625048):
-**2,075 fixture-enforced tests / 43 suites (1,583.991 s)**. The
-exit-status fix `f25575f` passed 2,075 local tests and its shell failure
-controls and was published in `72c9879` through the original release gate.
-That hosted run passed both Build and Enforcing suite and uploaded both
-logs in the `suite-log` artifact.
+completed successfully with **2,078 fixture-enforced tests / 43 suites
+(2,380.181 s)**. The decoded job log confirms the exact published commit;
+Build and Enforcing suite both passed and the suite-log artifact was
+uploaded. Earlier `72c9879` passed 2,075 tests / 43 suites (1,583.991 s).
+Local FP raw-bit fix `a065ae1` passes 2,082 enforcing tests / 43 suites;
+its own original-gate publication and hosted CI remain pending.
 See [current status](STATUS.md#current-status) for later qualifications.
 The older job notes below are historical, including their pending labels.
 

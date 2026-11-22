@@ -61,6 +61,64 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-22: preserve narrow raw bits through wider FP views
+
+**FIXED at `a065ae13b66a8eb86834ed91875a340ae9753437`:**
+`FMOV S0,W0; FMOV X0,D0` returns only the
+original low 32 bits, with zero upper bits. The tracer peeled the matching
+raw-bit constructor while widening the scalar view and recovered the entire
+original UInt64 expression instead. The native
+[`fp_wide_raw.s`](../Fixtures/Sample/fp_wide_raw.s) fixture proves the word
+and halfword behavior with eight literal input/result comparisons, including
+high-word differences, negative-zero and NaN bit patterns. These are raw
+moves, with no floating-point conversion.
+
+Widening now preserves the original source-width mask. A controlled,
+read-only variant of ordinary `PlainBox.identityA` also demonstrates the
+consequence for pointer provenance: a truncated object header moved through
+S then D cannot regain a full ISA identity or its named value witness. The
+actual unresolved indirect transfer stays visible through all three APIs
+and both text renderers. The real 64-bit ISA load retains its A witness;
+W/S/W and halfword controls remain declined. Modified images are analyzed,
+never executed; the separate C-ABI native fixture supplies the execution
+oracle. Signed subword ISA loads remain a separate open task.
+
+Four independently compiled mutations fail the intended assertions:
+remove the mask, truncate the word to 16 bits, let the halfword retain
+32 bits, or replace the known bits with unknown. The restored build passes
+59 focused tests. The rebuilt full enforcing suite passes **2,082 tests /
+43 suites (935.606 s)**, four more tests and no removals. All **1,213 public
+inputs and 919 fixture products** remain frozen through qualification and
+postchecks.
+
+The **779-input four-view comparison / 3,116 streams** changes only
+`_fpwide_word` at its return: text now explicitly shows the low-32-bit mask
+where the old text omitted the leaf return; listing and JSON carry the same
+fact. The halfword body and every pre-existing fixture stream are unchanged.
+The 35 independently validated preflight declines and all four SDK outputs
+are unchanged. All **3,120 cost rows** meet default budgets: instructions
+**8,797,792,599,911 → 8,796,481,937,887 (−0.01490%)**; summed per-run peak
+footprints **29,273,463,432 → 29,198,423,056 bytes (−0.25634%)**.
+
+All 520 CLI invocations pass (20 inputs, 13 paths, both binaries). Eight
+changed pairs show the same word return, including lab's raw x0 mask;
+headers, order and stderr match. The original five guarded apps match all
+84,833 headers and output bytes; peak sampled footprint 226 MB. All 247
+historical CLI outputs match G07; two rebuilt `-Onone` inputs differ only in
+UUID/signature bytes, independently bound to their old recorded hashes.
+
+Reproduce the fixture-backed and raw-tracer regressions with:
+
+```sh
+Tools/fixtures.sh
+Tools/test.sh file FPWideRawMaskTests FPWideRawNativeTests
+```
+
+This is one raw-bit transport fix. It does not establish positive packed
+metadata recovery, signed-load pointer provenance, nominal receiver identity,
+ordered aggregate roles, typed-error projection or cross-await value transport.
+Original-gate publication and this revision's hosted CI remain pending.
+
 ## 2026-11-22: published scalar metadata and test-tooling verification
 
 **PUBLISHED at `408ca9a8ccbf24c5bcd2fb157ad1655132c15377`:** the original
@@ -84,7 +142,9 @@ header ordering match; peak sampled app footprint is **201 MB**, with no
 guard kills. No app bodies are committed.
 
 The [hosted run for `408ca9a`](https://github.com/CamdenBopp/swiftdc/actions/runs/45019821118)
-is in progress; no hosted pass is claimed. This record supersedes pending
+completed successfully: **2,078 enforcing tests / 43 suites (2,380.181 s)**.
+Both Build and Enforcing suite passed, and their logs were uploaded. The
+decoded job log binds the exact published commit. This record supersedes pending
 publication statements for `e795299`, `0376d7d` and `f5a4471`, while their
 original local measurements remain intact. Positive G07 recovery remains open.
 
@@ -131,7 +191,7 @@ app bodies or strings are committed.
 **OPEN:** G07 positive scalar metadata recovery in pack/value layouts.
 This fix declines unproved names; it does not implement shape-class,
 metadata-pack or witness-pack roles. Its publication is recorded above;
-hosted verification of `408ca9a` remains pending.
+hosted verification of `408ca9a` passed 2,078 tests / 43 suites.
 
 ## 2026-11-22: test-tier guidance and published super-result verification
 
