@@ -124,13 +124,19 @@ public struct VTableIndex: Sendable {
                   let typeName = try? model.descriptor.name(in: machO),
                   descriptorsByName[typeName, default: []].count == 1
             else { continue }
-            // A top-level generic class (a nested one's parameters include its
-            // parent's, which print at another depth), every parameter a key
-            // argument, and no resilient superclass, whose bounds only the
-            // runtime knows.
+            // The scalar metadata slots start at the immediate members only
+            // for plain type parameters. Pack lengths precede metadata, and
+            // the value parameter layout does not describe metadata pointers.
+            // Nested contexts and resilient superclass bounds also need a
+            // different layout proof. The only known generic header flags
+            // are packs, conditional inverted protocols and values.
             if let generic = model.genericContext, !generic.parameters.isEmpty,
                generic.currentParameters.count == generic.parameters.count,
-               generic.parameters.allSatisfy(\.hasKeyArgument), !model.descriptor.hasResilientSuperclass {
+               generic.header.layout.flags.rawValue & 0xFFF8 == 0,
+               generic.typePackHeader == nil, generic.valueHeader == nil,
+               generic.parameters.allSatisfy({ $0.kind == .type && $0.hasKeyArgument }),
+               Int(generic.header.layout.numKeyArguments) >= generic.parameters.count,
+               !model.descriptor.hasResilientSuperclass {
                 genericArguments[typeName] = (Int(model.descriptor.nonResilientImmediateMembersOffset) * pointerSize,
                                               generic.parameters.count)
                 if let tables = keyWitnessTables(of: generic, in: machO) { witnessTables[typeName] = tables }

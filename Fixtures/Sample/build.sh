@@ -934,6 +934,14 @@ $SWIFTC -parse-as-library -O -emit-library -module-name IsaMask isamask.swift -o
 echo "==> a String return read from both of its words, x0 and x1 (stringreturns.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name StringReturns stringreturns.swift -o libStringReturns.dylib
 
+echo "==> generic class metadata with and without type packs (generic_class_packs.swift, -Onone/-O/-Osize)"
+for level in Onone O Osize; do
+    suffix=".$level"
+    if [[ "$level" == O ]]; then suffix=""; fi
+    $SWIFTC -target arm64-apple-macosx15.0 -parse-as-library -"$level" -emit-library \
+        -module-name GenericClassPacks generic_class_packs.swift -o "libGenericClassPacks$suffix.dylib"
+done
+
 echo "==> a generic class's protocol requirements through self's metadata (classprotowitness.swift, -O; resilient, and a fragile copy with no method descriptor symbols)"
 $SWIFTC -parse-as-library -O -enable-library-evolution -emit-library -module-name ClassProtoWitness classprotowitness.swift -o libClassProtoWitness.dylib
 $SWIFTC -parse-as-library -O -emit-library -module-name ClassProtoWitness classprotowitness.swift -o libClassProtoWitness.fragile.dylib
