@@ -5226,7 +5226,20 @@ public struct ValueTracer: Sendable {
         if bits == 64 { return value }
         let mask: UInt64 = bits == 64 ? .max : (1 << bits) - 1
         if case .binary(let op, _, _) = value, op.isComparison { return value }
-        if case .binary(.bitAnd, _, .immediate(let existing)) = value, existing & mask == existing { return value }
+        let lowBitsSource: AbstractValue
+        if case .binary(.bitAnd, let inner, .immediate(let existing)) = value {
+            if existing & mask == existing { return value }
+            lowBitsSource = existing & mask == mask ? inner : value
+        } else {
+            lowBitsSource = value
+        }
+        // The canonical LSL/ASR pair only supplies new bits above the
+        // load width. A narrower view discards those replicated sign bits.
+        if case .binary(.arithmeticShiftRight,
+                        .binary(.shiftLeft, let input, .immediate(let left)), .immediate(let right)) = lowBitsSource,
+           left == right, right > 0, right < 64, bits <= 64 - Int(right) {
+            return narrowed(input, bits: bits)
+        }
         // `fmov w0, s1` writes a Float's 32 bits, which already fit the word.
         if case .unary(.bitPattern(let width), _) = value, width <= bits { return value }
         return expression(.bitAnd, value, .immediate(mask))
