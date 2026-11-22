@@ -2,22 +2,23 @@
 
 ## Current status
 
-Updated 2026-11-22. Local code `d8a00e0` fixes false Objective-C super-result
+Updated 2026-11-22. Published code `d8a00e0`, included in `72c9879`, fixes false Objective-C super-result
 adoption and is qualified by **2,075 enforcing tests / 43 suites**, the
 775-input four-view/default-cost comparison, CLI matrix and original
-guarded apps. Its original-gate publication and hosted run are pending.
+guarded apps. Its original release gate passed and published `72c9879`.
 [Local verification](#latest-local-verification-super-result-adoption)
 
-The last published qualified revision is `1fc51d3`: its original release
-gate and completed hosted CI each passed **2,069 tests / 43 suites**.
-[Published gate](#latest-local-verification-converged-async-branch-witnesses) ·
-[Hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/44998598514)
+The latest published revision is `72c9879`: its original release gate passed
+**2,075 tests / 43 suites**. Its [hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/45012625048)
+is still in progress. The last completed successful hosted run is for
+`1fc51d3`, with **2,069 tests / 43 suites**.
+[Completed hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/44998598514)
 
 - **Next reproduced defect.** A generic class with a type pack can label
   A's copy witness B. The ordinary-class control labels A correctly.
   [Reproduction](research/abi-audit-2026-11-22/probes/README.md)
 - **Open transport gap.** The targeted await case still declines its value.
-- **CI build status.** Local `f25575f` propagates Swift failure through
+- **CI build status.** Published `f25575f` propagates Swift failure through
   logging and passes the same 2,075-test enforcing suite plus independent
   shell failure controls. [CI behavior and logs](CI.md)
 - **Contributor checks.** Local `0376d7d` makes affected selection include
@@ -25,8 +26,11 @@ gate and completed hosted CI each passed **2,069 tests / 43 suites**.
   isolated regression and 2,075-test enforcing suite pass. Run
   `bash Tools/test-tier-contract.sh` for the fixture-free tooling check;
   this checks test selection, not decompiler behavior.
-- **Next gates.** Publish the qualified super-result fix through the
-  original gate, then qualify the scalar metadata guard separately.
+- **Test command guidance.** Local `f5a4471` prints selected filters or
+  exclusions, provides `--help`, and names the full enforcing command.
+  The rebuilt 2,075-test enforcing suite passes; publication is pending.
+- **Next gates.** Qualify the scalar metadata guard separately and publish
+  the local tooling changes after the current hosted run finishes.
   [ABI closure plan](ABI-CLOSURE-PLAN.md)
 - **Measurements and history.** Historical scores keep their original
   revision and denominator. [Scored corpus](#decompilation-outcomes-against-ghidra-122) ·

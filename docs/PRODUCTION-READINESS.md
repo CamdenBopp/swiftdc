@@ -61,6 +61,36 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-22: test-tier guidance and published super-result verification
+
+**FIXED locally at `f5a4471`:** `Tools/test.sh` now reports selected filters
+or quick-tier exclusions, identifies the full enforcing suite, provides
+successful `--help` / `-h`, and names the full command after a focused run.
+Contributor guidance describes conservative affected selection and the
+isolated fixture-free selection regression. Selection behavior is unchanged.
+After rebuilding, **2,075 tests / 43 suites pass (1004.864 s)** with fixtures
+enforced. All **1,207 public / 915 fixture product hashes** stay fixed during
+qualification; debug and frozen release binary bytes are unchanged. Help,
+filtered, quick, full and documentation-only output checks also pass.
+Publication of this tooling change remains pending.
+
+**PUBLISHED at `72c987900c81da4f385d54837e9798351d0eed53`:** the original
+integration gate passed **2,075 tests / 43 suites (1065.282 s)** and pushed
+the super-result fix and CI build-status correction. The published release
+SHA-256 is `101226433eea59f6f2e9c87acb43b23bd4409bbb66f0a14ef38a6d748b6dc35d`.
+Its 3,100 render streams across 775 inputs and all four SDK outputs match
+the reviewed candidate. All 3,104 cost rows pass default budgets:
+instructions **8,773,938,503,065 → 8,785,179,743,854 (+0.1281%)**; summed
+peak footprints **29,162,632,312 → 29,011,844,200 bytes (−0.5171%)**.
+Independent published-binary reruns match all **208 CLI checks** and the
+**five original guarded app renders / 84,833 function headers**. These
+checks compare actual output bytes, with no app bodies committed.
+
+The [hosted run for `72c9879`](https://github.com/CamdenBopp/swiftdc/actions/runs/45012625048)
+is in progress; no hosted pass is claimed. This publication record
+supersedes the earlier pending publication statements for the super-result
+and CI build-status changes, retaining their original local measurements.
+
 ## 2026-11-22: conservative affected-test selection
 
 **FIXED locally at `0376d7d061dba870d7788ab4dc38605250c310d5`:** affected
