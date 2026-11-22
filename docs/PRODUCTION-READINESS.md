@@ -61,6 +61,73 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-22: recover exact narrow scalar views
+
+**FIXED at `859c38e7e5a8e67d50cee06248808a8ae46b46fa`:** the native
+[`LoadBits.FloatBox`](../Fixtures/Sample/LoadBits.swift) methods
+`plain` and `masked` return their Float32 field unchanged, but the
+[matching assembly](../Fixtures/Sample/load_bits.s) made the renderer print
+integer AND/shifts on `self.f`. Independent Swift IR, linked instruction
+bytes, field metadata and native calls establish the actual x20 receiver,
+32-bit storage and S0 result. These are ABI-valid assembly methods with
+compiled Swift callers and metadata; the instruction bodies were authored
+for the reduction.
+
+The tracer now simplifies an equal 64-bit LSL/ASR sign-extension pair only
+when a narrower read excludes all replicated sign bits. It crosses an AND
+only if every requested bit survives, and retains the actual read mask.
+Wider reads and unequal shifts preserve their operations. New `-Onone`,
+`-O` and `-Osize` fixtures compare native bit patterns for negative zero,
+NaN payloads and signed values. All **72 native comparisons per run** pass.
+
+The unchanged baseline produces **36 typed-return failures** across three
+APIs and both renderers. The baseline evidence script initially rejected
+Swift Testing's changed diagnostic spelling; its original failure receipt
+is retained, and separate root/independent audits certify the actual saved
+semantic failures. Five separately compiled mutations fail the intended
+assertions for the fold, mask crossing, read width, equal shifts and mask
+coverage; restored **61 focused tests** pass. The full enforcing suite
+passes **2,084 tests / 43 suites (895.015 s)**, two added and none removed.
+All **1,217 public inputs and 921 fixture products** stayed frozen through
+qualification and postchecks.
+
+The **782-input four-view comparison / 3,128 streams** changes only eight
+return sites in 16 streams. Six `plain`/`masked` returns show `return self.f`.
+Two existing `SwiftTailResults` `-Onone` functions retain their producer
+and low-8/low-16 masks while dropping sign extension outside those bits.
+Their authored Swift source, actual machine code, existing native oracle
+(**714 cases per optimization level**) and five-API tests prove the same
+truncations. The `-O`/`-Osize` controls, every other instruction and ordered
+function identity, 35 validated preflight declines and four SDK outputs
+are unchanged.
+
+All **3,132 cost rows** meet default budgets against published `c3b0c5e`:
+instructions **8,804,276,753,565 → 8,803,118,240,055 (−0.01316%)**;
+summed per-run physical peaks **29,315,133,560 → 29,475,352,624 bytes
+(+0.54654%)**.
+
+All 676 CLI invocations pass (26 inputs, 13 paths, both binaries). The
+32 changed pairs are the same eight RET facts on eight affected paths per
+image; function order/headers and stderr match. Original five guarded apps
+match all 84833 headers and output bytes; peak sampled footprint is 228 MB.
+All 260 retained published-baseline command hashes match. Historical input
+joins independently bind all old/current bytes: two retained Onone images
+change only UUID/signature bytes, as does the newly surveyed Onone tail
+image; optimized tail controls are byte-identical across fixture caches.
+
+Reproduce the fixture-backed controls with:
+
+```sh
+Tools/fixtures.sh
+Tools/test.sh file ExactNarrowNativeTests IntegerTailReturnTests
+```
+
+**OPEN:** signed subword ISA provenance, wider and partial FP field-bit
+projections, qualified nominal receiver identity/freshness, ordered result
+roles, positive pack recovery, typed-error storage and cross-await values.
+This exact scalar transport fix does not close those broader tasks.
+Original-gate publication and this revision's hosted CI remain pending.
+
 ## 2026-11-22: published raw-bit transport verification
 
 **PUBLISHED at `c3b0c5ec04e41b2ec279524b5430e0e7d327e129`:** the original
@@ -88,10 +155,12 @@ footprint is **216 MB**, with no guard kills. No private app bodies are
 committed.
 
 [Hosted run 45027421151](https://github.com/CamdenBopp/swiftdc/actions/runs/45027421151)
-is in progress for the exact published commit. The latest completed
-successful hosted result is `408ca9a`, with **2,078 enforcing tests / 43
-suites (2,380.181 s)**. No hosted pass is inferred for the newer revision.
-The wider ABI tasks listed with the fix below remain open.
+completed successfully for the exact published commit: **2,082 enforcing
+tests / 43 suites (1,857.356 s)**. Build and Enforcing suite passed and the
+suite-log artifact was uploaded. The decoded log and artifact metadata
+confirm the commit and test result. This hosted result covers `c3b0c5e`;
+later local qualifications remain separate. The wider ABI tasks listed
+with the fix below remain open.
 
 ## 2026-11-22: preserve narrow raw bits through wider FP views
 
@@ -149,8 +218,7 @@ Tools/test.sh file FPWideRawMaskTests FPWideRawNativeTests
 This is one raw-bit transport fix. It does not establish positive packed
 metadata recovery, signed-load pointer provenance, nominal receiver identity,
 ordered aggregate roles, typed-error projection or cross-await value transport.
-The original gate and published-binary checks passed; this revision's hosted
-CI remains pending.
+The original gate, published-binary checks and hosted CI passed for `c3b0c5e`.
 
 ## 2026-11-22: published scalar metadata and test-tooling verification
 

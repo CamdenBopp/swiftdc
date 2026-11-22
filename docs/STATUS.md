@@ -2,7 +2,13 @@
 
 ## Current status
 
-Updated 2026-11-22. Published `a065ae1`, included in `c3b0c5e`, preserves
+Updated 2026-11-22. Local `859c38e` recovers exact narrow scalar reads,
+including six Float32 field returns and two unsigned tail results. It passes
+**2,084 enforcing tests / 43 suites**, the 782-input four-view/default-cost
+comparison, 676 CLI runs and five original guarded apps. Publication is pending.
+[Qualification and remaining scope](PRODUCTION-READINESS.md#2026-11-22-recover-exact-narrow-scalar-views)
+
+Published `a065ae1`, included in `c3b0c5e`, preserves
 the original raw-bit mask through wider FP register views. It passes **2,082 enforcing tests /
 43 suites**, 779 inputs in four views with default cost budgets, 520 CLI
 runs and the five original guarded apps. The original gate also passed;
@@ -19,9 +25,9 @@ the published binary matched all 247 CLI checks and five guarded app renders.
 
 The latest published revision is `c3b0c5e`: its original release gate passed
 **2,082 tests / 43 suites (968.002 s)**. Its [hosted run](https://github.com/CamdenBopp/swiftdc/actions/runs/45027421151)
-is in progress. The latest completed successful hosted run remains
-[`408ca9a`](https://github.com/CamdenBopp/swiftdc/actions/runs/45019821118),
-with **2,078 fixture-enforced tests / 43 suites (2,380.181 s)**.
+completed successfully with **2,082 fixture-enforced tests / 43 suites
+(1,857.356 s)**. Build and Enforcing suite passed, with decoded logs and
+artifact metadata confirming the exact published commit.
 
 - **Pack metadata.** Published `e795299` removes the reproduced false B
   witness label and preserves the ordinary-class A control. Positive
@@ -39,7 +45,8 @@ with **2,078 fixture-enforced tests / 43 suites (2,380.181 s)**.
 - **Test command guidance.** Published `f5a4471` prints selected filters or
   exclusions, provides `--help`, and names the full enforcing command.
   Its rebuilt 2,075-test qualification passes; the later release gate passed 2,078.
-- **Next gates.** Complete hosted verification of `c3b0c5e`. Qualify pointer
+- **Next gates.** Publish the qualified narrow-read fix through the original
+  integration gate. Qualify pointer
   provenance and ordered physical roles before broader positive recovery.
   [ABI closure plan](ABI-CLOSURE-PLAN.md)
 - **Measurements and history.** Historical scores keep their original
