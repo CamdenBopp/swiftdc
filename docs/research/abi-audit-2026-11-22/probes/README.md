@@ -54,4 +54,12 @@ The `after` signature is `(i16, half, i16, i64)`. Two integer components separat
   -o work/abi-gap-audit-repro/GenericPackProbe.ll
 ```
 
-The emitted `typeOfA` and `identityA` bodies load A metadata at class metadata offset 88 in this fixture. Compare descriptor key arguments and shape fields before assigning generic parameter names to offsets. The audited `typeOfA` render is `return ?`; no wrong generic metadata name was observed. The index admission and actual witness consumer need separate tests.
+The emitted `typeOfA` and `identityA` bodies load A metadata at byte offset 88. The descriptor's immediate members start at byte 80, occupied here by the pack length. In `identityA` the compiler reads the VWT at A metadata −8 and selects the `initializeWithCopy` witness at table +16. To exercise this production consumer, repeat the compiler command above with `-emit-library` in place of `-emit-ir`, outputting `work/abi-gap-audit-repro/libGenericPackProbe.dylib`. Run the recorded baseline on the result.
+
+```sh
+swiftdc disasm work/abi-gap-audit-repro/libGenericPackProbe.dylib --structured --function=identityA
+```
+
+The published gate binary incorrectly labels the copy witness B on the original Xcode Swift 6.4.0 probe and the command-line Swift 6.4.2 paired fixture. The latter also includes the same noinline `identityA` method in an ordinary `PlainBox<A, B>`, whose copy witness is correctly named A. The distinct `typeOfA` probe has no witness call and still renders `return ?`. The narrow G07 fix must remove the false B label, preserve the ordinary A label, and decline the scalar metadata index when the descriptor's pack/value header or parameter kind prevents proof.
+
+Captured artifacts are under ignored `work/abi-gap-audit`. `g07-GenericClassPacks.swift` is the paired source, `libGenericClassPacks.clt.dylib` its 6.4.2 build, and `g07-paired-clt-baseline.txt` its render. `g07-identityA-baseline.txt` and `g07-identityA-disassembly.txt` are the original 6.4.0 render and raw disassembly. `g07.patch` drafts the guard and paired regression for a separate implementation commit.

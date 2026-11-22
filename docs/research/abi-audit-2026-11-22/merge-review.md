@@ -16,12 +16,14 @@ ends at L93. Cite L15–93 in the merged plan.
   while swiftdc's chunk set conflates the integer pieces. The qualified renderer
   declined at that call. Crossing the direct/indirect threshold remains an
   oracle case. Reserve wrong-render wording for a reproduced result.
-- G07 is source-confirmed incorrect metadata-offset inference for the stated
-  structural premise, with independent compiler IR showing the offset.
-  GenericPackProbe in the frozen renderer emits an unresolved return. This
-  does not reproduce a mislabeled metadata value. Verify the guard and resulting
-  consumers separately from general pack lowering.
-- F07 is the only reproduced wrong semantic render in the six reports.
+- G07 reproduces an incorrect value-witness type label. `typeOfA` still
+  emits an unresolved return. In `PackBox.identityA`, the actual A metadata
+  load is at byte 88. The scalar index uses immediate-members base 80 and
+  converts that load to parameter B. The published gate binary labels the
+  witness B with both compiler builds. The command-line Swift 6.4.2 paired
+  fixture labels the ordinary `PlainBox.identityA` witness A. Verify the
+  admission guard and both index and rendering consumers before full pack support.
+- F07 reproduces an incorrect receiver assignment.
   Distinct selectors in the fixture, independent machine calls through the
   same super stub, and incorrect self assignment line up. Prioritize by the
   observed wrong statement. Keep declarations and fixed results qualified

@@ -136,6 +136,43 @@ code `8a15928`; the local receiver change requires its own gate/publication
 and hosted result. See [CI setup and image sources](CI.md).
 No decompilation benchmark or readiness percentage changes.
 
+## Latest local verification: super-result adoption
+
+**VERIFIED locally at `d8a00e038263bcc28b2d340ea42dcd7c81d83cf5`.** An ordinary
+super message inside an Objective-C initializer no longer becomes
+`self = [super description]`. Tracing retains the actual call result;
+receiver naming requires provider, selector, receiver/search-class and
+post-call adoption evidence. The source fixture covers `-O0`, `-O2` and
+`-Os`. Each of 21 separately compiled mutations failed at its intended
+assertion, and the restored 21 focused tests passed. All previous tests
+remain; the full enforcing suite passed **2,075 tests / 43 suites
+(901.653 s)** with Swift 6.4.2.
+
+The frozen release was compared with published `1fc51d3` on **775 inputs
+x four views** and four SDK workloads. Exactly 22 fixture files and 33
+initializer entries change in each view; every changed line was reviewed.
+Function/instruction identity and order, control flow and targets remain
+fixed. The 35 prior raw-validated preflight declines are unchanged. All
+eight SDK corpus copies and four workload outputs match. All **3,104
+default-budget cost rows** pass: instructions **8,773,938,503,065 ->
+8,779,927,497,074 (+0.0683%)**; summed per-run peak footprints
+**29,162,632,312 -> 29,120,674,184 bytes (-0.1439%)**.
+
+The 16-input/13-path CLI matrix passed 416 invocations. Five stdout pairs
+change only the same forwarding initializer; all stderr and positive
+function-identity comparisons match. Ten guarded runs over the original
+five apps retain **84,833 function headers per binary**. Review accounts
+for 249 changed methods / 248 hunks / 3,198 display lines, including raw
+store-lane displays confirmed against original instructions. No
+unexplained operation change remains in those reviewed hunks. Detailed
+private output stays outside the public repository.
+
+`-O0` ARC-local adoption, named strong-field adoption through
+`objc_storeStrong` and optimized opaque C consumer arguments remain
+completeness limits. This is local qualification; integration-gate
+publication and hosted verification for this revision are still pending.
+The [ABI plan](ABI-CLOSURE-PLAN.md) tracks the remaining mechanisms.
+
 ## Latest local verification: converged async branch witnesses
 
 **VERIFIED locally at `e639a66cc91af43e131ec4bcbbe3e53c0f808e7c`.** The tracer can report the raw
@@ -179,7 +216,10 @@ Gate release SHA-256:
 `bc7ad12bd26d3bc00e4a8fc3ad8d1602bfbf4c4048024cf1bbe3bb64f062a520`.
 
 [Hosted run 44998598514](https://github.com/CamdenBopp/swiftdc/actions/runs/44998598514)
-is in progress for `1fc51d3`; no hosted result is claimed for this slice.
+completed successfully at `1fc51d3`: **2,069 tests / 43 suites (1,893.323 s)**.
+Decoded job logs confirm Toolchain, Fixtures, Build and Enforcing suite
+passed with Xcode 27.1 on the `xcode-27` ARM64 image. This is separate from
+the pending hosted verification of the later super-result fix.
 Values carried across awaits remain open. The [ABI closure plan](ABI-CLOSURE-PLAN.md)
 records eight source audits and implementation gates, not implemented coverage
 or a new readiness percentage.

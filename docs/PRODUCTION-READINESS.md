@@ -61,6 +61,54 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-22: qualified Objective-C super-result adoption
+
+**FIXED locally at `d8a00e038263bcc28b2d340ea42dcd7c81d83cf5`:** an ordinary
+`[super description]` in an initializer was rendered as a self assignment.
+The new own-source fixture `objc_super_initializer.m` reproduces the old
+claim across `-O0/-O2/-Os`. Exact call-result identity is now retained.
+Receiver adoption additionally requires a bound Super2 entry, resolved
+init-family selector, the current receiver/current-class header, an own
+ivar write through that result and complete forward paths returning the
+result or nil. Old receiver reads, possibly exposed frame bytes, incomplete
+detail/CFG and cycles veto adoption. Tracer and renderer share the result.
+
+**Verified:** all 21 separately compiled mutations fail at their intended
+assertions, including independent real-binary selector-family and search
+class controls. A restored rebuild passes 21 S01/ObjCMetadata tests. The
+full fixture-enforced suite passes **2,075 tests / 43 suites (901.653 s)**;
+no existing test changed or was removed. Reproduce with `Tools/fixtures.sh`,
+`swift build --build-tests`, then `SWIFTDC_REQUIRE_FIXTURES=1 swift test
+--skip-build`. The focused tests are in `ObjCSuperInitializerTests.swift`.
+
+The frozen release against published `1fc51d3` covers **775 inputs x four
+views** plus four SDK workloads. All 22 changed fixture files / 33 entries
+are accounted for: actual result forwarding, ordinary message producers,
+and conservative adoption/field-name declines. Structured/pseudo/listing/
+JSON change 156/144/212/412 lines. Function and instruction identity/order,
+CFG and targets are unchanged; 35 prior independently raw-checked
+preflight declines match. All eight SDK corpus copies and four large
+workload outputs match. **3,104 default-budget cost rows** pass:
+**8,773,938,503,065 -> 8,779,927,497,074 instructions (+0.0683%)** and
+**29,162,632,312 -> 29,120,674,184 bytes summed per-run peaks (-0.1439%)**.
+Command: `Tools/blast-radius.sh <1fc51d3-release> <d8a00e0-release> <out>
+--real --perf`; no cost override.
+
+All **416 CLI invocations / 16 inputs / 13 paths** pass; five stdout pairs
+change only the same forwarding initializer, with stderr and positive
+function identity/order checks unchanged. All ten original five-app runs
+pass the 2,000 MB guard and retain **84,833 function headers per binary**.
+Private review accounts for **249 changed methods / 248 hunks / 3,198
+display lines**. Additional store expressions match original instructions
+or paired-store lane expansion; no unexplained operation change remains
+in the reviewed hunks. Private code and receipts remain ignored.
+
+**OPEN completeness:** spilled ARC locals at `-O0`, logical adoption through
+`objc_storeStrong`, and optimized opaque C consumer arguments still need
+their own proofs. The fix does not implement all super messenger variants,
+receiver ownership or ABI gaps. Original-gate publication and hosted CI for
+this revision remain pending. Historical accuracy scores are unchanged.
+
 ## Next: rules from LLVM's calling-convention tests (2026-11-14)
 
 LLVM's AArch64 code-generation tests for the Swift conventions
@@ -14860,7 +14908,10 @@ Gate release SHA-256:
 `bc7ad12bd26d3bc00e4a8fc3ad8d1602bfbf4c4048024cf1bbe3bb64f062a520`.
 
 [Hosted run 44998598514](https://github.com/CamdenBopp/swiftdc/actions/runs/44998598514)
-is in progress for `1fc51d3`; no hosted result is claimed for this slice.
+completed successfully at `1fc51d3`: **2,069 tests / 43 suites (1,893.323 s)**.
+Decoded job logs confirm Toolchain, Fixtures, Build and Enforcing suite
+passed with Xcode 27.1 on the `xcode-27` ARM64 image. This is separate from
+the pending hosted verification of the later super-result fix.
 Values carried across awaits remain open. The [ABI closure plan](ABI-CLOSURE-PLAN.md)
 records eight source audits and implementation gates, not implemented coverage
 or a new readiness percentage.

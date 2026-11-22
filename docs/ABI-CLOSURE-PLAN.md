@@ -12,10 +12,18 @@ The decompiler baseline is committed `b404252`, including witness code `e639a66c
 
 ## What the evidence establishes
 
+**S01 qualified locally:** `d8a00e038263bcc28b2d340ea42dcd7c81d83cf5` removes
+the reproduced false super-result adoption. Twenty-one compiled mutations,
+2,075 enforcing tests, four-view/default-cost corpus comparison, the CLI
+matrix and original guarded apps qualify that bounded fix. See the
+[local verification record](STATUS.md#latest-local-verification-super-result-adoption).
+Spilled ARC and helper-mediated adoption remain conservative declines;
+publication and hosted verification are separate pending gates.
+
 | Finding | Evidence status | Immediate consequence |
 | --- | --- | --- |
-| An ordinary super message inside an ObjC initializer becomes `self = [super description]` | Reproduced wrong statement. An own-source ARC fixture and independent linked disassembly distinguish the description and init selectors using one Super2 stub. | Fix the shared initialization predicate first; preserve the ordinary message result. |
-| Generic class pack arguments prepend shape information | Compiler source and compiler IR establish the layout. The simple `typeOfA` probe currently declines. | Reject unsupported metadata layouts in every offset consumer, then implement their actual schema. Do not report a wrong rendered value from this probe. |
+| An ordinary super message inside an ObjC initializer became `self = [super description]` | Reproduced wrong statement at the audit baseline, fixed by locally qualified `d8a00e0`. The call result remains distinct and adoption shares a checked fact. | Preserve the bounded proof and qualify additional spilled/helper-mediated forms separately. |
+| A class type pack shifts scalar metadata and produces a wrong value-witness label | Reproduced in `PackBox.identityA` with Xcode Swift 6.4.0 and command-line Swift 6.4.2. The copy uses A metadata at byte 88 and the frozen decompiler labels it B. The paired ordinary `PlainBox.identityA` labels A correctly. | Reject pack/value headers and nonplain parameters in the scalar class metadata index. Verify both witness renders and the raw index before implementing the full pack layout. |
 | Integer fields separated by `Float16` remain distinct native pieces | Swift 6.4.2 IR for `{Int16, Float16, Int16}` has `(i16, half, i16)`. The chunk-set approximation loses this ordering; the tested render currently declines. | Replace unordered register counts with ordered pieces and test the four-component direct/indirect boundary. |
 | Awaited Int is lost across the following executor hop | The rebuilt acceptance test fails six expected assertions across filtered, array and streaming paths and both renderers. | Keep it red until context, lifetime, capture and runtime effects are proved; then use it as the first real transfer acceptance. |
 | The existing interface oracle compares entry-register sets | It excludes several aggregate, overflow and variadic forms and does not score ordered identity, results, error outcomes or async transport. | Extend the independent oracle before declaring ABI closure. |
@@ -59,7 +67,7 @@ Implement this incrementally behind existing consumers. It is not a replacement 
 
 - **V01:** Extend the compiler oracle to compare ordered source/SIL/native role mappings, not register sets. Include success/error/yield results, x8 versus ordinary output buffers, mixed banks, register overflow and exact stack bytes. Preserve each compiler/optimization/resilience configuration independently instead of dropping disagreements into one unchecked case. Report unchecked and unsupported cases with reasons.
 - **S01:** Fix F07 independently. Require a proven initializer-family message and applicable receiver before initializing self. Share the predicate between tracing and rendered statements. Test ordinary super messages inside an initializer, the actual super initializer, alternate search class/metaclass, same-name foreign messenger and unknown selector. Removing the selector, receiver or provider premise must each fail a targeted test.
-- **S02:** Guard the source-confirmed L02/L03/G07 mismatches before generalizing their consumers. Independently reproduce L06 nested Optional direct claims, E03 typed error projection, E10 helper identity/path provenance and F06 objc_direct inferred from absent metadata before promoting them to observed wrong-output bugs. If a current assertion cannot be justified, narrowly decline that fact while its general implementation is developed. A source-confirmed faulty premise can be guarded without first producing a wrong render. Preserve all existing tests.
+- **S02:** Guard the reproduced G07 witness-label defect and the source-confirmed L02/L03 mismatches before generalizing their consumers. Independently reproduce L06 nested Optional direct claims, E03 typed error projection, E10 helper identity/path provenance and F06 objc_direct inferred from absent metadata before promoting them to observed wrong-output bugs. If a current assertion cannot be justified, narrowly decline that fact while its general implementation is developed. A source-confirmed faulty premise can be guarded without first producing a wrong render. Preserve all existing tests.
 
 ### 1 Share boundary identity and ordered layout
 

@@ -62,6 +62,18 @@ Clang omits the SEL operand on direct calls and synthesizes _cmd if referenced i
 
 ### F07 — Super receiver/search provenance and false initializer recognition (confirmed wrong, reproduced)
 
+**Follow-up at `d8a00e038263bcc28b2d340ea42dcd7c81d83cf5`:** the reproduced
+false self assignment is fixed and locally qualified. Raw call results
+remain distinct; adoption requires exact provider/selector/receiver/search
+evidence, an own-ivar write and a complete post-call proof without old
+receiver or exposed-frame reads. Twenty-one compiled mutations include
+separate real-binary selector-family and search-class controls. The full
+enforcing suite passes 2,075 tests; corpus, CLI and guarded app changes are
+[recorded separately](../../STATUS.md#latest-local-verification-super-result-adoption).
+The consumer references and proposed work below describe the original
+audit baseline. General legacy/class/metaclass transport and additional
+ARC-local/helper-mediated adoption remain future qualification work.
+
 Super sends use an objc_super pair with receiver and search class/metaclass. Super2 starts lookup above the supplied class; the peer/legacy messenger uses the supplied search class. The same Super2 entry serves ordinary super calls. [Swift GenObjC.cpp:714–864](https://github.com/swiftlang/swift/blob/83eb12448e4323abbf81b0153dced2faff02d22f/lib/IRGen/GenObjC.cpp#L714-L864) [Clang CGObjCMac.cpp:114–156](https://github.com/swiftlang/llvm-project/blob/fb5f84d903a3b4e7aea15cd5666598a46f56c833/clang/lib/CodeGen/CGObjCMac.cpp#L114-L156) [Clang CGObjCMac.cpp:1987–2034](https://github.com/swiftlang/llvm-project/blob/fb5f84d903a3b4e7aea15cd5666598a46f56c833/clang/lib/CodeGen/CGObjCMac.cpp#L1987-L2034)
 
 - Consumer. ValueTracking.swift:1147 and :2265–2269 assign x0 to selfPointer solely for an initializer entry and a super-prefixed call. Disassembler.swift:13403–13409 emits selfInitialization on that same broad condition. An initializer can call an ordinary super method after super init. Its result then becomes self incorrectly when earlier void/result gates do not apply. Pseudo.swift:377 hard-codes receiver presentation as super from the prefix; Structurer.swift:1257 provides cleanup, not a receiver proof. Tools/synthcorpus/src/objc/supersend.m is an existing lead.
