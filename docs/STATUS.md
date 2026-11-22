@@ -20,6 +20,11 @@ gate and completed hosted CI each passed **2,069 tests / 43 suites**.
 - **CI build status.** Local `f25575f` propagates Swift failure through
   logging and passes the same 2,075-test enforcing suite plus independent
   shell failure controls. [CI behavior and logs](CI.md)
+- **Contributor checks.** Local `0376d7d` makes affected selection include
+  untracked files and fall back to full for unmapped/shared inputs. Its
+  isolated regression and 2,075-test enforcing suite pass. Run
+  `bash Tools/test-tier-contract.sh` for the fixture-free tooling check;
+  this checks test selection, not decompiler behavior.
 - **Next gates.** Publish the qualified super-result fix through the
   original gate, then qualify the scalar metadata guard separately.
   [ABI closure plan](ABI-CLOSURE-PLAN.md)

@@ -61,6 +61,30 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-22: conservative affected-test selection
+
+**FIXED locally at `0376d7d061dba870d7788ab4dc38605250c310d5`:** affected
+mode now includes untracked paths, preserves spaces and literal regex
+characters in test filenames, and runs the full enforcing suite for
+unmapped sources or shared test/build/tool/workflow inputs. Tooling
+Markdown retains the focused baseline. Missing comparison history or a
+failed Git query stops selection and names `Tools/test.sh full`.
+
+`bash Tools/test-tier-contract.sh` tests this selection with temporary Git
+repos and a Swift stub, requiring Bash, Git and Python 3, with no Swift
+toolchain or compiled fixtures. It checks the script rather than repeating
+the classifier in a second implementation. The old script and six isolated
+mutations each parse but fail at their predicted assertions. The intact
+test passes even with inherited Git pointers, hooks, signing and ignores
+aimed at a separate sentinel; the sentinel's bytes and modes are unchanged.
+
+After rebuilding, **2,075 tests / 43 suites pass (995.715 s)** with fixtures
+enforced. All **1,207 public / 915 fixture product hashes** stay fixed;
+debug binary bytes and frozen S01 release match. This changes contributor
+validation, not decompiler output or the historical accuracy scores.
+Original-gate publication and hosted verification of this change remain
+pending.
+
 ## 2026-11-22: authoritative CI build status
 
 **FIXED locally at `f25575fdce9a348d9e90b6ec9bb6e4b279d85fcc`:** the CI
