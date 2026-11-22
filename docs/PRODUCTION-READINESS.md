@@ -14786,7 +14786,7 @@ Frozen published-baseline/candidate release SHA256:
 `4c1e3e8540b1e9658b324838c2f1c0da44af12e0d0bbbbf15b7ab01243d4f0d4` /
 `b3fc8cbbe973e57a3e889e218e6fde41cc4a7eae84a77f61cdae0b14166de2b3`.
 **GATE PUBLISHED:** the original gate published `409165d`; its terminal
-results are recorded in the witness entry. Its hosted run remains in progress.
+results and successful hosted run are recorded in the witness entry.
 Values carried across awaits remain open. No scoring table or readiness
 percentage changes.
 
@@ -14846,6 +14846,25 @@ and `aad2983cbd6d04dc9a3e5adf12d7e9c04c35b7ed2095385cc5e9fe14b0c339ce`.
 
 **POST-REVIEW:** all **416 CLI runs / 16 inputs / 13 paths**, four guarded SDK rerenders and ten original-five-app renders match stdout, stderr and function headers. All **84,833 app headers/order** remain, no guard kills; maximum sampled app footprint **220 MB**.
 
+**GATE PUBLISHED:** the original gate published
+`1fc51d3b39592c4dc13c09b840efba98cf618d99`, containing witness code
+`e639a66cc91af43e131ec4bcbbe3e53c0f808e7c` and the compiler-grounded ABI
+plan. The independent gate passed **2,069 tests / 43 suites (1,034.073 s)**.
+All **1,123 audited source/test/fixture/tool/package inputs** matched the
+committed tree and frozen review bytes. All **3,088 renders**, **35 raw-checked
+declines** and **four SDK workloads** matched the published baseline and
+reviewed witness. All **3,092 cost rows** passed default budgets:
+instructions **8,761,250,332,465 -> 8,768,913,379,889 (+0.087465%)**;
+summed peaks **29,271,933,456 -> 29,075,146,744 bytes (-0.672271%)**.
+Gate release SHA-256:
+`bc7ad12bd26d3bc00e4a8fc3ad8d1602bfbf4c4048024cf1bbe3bb64f062a520`.
+
+[Hosted run 44998598514](https://github.com/CamdenBopp/swiftdc/actions/runs/44998598514)
+is in progress for `1fc51d3`; no hosted result is claimed for this slice.
+Values carried across awaits remain open. The [ABI closure plan](ABI-CLOSURE-PLAN.md)
+records eight source audits and implementation gates, not implemented coverage
+or a new readiness percentage.
+
 Reproduce after `swift build --build-tests` with
 `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter AsyncBranchWitnessTests`.
 Full suite: `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
@@ -14865,4 +14884,8 @@ the **35 checked preflight declines**. The gate passed **3,092 cost rows**.
 Versus its published baseline, instructions changed from
 **8,763,190,467,784 to 8,761,250,332,465 (−0.02214%)** and summed peaks
 from **29,009,332,384 to 29,271,933,456 bytes (+0.90523%)**.
-[Hosted run 44993492956](https://github.com/CamdenBopp/swiftdc/actions/runs/44993492956) for `409165d` remains in progress. This witness commit awaits its own original gate and hosted qualification. No readiness percentage changes.
+[Hosted run 44993492956](https://github.com/CamdenBopp/swiftdc/actions/runs/44993492956)
+completed successfully at `409165d`: the rebuilt enforcing **2,060 tests /
+43 suites passed (1,925.295 s)**. Terminal run/head, job steps and decoded
+suite log were checked. This covers transfer-edge code `1167e83`, not the
+later witness code. No readiness percentage changes.
