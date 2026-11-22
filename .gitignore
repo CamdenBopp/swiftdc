@@ -84,3 +84,5 @@ Fixtures/Sample/c-narrow-arguments-*-oracle
 Fixtures/Sample/narrow-integer-return-*-oracle
 
 Fixtures/Sample/async-outlined-context-*-oracle
+
+Fixtures/Sample/typed-error-inactive-*-oracle

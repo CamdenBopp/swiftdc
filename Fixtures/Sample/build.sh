@@ -420,6 +420,38 @@ $SWIFTC -sdk "$resilient_spec_sdk" -target arm64-apple-macosx15.0 -parse-as-libr
 $SWIFTC -sdk "$resilient_spec_sdk" -target arm64-apple-macosx15.0 -parse-as-library -O -emit-library -module-name RemoteClient resilienttypederror.swift -I . -L . -lRemoteErrors -Xlinker -rpath -Xlinker @loader_path -o libResilientTypedError.dylib
 $SWIFTC -sdk "$resilient_spec_sdk" -target arm64-apple-macosx15.0 -parse-as-library -Osize -emit-library -module-name RemoteClient resilienttypederror.swift -I . -L . -lRemoteErrors -Xlinker -rpath -Xlinker @loader_path -o libResilientTypedError.Osize.dylib
 
+echo "==> inactive register in an indirect typed throw (TypedErrorProbe, all levels)"
+(
+    typed_error_tmp=$(mktemp -d)
+    trap 'rm -rf -- "$typed_error_tmp"' EXIT
+    typed_error_sdk=$(xcrun --sdk macosx --show-sdk-path)
+    for level in Onone O Osize; do
+        module_dir="$typed_error_tmp/$level"
+        mkdir "$module_dir"
+        # Build one provider object per optimization mode for both link products.
+        swift_args=(-sdk "$typed_error_sdk" -target arm64-apple-macosx15.0
+                    -swift-version 6 -parse-as-library "-$level")
+        $SWIFTC "${swift_args[@]}" -module-name TypedErrorProbe -whole-module-optimization \
+            -emit-module -emit-module-path "$module_dir/TypedErrorProbe.swiftmodule" \
+            typed_error_inactive_provider.swift typed_error_four_words.swift
+        $SWIFTC "${swift_args[@]}" -module-name TypedErrorProbe -whole-module-optimization \
+            -emit-object typed_error_inactive_provider.swift typed_error_four_words.swift \
+            -o "$module_dir/provider.o"
+        for tag in 0 1; do
+            $CLANG -target arm64-apple-macosx15.0 -isysroot "$typed_error_sdk" \
+                "-DINACTIVE_X0=$tag" -c typed_error_inactive_veneer.S -o "$module_dir/veneer.o"
+            $SWIFTC "${swift_args[@]}" -emit-library "$module_dir/provider.o" "$module_dir/veneer.o" \
+                -Xlinker -install_name -Xlinker @rpath/libTypedErrorProbe.dylib \
+                -o "libTypedErrorInactive$tag.$level.dylib"
+        done
+        # Use one client for both variants. The test stages each library under
+        # its common install name next to a copy of that same executable.
+        $SWIFTC "${swift_args[@]}" -module-name WrappedClientV2 -I "$module_dir" \
+            -L "$PWD" "-lTypedErrorInactive0.$level" typed_error_inactive_client.swift \
+            -Xlinker -rpath -Xlinker @executable_path -o "typed-error-inactive-$level-oracle"
+    done
+)
+
 echo "==> conditions comparing against a literal holding a quote (quoted_conditions.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name QuotedConditions quoted_conditions.swift -o libQuotedConditions.dylib
 

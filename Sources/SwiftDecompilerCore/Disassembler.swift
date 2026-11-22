@@ -8601,6 +8601,48 @@ public struct Disassembler: Sendable {
         return String(type)
     }
 
+    /// A synchronous free function returning five independent Swift.UInt64
+    /// components cannot use the combined native result/error register schema.
+    /// The loadable layout exceeds Swift's four-component register budget;
+    /// an address-only formal also requires separate typed-error storage.
+    /// This is a veto on x0, not proof of the transport of any other result.
+    static func hasIndirectFiveWordTypedThrowResult(
+        _ function: DisassembledFunction, fieldMaps: [String: FieldMap]
+    ) -> Bool {
+        guard function.source == .symbol, function.objcMethod == nil else { return false }
+        let symbol = function.symbol
+        let mangled = symbol.hasPrefix("_$s") ? String(symbol.dropFirst()) : symbol
+        guard mangled.hasPrefix("$s"),
+              let global = try? demangleAsNode(mangled), global.kind == .global, global.children.count == 1,
+              let declaration = global.children.first, declaration.kind == .function,
+              let context = declaration.children.first, context.kind == .module, let module = context.text,
+              let typeNode = declaration.children.last, typeNode.kind == .type,
+              typeNode.children.count == 1,
+              let type = typeNode.children.first, type.kind == .functionType,
+              !type.children.contains(where: { $0.kind == .asyncAnnotation }),
+              type.children.contains(where: { $0.kind == .typedThrowsAnnotation }),
+              let resultNode = type.children.first(where: { $0.kind == .returnType }),
+              resultNode.children.count == 1,
+              let resultType = resultNode.children.first, resultType.kind == .type,
+              resultType.children.count == 1, let result = resultType.children.first,
+              result.kind == .structure, result.children.count == 2,
+              let owner = result.children.first, owner.kind == .module, owner.text == module,
+              let name = result.children.last, name.kind == .identifier, let nominal = name.text,
+              let map = fieldMaps["\(module).\(nominal)"],
+              map.isStruct == true, map.isGeneric == false, map.trustLimitReason == nil,
+              map.instanceSize == 40, map.trustedOffsetLimit == 40
+        else { return false }
+
+        let fields = map.fields
+        guard fields.count == 5 else { return false }
+        return fields.enumerated().allSatisfy { index, field in
+            guard field.offset == index * 8, field.bytes == 8 else { return false }
+            let spelling = FieldMap.printableTypeName(
+                mangled: field.typeMangledName, resolved: map.fieldTypeNames[field.name])
+            return spelling == "s6UInt64V" || spelling == "Swift.UInt64"
+        }
+    }
+
     /// A field map for a demangled type name.
     /// A qualified type name requires its own descriptor's map; simple keys
     /// serve genuinely unqualified names.
@@ -12670,6 +12712,8 @@ public struct Disassembler: Sendable {
                 }
                 return signature
             } : nil
+        let typedErrorX0IsInactive = throwsSignature?.thrownType != nil
+            && Self.hasIndirectFiveWordTypedThrowResult(function, fieldMaps: typeFieldMaps)
         // An async throwing function returns through its context's
         // ResumeParent with the error in x20, zero for none: `swift_allocError`
         // then `mov x20, x0; br x0` throws, `mov x20, #0; br x1` returns. A
@@ -13547,10 +13591,10 @@ public struct Disassembler: Sendable {
                 sourceNotes.append(DisassembledFunction.thenThrowNote)
             }
             if throwExits.contains(insn.address) {
-                // A typed error small enough to travel in x0 names its case when
-                // the error type is a no-payload enum; anything else is `?`.
+                // The normal result and typed error can share native return
+                // registers only when both qualify for the combined schema.
                 var thrown = "?"
-                if let errorType = throwsSignature?.thrownType,
+                if let errorType = throwsSignature?.thrownType, !typedErrorX0IsInactive,
                    case .immediate(let tag)? = analysis.exitValues[insn.address].map(sanitizeValue),
                    tag <= UInt64(Int.max),
                    let caseName = enumCaseIndex.caseName(ofEnum: errorType, tag: Int(tag)) {
