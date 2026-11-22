@@ -10,12 +10,12 @@ suite cannot run an older test binary after that failure. The `suite-log`
 artifact retains `build.log` and any `suite.log` produced by the run.
 
 The latest verified published result is
-[run 44998598514 at `1fc51d3`](https://github.com/CamdenBopp/swiftdc/actions/runs/44998598514):
-**2,069 fixture-enforced tests / 43 suites (1,893.323 s)**. The
+[run 45012625048 at `72c9879`](https://github.com/CamdenBopp/swiftdc/actions/runs/45012625048):
+**2,075 fixture-enforced tests / 43 suites (1,583.991 s)**. The
 exit-status fix `f25575f` passed 2,075 local tests and its shell failure
 controls and was published in `72c9879` through the original release gate.
-Its [hosted run 45012625048](https://github.com/CamdenBopp/swiftdc/actions/runs/45012625048)
-is still in progress; hosted verification remains pending.
+That hosted run passed both Build and Enforcing suite and uploaded both
+logs in the `suite-log` artifact.
 See [current status](STATUS.md#current-status) for later qualifications.
 The older job notes below are historical, including their pending labels.
 

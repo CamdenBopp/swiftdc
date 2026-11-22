@@ -61,6 +61,51 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-22: scalar class metadata admission
+
+**FIXED locally at `e79529936abfe05855add423752f32bd6e9504e1`:**
+`PackBox<A, each T>.identityA` uses A's copy witness, but the scalar class
+index called it B. The [paired fixture](../Fixtures/Sample/generic_class_packs.swift)
+and independently decoded descriptor/instructions show the pack shape
+length at +0x50, A metadata at +0x58 and the metadata pack at +0x60.
+Ordinary `PlainBox<A, B>` instead has A at +0x50.
+
+Scalar names now require known header flags, no pack/value trailers,
+plain keyed type parameters and enough key words. The existing witness
+suffix proof remains separate. The real regression fails before the fix;
+six individually compiled mutations fail the consumer assertion for the
+pack trailer, value trailer, parameter kind, key bit, unknown header flags
+and short key count. Restored **10 focused tests** pass. No existing tests
+were removed.
+
+After rebuilding, **2,078 fixture-enforced tests / 43 suites pass
+(968.792 s)**. All **1,210 public inputs / 918 fixture products** stay fixed
+through qualification and postchecks. Frozen release SHA-256:
+`c8c14048b0886116d01d6ad0e13cd5382bb71742d5ff3cfaf6e319b0fb6626db`.
+
+The full **778-input / 3,112-render** comparison changes only two transfers
+in each view: `-Onone` keeps the call, recovered arguments and return;
+`-O` keeps the unresolved branch. Both lose the false B name. PlainBox,
+`typeOfA`, `-Osize` and all other output remain identical, including **35
+independently confirmed preflight declines**. All four SDK outputs match.
+All **3,116 default-budget rows** pass: instructions
+**8,793,503,290,279 → 8,796,820,952,581 (+0.03773%)**; summed peak physical
+footprints **29,251,768,904 → 29,240,428,560 bytes (−0.03877%)**.
+
+All **494 CLI invocations / 247 pairs** succeed across 19 inputs and 13
+paths. The 16 changed pairs are these same two sites on eight affected
+paths; all headers, order and stderr match. The original 16-input matrix
+is retained, with historical digests checked separately from current
+paths. One rebuilt input differs only in UUID and code-signature bytes.
+All **five original apps / 10 guarded runs / 84,833 headers per binary**
+have identical output; peak sampled footprint is **227 MB**. No private
+app bodies or strings are committed.
+
+**OPEN:** G07 positive scalar metadata recovery in pack/value layouts.
+This fix declines unproved names; it does not implement shape-class,
+metadata-pack or witness-pack roles. Publication and hosted verification
+of this change remain pending.
+
 ## 2026-11-22: test-tier guidance and published super-result verification
 
 **FIXED locally at `f5a4471`:** `Tools/test.sh` now reports selected filters
@@ -87,7 +132,8 @@ Independent published-binary reruns match all **208 CLI checks** and the
 checks compare actual output bytes, with no app bodies committed.
 
 The [hosted run for `72c9879`](https://github.com/CamdenBopp/swiftdc/actions/runs/45012625048)
-is in progress; no hosted pass is claimed. This publication record
+passed **2,075 fixture-enforced tests / 43 suites (1,583.991 s)**, with Build
+and Enforcing suite both successful and both logs uploaded. This publication record
 supersedes the earlier pending publication statements for the super-result
 and CI build-status changes, retaining their original local measurements.
 

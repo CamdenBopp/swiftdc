@@ -62,4 +62,29 @@ swiftdc disasm work/abi-gap-audit-repro/libGenericPackProbe.dylib --structured -
 
 The published gate binary incorrectly labels the copy witness B on the original Xcode Swift 6.4.0 probe and the command-line Swift 6.4.2 paired fixture. The latter also includes the same noinline `identityA` method in an ordinary `PlainBox<A, B>`, whose copy witness is correctly named A. The distinct `typeOfA` probe has no witness call and still renders `return ?`. The narrow G07 fix must remove the false B label, preserve the ordinary A label, and decline the scalar metadata index when the descriptor's pack/value header or parameter kind prevents proof.
 
-Captured artifacts are under ignored `work/abi-gap-audit`. `g07-GenericClassPacks.swift` is the paired source, `libGenericClassPacks.clt.dylib` its 6.4.2 build, and `g07-paired-clt-baseline.txt` its render. `g07-identityA-baseline.txt` and `g07-identityA-disassembly.txt` are the original 6.4.0 render and raw disassembly. `g07.patch` drafts the guard and paired regression for a separate implementation commit.
+Local follow-up `e795299` removes the false name and preserves the ordinary
+A control. The committed paired source is now
+[`Fixtures/Sample/generic_class_packs.swift`](../../../../Fixtures/Sample/generic_class_packs.swift),
+built at all three optimization levels. Reproduce its enforcing checks and
+the optimized render with:
+
+```sh
+Tools/fixtures.sh
+Tools/test.sh file GenericClassPackIndexTests GenericClassPackGuardIsolationTests
+swift build -c release --scratch-path .build-release
+.build-release/release/swiftdc disasm Fixtures/Sample/libGenericClassPacks.dylib --structured --function=identityA
+```
+
+PackBox now shows the unresolved indirect branch; PlainBox retains A's
+copy witness. The `-Onone` case retains an unresolved call and its return.
+The `-Osize` outlined-helper render is unchanged. The full enforcing suite
+passes 2,078 tests / 43 suites; full four-view, default-cost and CLI/app
+checks pass. Positive scalar names within packed layouts remain open.
+
+Historical captured artifacts remain under ignored `work/abi-gap-audit`.
+`g07-GenericClassPacks.swift` is the original paired source,
+`libGenericClassPacks.clt.dylib` its 6.4.2 build, and
+`g07-paired-clt-baseline.txt` its old render. `g07-identityA-baseline.txt`
+and `g07-identityA-disassembly.txt` are the original 6.4.0 render and raw
+disassembly. `g07.patch` is an earlier draft; the committed fixture and
+tests are authoritative for the implemented guard.
