@@ -61,6 +61,39 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: sprint E10-a, error-runtime helpers recognized by prefix
+
+**FIXED (soundness), for authored code.** Eighth sprint of
+[ABI-SPRINTS.md](ABI-SPRINTS.md). A throwing function's exit is a throw
+when x21 holds a fresh `swift_allocError` box or the value
+`swift_willThrow` was called with. Both were recognized by a name prefix.
+Compiler-emitted code does not reach the gap: a Swift function that calls
+a returning `swift_willThrowLookalike` renders its call and a normal
+return. An authored body does. One that copies the null result of
+`swift_allocErrorLog` to x21 and returns normally rendered `throw ?`, and
+one that calls `swift_willThrowLookalike` with x21 zero rendered
+`throw 0`.
+
+The allocator is now the exact name `swift_allocError` with its library
+binding, so an in-image function of that name is excluded too. The hooks
+are their three exact names. Fixture `errorlookalike.s` with
+`errorlookalike.c`.
+
+Against `4fb7ead`, the blast radius moves only the new fixture (6 lines in
+each text view, 12 in JSON): every genuine allocator call keeps its
+binding. With the allocator never recognized, 13 or more images lose a
+`throw ?` (for one, `AsyncFns.fetchOrThrow`, whose async return carries
+the box and nothing else), so that path is live and a control pins it.
+Over 3,240 renders, instructions retired moved -0.04% and summed peak
+footprint -0.63%.
+
+**OPEN:** the provider table does not list `swift_willThrow`, so the
+hooks cannot be asked for a binding: an in-image function named exactly
+`swift_willThrow` is still trusted. Sprint E10-b covers hook evidence
+leaking across paths.
+
+The gate passed `4fb7ead` (sprint O06-a) with 2,133 tests.
+
 ## 2026-11-23: sprint O06-a, a field carried across an access marker's name twin
 
 **FIXED (soundness).** Seventh sprint of [ABI-SPRINTS.md](ABI-SPRINTS.md).

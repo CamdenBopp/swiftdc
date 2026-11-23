@@ -12815,6 +12815,18 @@ public struct Disassembler: Sendable {
         // x20` with nothing writing x20 since. Both rendered as a bare
         // `return` (`if (x20 == 0) { return (awaited1 << 1) } else { return }`).
         let opaqueErrorProofTransfer = originalIndirectExitTransfers.contains { !asyncReturns.contains($0) }
+        /// A call to the runtime's own `swift_allocError`: that exact name,
+        /// bound to the library's function. Its result is a fresh error
+        /// box, never null. A prefix admitted any function spelled
+        /// `swift_allocError…`: one that returns null, copied to x21 before
+        /// a normal return, rendered `throw ?`.
+        func allocatesErrorBox(at site: UInt64) -> Bool {
+            guard let insn = function.instructions.first(where: { $0.address == site }) else { return false }
+            return DisassembledFunction.calleeName(of: insn) == "swift_allocError" && insn.facts.namedABIContract
+        }
+        /// The runtime's throw hooks, by their exact names. The provider
+        /// table does not list `swift_willThrow`, so no binding is asked.
+        let willThrowHooks: Set<String> = ["swift_willThrow", "swift_willThrowTyped", "swift_willThrowTypedImpl"]
         let asyncThrowExits: Set<UInt64> = {
             guard throwsSignature?.isThrowing == true, !asyncReturns.isEmpty else { return [] }
             var exits = Set<UInt64>()
@@ -12859,9 +12871,7 @@ public struct Disassembler: Sendable {
                 case .immediate(let value)?:
                     if value != 0 { exits.insert(address) }
                 case .callResult(let site)?:
-                    let callee = function.instructions.first { $0.address == site }
-                        .flatMap(DisassembledFunction.calleeName(of:)) ?? ""
-                    if callee.hasPrefix("swift_allocError") { exits.insert(address) }
+                    if allocatesErrorBox(at: site) { exits.insert(address) }
                 default:
                     if let block = blockOf[address], guardedNonZero(block, before: address, depth: 0) {
                         exits.insert(address)
@@ -12880,15 +12890,14 @@ public struct Disassembler: Sendable {
         // `swift_allocError`.
         let willThrowErrors: [AbstractValue] = function.instructions.compactMap { insn in
             guard insn.controlFlow == .call,
-                  DisassembledFunction.calleeName(of: insn).map({ $0.hasPrefix("swift_willThrow") }) == true,
+                  DisassembledFunction.calleeName(of: insn).map(willThrowHooks.contains) == true,
                   let error = analysis.callSites[insn.address]?.errorValue
             else { return nil }
             return error
         }
         func isErrorBox(_ value: AbstractValue) -> Bool {
             guard case .callResult(let site) = value else { return false }
-            return function.instructions.first { $0.address == site }
-                .flatMap(DisassembledFunction.calleeName(of:))?.hasPrefix("swift_allocError") == true
+            return allocatesErrorBox(at: site)
         }
         /// Whether x21 at an exit is a proven thrown error: a non-zero flag
         /// (typed throws), a fresh `swift_allocError` box, or the error
@@ -12900,9 +12909,7 @@ public struct Disassembler: Sendable {
             switch value {
             case .immediate(let flag): return flag != 0
             case .callResult(let site):
-                let callee = function.instructions.first { $0.address == site }
-                    .flatMap(DisassembledFunction.calleeName(of:)) ?? ""
-                return callee.hasPrefix("swift_allocError")
+                return allocatesErrorBox(at: site)
             default: return false
             }
         }

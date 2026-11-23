@@ -371,6 +371,9 @@ $SWIFTC -suppress-warnings -enforce-exclusivity=unchecked -parse-as-library -O -
 $SWIFTC -suppress-warnings -enforce-exclusivity=unchecked -parse-as-library -Onone -emit-library -module-name AccessTwin accesstwin.swift accesstwin.o -o libAccessTwin.onone.dylib
 rm -f accesstwin.o
 
+echo "==> throwing functions that call returning lookalikes of the error runtime (errorlookalike.s + errorlookalike.c, -O2)"
+$CLANG -O2 -dynamiclib errorlookalike.c errorlookalike.s -o libErrorLookalike.dylib
+
 echo "==> throws(Never) specializations serialized by an -O library and emitted by an -Onone client (typedthrowsnever_lib.swift -O, typedthrowsnever.swift -Onone)"
 $SWIFTC -parse-as-library -O -emit-library -emit-module -module-name TypedThrowsNeverLib typedthrowsnever_lib.swift -o libTypedThrowsNeverLib.dylib
 $SWIFTC -parse-as-library -Onone -emit-library -module-name TypedThrowsNever typedthrowsnever.swift -I . -L . -lTypedThrowsNeverLib -o libTypedThrowsNever.dylib
