@@ -9464,6 +9464,9 @@ public struct Disassembler: Sendable {
                   !ownAddresses.contains(target),
                   let summary = registerSummaries[target], !summary.mayWriteResult, !summary.mayWriteFloatResult,
                   summary.storesOnlyToStack,
+                  // Entered, it must return: a body that keeps x0 but can
+                  // trap or loop is still a call the reader has to see.
+                  summary.leavesOnlyThroughReturn,
                   // x21 is Swift's error register: a body that may leave
                   // another value there changes a throwing caller's outcome
                   // after the branch, where its exit was read.

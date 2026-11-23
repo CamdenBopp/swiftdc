@@ -27,6 +27,8 @@ struct CalleeRegisterFacts: Sendable {
     /// ordinary opaque ABI's callee-saved default is not this proof.
     var bodyPreservesSwiftError = false
     let storesOnlyToStack: Bool
+    /// `CalleeRegisterSummary.leavesOnlyThroughReturn`.
+    let leavesOnlyThroughReturn: Bool
     let writesNoFields: Bool
     let memoryEffect: CalleeMemoryEffect
     /// `CalleeRegisterSummary.provenAllocationSites`, for the function's own
@@ -65,6 +67,7 @@ struct CalleeRegisterFacts: Sendable {
         provenEntryRegisterReads = summary.provenEntryRegisterReads
         clobberedCalleeSaved = summary.clobberedCalleeSaved
         storesOnlyToStack = summary.storesOnlyToStack
+        leavesOnlyThroughReturn = summary.leavesOnlyThroughReturn
         writesNoFields = summary.writesNoFields
         memoryEffect = summary.memoryEffect
         provenAllocationSites = summary.provenAllocationSites

@@ -356,6 +356,11 @@ $SWIFTC -parse-as-library -Onone -emit-library -module-name CastTargets casttarg
 echo "==> a throw that shares its exit block with the return (deferthrow.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name DeferThrow deferthrow.swift -o libDeferThrow.dylib
 
+echo "==> a tail branch into a body that keeps x0 but may trap or loop (traptail.swift, -O, stripped)"
+$SWIFTC -parse-as-library -O -emit-library -module-name TrapTail traptail.swift -o libTrapTail.dylib
+cp libTrapTail.dylib libTrapTail.stripped.dylib
+strip -x libTrapTail.stripped.dylib 2>/dev/null || strip libTrapTail.stripped.dylib
+
 echo "==> throws(Never) specializations serialized by an -O library and emitted by an -Onone client (typedthrowsnever_lib.swift -O, typedthrowsnever.swift -Onone)"
 $SWIFTC -parse-as-library -O -emit-library -emit-module -module-name TypedThrowsNeverLib typedthrowsnever_lib.swift -o libTypedThrowsNeverLib.dylib
 $SWIFTC -parse-as-library -Onone -emit-library -module-name TypedThrowsNever typedthrowsnever.swift -I . -L . -lTypedThrowsNeverLib -o libTypedThrowsNever.dylib

@@ -61,6 +61,34 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: sprint E07-b, a tail into a body that may not return
+
+**FIXED (soundness).** Fourth sprint of [ABI-SPRINTS.md](ABI-SPRINTS.md).
+A tail branch to a body that writes neither x0 nor v0 and stores only to
+its stack is folded into the caller's return of x0. Nothing asked whether
+the body returns. With symbols the callee is named and its call was
+always shown. Stripped, `wrapNonZero(x) { nonZero(x) }`, whose callee is
+`precondition(x != 0); return x`, rendered `return arg0`: the precondition
+was gone, with every sign that another body runs. A callee that loops
+forever on one input rendered the same.
+
+The callee summary records `leavesOnlyThroughReturn`: no trap instruction
+and no branch back into the body. The fold requires it. Without it the
+transfer stays, as `sub_3c0(arg0)`. A callee that is a lone `ret` still
+folds. Fixture `traptail.swift`, with and without symbols.
+
+Against `c6f6e08`, the blast radius moves only the new fixture: 6 lines in
+each pseudocode view for the stripped image, and in the listing 6 more for
+the image with symbols, where each tail call carried a second note,
+`return arg0`, beside its `return TrapTail.nonZero(arg0)`. No existing
+fixture and neither swift-syntax dylib changed. Over 3,220 renders,
+instructions retired moved +0.35% and summed peak footprint -0.20%.
+
+**OPEN:** the kept transfer prints as a call statement, not `return
+sub_3c0(arg0)`: an unnamed body has no signature to say it returns a
+value. A body that falls off its end is not treated as not returning; no
+fixture reaches that.
+
 ## 2026-11-23: sprint E05-a, a throw printed ahead of work it shares
 
 **FIXED (soundness), by declining.** Third sprint of

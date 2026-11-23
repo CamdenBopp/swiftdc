@@ -235,6 +235,14 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// True when nothing is known.
     var readsSelfRegister = true
     var storesOnlyToStack = false
+    /// The body has no trap instruction and no branch back into itself (a
+    /// loop need not end). With no call and no branch out, which
+    /// `mayWriteResult` already records, it returns once entered. A body
+    /// that keeps x0 but
+    /// can trap is not its caller's `return` of x0: a tail branch into
+    /// `precondition(x != 0); return x` rendered `return arg0`. False until
+    /// proven.
+    var leavesOnlyThroughReturn = false
     /// The body writes no field of any object, nor does anything it calls
     /// (`closeOverFieldWrites`): an outlined fragment that tail-calls
     /// `swift_beginAccess`. False until proven.
@@ -347,7 +355,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         memoryEffect: CalleeMemoryEffect = .unknown, inputProofEntry: UInt64? = nil, pureTailTarget: UInt64? = nil,
         framedCallTarget: UInt64? = nil, hasOpaqueInputTransfer: Bool = false,
         hasProvenReturnTargets: Bool = false, needsReturnPreservation: Bool = false,
-        hasUnresolvedSwiftErrorCall: Bool = true
+        hasUnresolvedSwiftErrorCall: Bool = true, leavesOnlyThroughReturn: Bool = false
     ) {
         self.floatArgumentWidths = floatArgumentWidths
         self.resultReads = resultReads
@@ -384,6 +392,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         self.hasProvenReturnTargets = hasProvenReturnTargets
         self.needsReturnPreservation = needsReturnPreservation
         self.hasUnresolvedSwiftErrorCall = hasUnresolvedSwiftErrorCall
+        self.leavesOnlyThroughReturn = leavesOnlyThroughReturn
     }
 
     /// Each call once, indirect calls first, then by target.
@@ -661,6 +670,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         var callees = Set(preservedFacts?.callees ?? [])
         var outgoingCalls: [OutgoingCall] = preservedFacts?.outgoingCalls ?? []
         var storesOnlyToStack = preservedFacts?.storesOnlyToStack ?? true
+        var leavesOnlyThroughReturn = preservedFacts?.leavesOnlyThroughReturn ?? true
         var hasUnmodelledFallthrough = false
         var writesResult = preservedFacts?.mayWriteResult ?? false
         for insn in preservedFacts == nil ? instructions : [] {
@@ -668,6 +678,16 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             if insn.controlFlow != .return && insn.controlFlow != .branch {
                 let (next, overflow) = insn.address.addingReportingOverflow(4)
                 if overflow || !addresses.contains(next) { hasUnmodelledFallthrough = true }
+            }
+            if [AARCH64_INS_BRK, AARCH64_INS_UDF, AARCH64_INS_HLT].contains(detail.id) {
+                leavesOnlyThroughReturn = false
+            }
+            // A target at or before the branch, inside the body, closes a
+            // loop. A branch out of the body, or through a register, is
+            // already a possible result write (`writesResult`).
+            if insn.controlFlow == .branch || insn.controlFlow == .conditionalBranch,
+               let target = insn.branchTarget, addresses.contains(target), target <= insn.address {
+                leavesOnlyThroughReturn = false
             }
             if detail.writtenRegisterKeys.contains("x0")
                 || insn.controlFlow == .call
@@ -830,6 +850,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             pureTailTarget: readFacts?.pureTailTarget ?? pureTailTarget(of: function, isFunction: isFunction),
             framedCallTarget: readFacts?.framedCallTarget ?? framedCallTarget(of: function, isFunction: isFunction),
             hasProvenReturnTargets: hasProvenReturnTargets, needsReturnPreservation: needsReturnPreservation)
+        summary.leavesOnlyThroughReturn = leavesOnlyThroughReturn
         summary.hasUnresolvedSwiftErrorCall = preservedFacts?.hasUnresolvedSwiftErrorCall
             ?? (hasUnmodelledFallthrough || outgoingCalls.contains { call in
                 guard let target = call.target else { return true }
@@ -1292,7 +1313,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             outgoingCalls: outgoingCalls, storesOnlyToStack: storesOnlyToStack, memoryEffect: memoryEffect,
             inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget, framedCallTarget: framedCallTarget,
             hasProvenReturnTargets: hasProvenReturnTargets, needsReturnPreservation: needsReturnPreservation,
-            hasUnresolvedSwiftErrorCall: hasUnresolvedSwiftErrorCall)
+            hasUnresolvedSwiftErrorCall: hasUnresolvedSwiftErrorCall,
+            leavesOnlyThroughReturn: leavesOnlyThroughReturn)
         summary.mayWriteResult = mayWriteResult
         summary.resultReads = resultReads
         summary.provenAllocationSites = provenAllocationSites
@@ -1473,7 +1495,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 inputProofEntry: old.inputProofEntry, pureTailTarget: old.pureTailTarget, framedCallTarget: old.framedCallTarget,
                 hasOpaqueInputTransfer: old.hasOpaqueInputTransfer,
                 hasProvenReturnTargets: rebuilt.hasProvenReturnTargets, needsReturnPreservation: rebuilt.needsReturnPreservation,
-                hasUnresolvedSwiftErrorCall: old.hasUnresolvedSwiftErrorCall)
+                hasUnresolvedSwiftErrorCall: old.hasUnresolvedSwiftErrorCall,
+                leavesOnlyThroughReturn: old.leavesOnlyThroughReturn)
             // The sites change no other summary, so they take no part in
             // the fixpoint's comparison: a change to them alone updates in
             // place.
