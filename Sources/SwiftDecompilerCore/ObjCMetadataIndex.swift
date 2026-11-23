@@ -611,6 +611,80 @@ public struct ObjCMetadataIndex: Sendable {
     /// out once. `-owner` implemented by 1,600 classes and sent from 3,200
     /// methods parsed 1,600 type encodings per send: 3,066 of 4,244 samples.
     private let sendFacts = SelectorSendFacts()
+    /// The addresses some instruction of the image branches straight to,
+    /// scanned on first use. Nil for an index built without its image.
+    private(set) var directBranches: DirectBranchTargets? = nil
+
+    /// Whether a `bl` or `b` in the image's code targets `address`. A
+    /// direct method is called by its symbol, so somewhere one does. An
+    /// implementation that is only installed at runtime is reached through
+    /// its address as data, and nothing branches to it.
+    func isBranchedToDirectly(_ address: UInt64) -> Bool {
+        directBranches?.contains(address) ?? false
+    }
+
+    /// Every target of a direct `b` or `bl` in the image's executable
+    /// sections, read as words: no decode, no function boundaries, so the
+    /// answer is the same on every entry path, filtered or not.
+    final class DirectBranchTargets: @unchecked Sendable {
+        private let lock = NSLock()
+        private var targets: Set<UInt64>?
+        private let machO: MachOFile
+
+        init(_ machO: MachOFile) { self.machO = machO }
+
+        func contains(_ address: UInt64) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            if targets == nil { targets = Self.scan(machO) }
+            return targets?.contains(address) ?? false
+        }
+
+        /// `b` is `000101 imm26` and `bl` is `100101 imm26`: bits 30…26 are
+        /// `00101` for both, and the target is the word's address plus the
+        /// sign-extended offset times four.
+        static func targets(inWords words: [UInt32], at base: UInt64) -> Set<UInt64> {
+            var result = Set<UInt64>()
+            for (index, word) in words.enumerated() where word & 0x7C00_0000 == 0x1400_0000 {
+                let offset = Int64(Int32(bitPattern: word << 6) >> 6) * 4
+                let (site, carry) = base.addingReportingOverflow(UInt64(index) * 4)
+                guard !carry else { continue }
+                result.insert(UInt64(bitPattern: Int64(bitPattern: site) &+ offset))
+            }
+            return result
+        }
+
+        private static func scan(_ machO: MachOFile) -> Set<UInt64> {
+            var result = Set<UInt64>()
+            for section in machO.sections where section.segmentName == "__TEXT" && section.size >= 4 {
+                let attributes = section.flags.attributes
+                guard section.sectionName == "__text" || attributes.contains(.pure_instructions)
+                        || attributes.contains(.some_instructions) else { continue }
+                let base = UInt64(section.address)
+                guard let words = words(at: base, count: section.size / 4, in: machO) else { continue }
+                result.formUnion(targets(inWords: words, at: base))
+            }
+            return result
+        }
+
+        private static func words(at address: UInt64, count: Int, in machO: MachOFile) -> [UInt32]? {
+            if machO.isLoadedFromDyldCache, let full = machO.fullCache,
+               let fullOffset = full.fileOffset(of: address),
+               let subcache = full.cache(forFileOffset: fullOffset),
+               let url = full.url(forFileOffset: fullOffset),
+               let localOffset = subcache.fileOffset(of: address),
+               let handle = try? FileHandle(forReadingFrom: url) {
+                defer { try? handle.close() }
+                guard (try? handle.seek(toOffset: localOffset)) != nil,
+                      let data = try? handle.readDrained(upToCount: count * 4), data.count == count * 4
+                else { return nil }
+                return data.withUnsafeBytes { raw in
+                    (0..<count).map { raw.loadUnaligned(fromByteOffset: $0 * 4, as: UInt32.self) }
+                }
+            }
+            return try? machO.readElements(offset: machO.resolveOffset(at: address), numberOfElements: count)
+        }
+    }
 
     /// The facts of one selector's instance or class methods.
     private struct SendFacts {
@@ -878,6 +952,7 @@ public struct ObjCMetadataIndex: Sendable {
             fieldMaps: buildFieldMaps(classes: snapshot.classes)
         )
         index.classObjectNames = snapshot.classObjects
+        index.directBranches = DirectBranchTargets(machO)
         return index
     }
 

@@ -6453,15 +6453,22 @@ public struct Disassembler: Sendable {
     }
 
     /// A direct Objective-C method: its symbol names a method (`-[C sel]` or
-    /// `-[C(Category) sel]`) of a class this image defines, and its IMP is in
-    /// no method list. Every other method of such a class is listed, in its
-    /// class's or a category's list; a direct one is called by its symbol and
-    /// takes no `_cmd`. A category IMP added at runtime without metadata is
-    /// on a class another image defines, so it is not taken for one.
+    /// `-[C(Category) sel]`) of a class this image defines, its IMP is in
+    /// no method list, and some instruction branches straight to it. Every
+    /// other method of such a class is listed, in its class's or a
+    /// category's list; a direct one is called by its symbol and takes no
+    /// `_cmd`. A category IMP added at runtime without metadata is on a
+    /// class another image defines, so it is not taken for one.
+    ///
+    /// The missing list entry is not enough alone. An ordinary IMP named
+    /// like a method and installed with `class_addMethod` has none either,
+    /// and takes `_cmd`: read as direct, its arguments were one register
+    /// early. Nothing branches to that one; its address is only data.
     static func isDirectObjCMethod(_ symbol: String, at address: UInt64, in objcIndex: ObjCMetadataIndex) -> Bool {
         guard objcIndex.binding(for: address) == nil,
-              let className = objcClassName(fromSymbol: symbol) else { return false }
-        return objcIndex.classObjectNames.values.contains(className)
+              let className = objcClassName(fromSymbol: symbol),
+              objcIndex.classObjectNames.values.contains(className) else { return false }
+        return objcIndex.isBranchedToDirectly(address)
     }
 
     private static func objcEntryFromSymbol(_ symbol: String) -> MethodEntryConvention? {

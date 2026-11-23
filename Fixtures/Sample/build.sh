@@ -380,6 +380,9 @@ $CLANG -dynamiclib hookpath.s -L"$(xcrun --show-sdk-path)/usr/lib/swift" -lswift
 echo "==> stubs shaped like selector stubs that do not send (selectorstubshape.s)"
 $CLANG -arch arm64 -dynamiclib selectorstubshape.s -o libSelectorStubShape.dylib
 
+echo "==> an ordinary IMP with a method's symbol name and no method-list record (lateimp.m, -O1)"
+$CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation lateimp.m -o libLateIMP.dylib
+
 echo "==> throws(Never) specializations serialized by an -O library and emitted by an -Onone client (typedthrowsnever_lib.swift -O, typedthrowsnever.swift -Onone)"
 $SWIFTC -parse-as-library -O -emit-library -emit-module -module-name TypedThrowsNeverLib typedthrowsnever_lib.swift -o libTypedThrowsNeverLib.dylib
 $SWIFTC -parse-as-library -Onone -emit-library -module-name TypedThrowsNever typedthrowsnever.swift -I . -L . -lTypedThrowsNeverLib -o libTypedThrowsNever.dylib

@@ -63,35 +63,39 @@ results do not replace previously recorded release performance measurements.
 
 ## 2026-11-23: sprint F06-a, objc_direct inferred from missing metadata
 
-**OPEN (soundness), reproduced with authored code, not fixed.** Twelfth
-sprint of [ABI-SPRINTS.md](ABI-SPRINTS.md). A method is taken for
-`objc_direct`, with no `_cmd`, when its symbol is `-[C sel]`, C is defined
-in the image and the address is in no method list
-(`isDirectObjCMethod`). Absence is the whole of the evidence. An ordinary
-IMP that carries a method's symbol name and is installed at runtime with
-`class_addMethod` has the same absence and does take `_cmd`:
+**FIXED (soundness), for authored code.** Twelfth sprint of
+[ABI-SPRINTS.md](ABI-SPRINTS.md). A method was taken for `objc_direct`,
+with no `_cmd`, when its symbol is `-[C sel]`, C is defined in the image
+and the address is in no method list. Absence was the whole of the
+evidence. An ordinary IMP that carries a method's symbol name through an
+`__asm__` label and is installed with `class_addMethod` has the same
+absence and does take `_cmd`:
 
     long lateImp(id self, SEL _cmd, long a, long b) __asm__("-[Crate late:with:]");
     long lateImp(id self, SEL _cmd, long a, long b) { record(a, b); return a; }
 
-Its entry is seeded `x1=arg0 x2=arg1`, one register early, and it renders
-`return // x0 = arg1` where it returns its first keyword argument. The
-listed method beside it, same body, renders `return arg0`. The compiler
-does not emit this shape from Objective-C source; it takes an `__asm__`
-label.
+Its entry was seeded `x1=arg0 x2=arg1`, one register early, and it
+rendered `return // x0 = arg1` where it returns its first keyword
+argument.
 
-Two ways to close it, neither taken yet because each changes what ships:
+A direct method is called by its symbol; the late one is reached only as
+data. `isDirectObjCMethod` now also asks that some instruction of the
+image branches straight to the address
+(`ObjCMetadataIndex.isBranchedToDirectly`). The evidence is a scan of the
+image's executable sections as words for `b` and `bl`, with no decode and
+no function boundaries, so whole-file, streaming and filtered runs agree.
+It runs on the first question and only for a candidate, which most images
+do not have. Fixture `lateimp.m`.
 
-1. Decline: a method with no metadata has an unknown entry layout. Sound,
-   and genuine `objc_direct` methods (`objcdirect.m`, ObjCDirectTests)
-   lose their arguments and their sends' layout until item 2 lands.
-2. Positive proof: direct only when some instruction in the image
-   branches straight to the method and its address is nowhere taken as
-   data or materialized as a pointer. That needs a whole-image set of
-   direct branch targets on every entry path (array, streaming and
-   filtered), which the per-function context does not carry today.
+Against `477c832`, the blast radius is one line: the late method's false
+`return // x0 = arg1` is gone. The direct methods of `objcdirect.m` render
+as before, filtered or not. Over 3,252 renders, instructions retired moved
++0.02% and summed peak footprint -0.17%.
 
-The gate passed `477c832` (sprints O01-a and F05-a) with 2,144 tests.
+**OPEN:** an implementation both called by its symbol and installed at
+runtime is still read as direct. A data word in a code section that
+encodes a branch to a candidate counts as one; that only re-admits what
+absence alone admitted before.
 
 ## 2026-11-23: sprint F05-a, a stub named a send for its selector load
 
