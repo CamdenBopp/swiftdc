@@ -61,6 +61,45 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: sprint C10-a, a property's function type read as its accessor's signature
+
+**FIXED (soundness).** Sixth sprint of [ABI-SPRINTS.md](ABI-SPRINTS.md),
+and the entry and call-site half of "a storage entity's type read as a
+parameter list" below. An accessor prints as `name.getter : Type`. With a
+function type, `splitSignature` took the type's arrow for the accessor's
+own: `Panel.combine.setter : (Swift.Int, Swift.Int) -> Swift.Int` was a
+function of two Ints returning an Int. The setter's one parameter, the
+new closure's two words, printed `arg0` and `arg1`; it ended in `return
+?` for a result a setter does not have; and a computed getter with no
+parameters printed an `arg0`.
+
+A storage entity (a top-level ` : ` before the first arrow) no longer
+splits. A subscript's accessor still does, since its printed type is its
+signature. A local variable's getter (`getter of x #1 : T in <function>`)
+is storage too, and is still known to return a value. Fixture
+`functionstorage.swift` at -O and -Onone, with a subscript as the control.
+
+Against `3625d5b`, the blast radius moves four files: 45 lines in the
+structured view, 43 in pseudo, 74 in the listing, 158 in JSON. The new
+fixture's setters lose their false names and returns. In
+libSwiftParserDiagnostics, six calls to a local getter go from `()` to
+`(?, ?, ?)` and two stores of its result from `(? & 0xffffffff)` to
+`w20`: declines both ways, where `()` claimed it took nothing. In
+libThrowingGetter, `TG.checked(arg0)` becomes `TG.checked(self.base)`,
+as its source says. Over 3,228 renders, instructions retired moved +0.17%
+and summed peak footprint +0.33%.
+
+A first version made the storage test on every name before looking for an
+arrow and cost +4.38% instructions in total (+10.2% on
+libClassParam.opt.dylib), over budget. The test now runs only after three
+bytes, ` : `, are found before the arrow.
+
+**OPEN:** the accessors decline where they could be placed: a setter's
+new value is one closure of two words, and a getter returns one. A
+`@_silgen_name` Swift function is still taken as unable to throw.
+
+`88735ae` records sprint F04-a.
+
 ## 2026-11-23: sprint F04-a, a virtual tail is not folded through the base body
 
 **GUARDED, not reproduced.** Fifth sprint of

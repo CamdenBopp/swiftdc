@@ -104,6 +104,12 @@ public extension DisassembledFunction {
         if let range = displayName.range(of: ".getter : ") {
             return !displayName[range.upperBound...].trimmingCharacters(in: .whitespaces).isEmpty
         }
+        // A local variable's getter, `getter of name #1 : Type in
+        // <function>`: it returns the variable's value, whatever the
+        // enclosing function after ` in ` returns.
+        if displayName.hasPrefix("getter of "), Self.topLevelRange(of: " : ", in: displayName) != nil {
+            return true
+        }
 
         return false
     }

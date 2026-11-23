@@ -273,9 +273,26 @@ extension DisassembledFunction {
         return colon.lowerBound < arrow.lowerBound
     }
 
+    /// Whether a storage entity is a subscript's accessor: the declaration
+    /// before its ` : ` ends in `.subscript.<accessor>`.
+    static func isSubscriptAccessorName(_ name: String) -> Bool {
+        guard let colon = topLevelRange(of: " : ", in: name) else { return false }
+        let declaration = name[..<colon.lowerBound]
+        guard let accessor = declaration.lastIndex(of: ".") else { return false }
+        return declaration[..<accessor].hasSuffix(".subscript")
+    }
+
     static func splitSignature(
         _ name: String
     ) -> (head: String, result: String, isAsync: Bool, isThrowing: Bool, thrownType: String?)? {
+        // A storage entity's arrow belongs to the storage's type. Read as
+        // a signature, `M.Box.transform.getter : (Int, Int) -> Int` was a
+        // function of two Ints returning an Int: the getter, which takes
+        // nothing, printed an `arg0`, and the setter named the two words of
+        // its new closure value `arg0` and `arg1`.
+        // A subscript's accessor is the exception: its printed type is its
+        // signature, indices to element (`Grid.subscript.getter : (Swift.Int)
+        // -> Swift.Int`).
         guard let arrow = topLevelRange(of: " -> ", in: name) else {
             // The demangler prints a closure-propagated specialization with
             // an unclosed `[` (`<Arg[0] = [Closure Propagated : …, Argument
@@ -286,6 +303,15 @@ extension DisassembledFunction {
             guard core.count < name.count, let inner = splitSignature(core) else { return nil }
             return (String(name.dropLast(core.count)) + inner.head, inner.result, inner.isAsync,
                     inner.isThrowing, inner.thrownType)
+        }
+        // Storage has a top-level ` : ` before its first arrow. Nearly no
+        // function name has those three bytes before the arrow at all, so
+        // look for them before paying for the nesting-aware search: this
+        // runs for every name, at every call site.
+        let colon: [UInt8] = [0x20, 0x3a, 0x20]
+        if name[..<arrow.lowerBound].utf8.indices.contains(where: { name.utf8[$0...].starts(with: colon) }),
+           isStorageEntityName(name), !isSubscriptAccessorName(name) {
+            return nil
         }
         var result = String(name[arrow.upperBound...])
         if let context = topLevelRange(of: " in ", in: result) {

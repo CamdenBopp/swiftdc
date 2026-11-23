@@ -65,7 +65,7 @@ premise touches.
 | 3 | [E05-a](research/abi-sprints-2026-11-23/03-async-errors.md) | Keep shared cleanup before throw | soundness | M | fixed by declining in `c6f6e08`: reproduced, see [readiness](PRODUCTION-READINESS.md#2026-11-23-sprint-e05-a-a-throw-printed-ahead-of-work-it-shares) |
 | 4 | [E07-b](research/abi-sprints-2026-11-23/03-async-errors.md) | Retain trapping-tail outcome uncertainty | soundness | S/M | fixed in `3625d5b`: reproduced in a stripped image, see [readiness](PRODUCTION-READINESS.md#2026-11-23-sprint-e07-b-a-tail-into-a-body-that-may-not-return) |
 | 5 | [F04-a](research/abi-sprints-2026-11-23/04-foreign-ownership.md) | Never fold a virtual tail through a base implementation's body | soundness | S | guarded: not reproduced, see [readiness](PRODUCTION-READINESS.md#2026-11-23-sprint-f04-a-a-virtual-tail-is-not-folded-through-the-base-body) |
-| 6 | [C10-a](research/abi-sprints-2026-11-23/02-generics-closures.md) | Reject a storage property's function type as its entry signature | soundness | S | open |
+| 6 | [C10-a](research/abi-sprints-2026-11-23/02-generics-closures.md) | Reject a storage property's function type as its entry signature | soundness | S | fixed: reproduced, see [readiness](PRODUCTION-READINESS.md#2026-11-23-sprint-c10-a-a-propertys-function-type-read-as-its-accessors-signature) |
 | 7 | [O06-a](research/abi-sprints-2026-11-23/04-foreign-ownership.md) | Require provider proof before preserving fields across access markers | soundness | S | open |
 | 8 | [E10-a](research/abi-sprints-2026-11-23/03-async-errors.md) | Qualify error-runtime helpers | soundness | S | open |
 | 9 | [E10-b](research/abi-sprints-2026-11-23/03-async-errors.md) | Make willThrow evidence path-local | soundness | S/M | open |
