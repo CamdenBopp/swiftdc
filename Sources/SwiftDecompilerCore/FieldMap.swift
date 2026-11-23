@@ -314,6 +314,10 @@ public struct FieldMap: Sendable {
         let integers: Set<String> = [
             "Si", "Su", "Sb", "Swift.Int", "Swift.UInt", "Swift.Bool", "s5Int32V", "s6UInt32V", "s5Int16V",
             "s6UInt16V", "s4Int8V", "s5UInt8V", "Swift.Int32", "Swift.UInt32", "Swift.Int16", "Swift.UInt16", "Swift.Int8", "Swift.UInt8",
+            // `Int64` and `UInt64` are one i64 each, as `Int` and `UInt` are.
+            // Only the resolved spelling: no fixture's field record carries
+            // the mangled one, so it stays declined until one does.
+            "Swift.Int64", "Swift.UInt64",
         ]
         var units = Set<Int>()
         var result: [(offset: Int, isFloat: Bool)] = []

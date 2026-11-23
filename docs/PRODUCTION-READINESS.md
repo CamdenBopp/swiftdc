@@ -61,6 +61,31 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: Int64 and UInt64 struct fields in registers
+
+**FIXED (completeness).** A small struct of scalars is passed one register
+per field, but the integer field types lowering accepted left out `Int64`
+and `UInt64`, each one i64 as `Int` is. A struct with one such field
+declined whole, as did every `OptionSet` with a `UInt64` raw value:
+`wideCombine(_ w: Wide, _ k: UInt64) { w.a &- k &* w.b }` rendered
+`return ?` and now renders `return (arg0.a - (arg1 * arg0.b))`. Fixture
+`int64fields.swift` at -O and -Onone; -Osize was checked by hand and
+renders the same statements.
+
+Against published `1265db5`, `Tools/blast-radius.sh <base> <new> <out>
+--real` moves 14 files and 138 lines in each text view: the two new
+fixture images, and twelve existing ones where 51 `return ?` became the
+field read their source states (`FourValue.b.getter` is `mov x0, x1; ret`
+and reads `self.b`; `OffsetByte.expectedStorage()` sign-extends
+`self.value`). No other line changed. Over 3,188 renders, instructions
+retired moved -0.00% and summed peak footprint +0.32%.
+
+Only the resolved spelling (`Swift.UInt64`) is accepted. The mangled
+spelling (`s6UInt64V`) reached no fixture's field record, so it stays
+declined. **OPEN:** `wordIntegerFieldOffsetsInRegisters` still accepts
+only `Int` and `UInt`; the mixed-bank path covers the same structs today.
+
+
 ## 2026-11-22: local outgoing async descriptor handoff qualification
 
 **Locally qualified at `ff02d78`** on Darwin arm64. The probe records an
