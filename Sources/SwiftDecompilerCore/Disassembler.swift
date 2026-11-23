@@ -3116,7 +3116,18 @@ public struct Disassembler: Sendable {
     func objcStubNames(in machO: MachOFile) -> [UInt64: String] {
         let selectors = ObjCSelectors.selectorTable(in: machO).bySelref
         guard !selectors.isEmpty, let engine = CapstoneEngine() else { return [:] }
-        return ObjCSelectors.stubNames(in: machO, selectors: selectors) { address, size in
+        // The messenger is libobjc's `objc_msgSend`, by its binding: in the
+        // slot a stub loads, or behind the symbol stub it branches to.
+        func isMessenger(_ reference: RuntimeFunctionReference) -> Bool {
+            reference.symbolName == "objc_msgSend"
+                && ["/usr/lib/libobjc.A.dylib", "/usr/lib/libobjc.dylib"].contains(reference.libraryName)
+        }
+        let fixups = ChainedFixupTable()
+        let messengerStubs = Set(validatedFunctionReferences(in: machO, permits: isMessenger).keys)
+        return ObjCSelectors.stubNames(in: machO, selectors: selectors, isMessengerSlot: { slot in
+            guard let offset = machO.fileOffset(of: slot) else { return false }
+            return fixups.validatedFunctionReference(at: UInt64(offset), in: machO).map(isMessenger) == true
+        }, isMessengerStub: messengerStubs.contains) { address, size in
             guard let bytes = sectionBytes(address: address, size: size, in: machO) else { return [] }
             return engine.disassemble(bytes, address: address).map { decoded in
                 Instruction(

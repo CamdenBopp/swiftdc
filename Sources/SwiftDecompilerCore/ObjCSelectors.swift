@@ -110,6 +110,8 @@ enum ObjCSelectors {
     static func stubNames(
         in machO: MachOFile,
         selectors: [UInt64: String],
+        isMessengerSlot: (UInt64) -> Bool,
+        isMessengerStub: (UInt64) -> Bool,
         decode: (UInt64, Int) -> [Instruction]
     ) -> [UInt64: String] {
         // A cache image has no `__objc_stubs` — the builder elides them, since
@@ -131,6 +133,23 @@ enum ObjCSelectors {
             guard case .loaded(let slot)? = tracer.finalState(of: window)["x1"],
                   let selector = selectors[slot]
             else { continue }
+            // The selector load says which selector. What makes the stub
+            // a send is where it goes next: the messenger. A stub of the
+            // same opening that branched to an ordinary function rendered
+            // its caller as `[? take:7]`.
+            let rest = instructions[min(index + 2, instructions.count)...]
+            guard let next = rest.first else { continue }
+            if next.controlFlow == .branch, let target = next.branchTarget {
+                // `b _objc_msgSend`, through its symbol stub.
+                guard isMessengerStub(target) else { continue }
+            } else {
+                // `adrp x16; ldr x16, [x16, #slot]; br x16`.
+                let load = Array(rest.prefix(2)), jump = rest.dropFirst(2).first
+                guard load.count == 2, let jump, jump.controlFlow == .branch, jump.branchTarget == nil,
+                      jump.detail?.operands.first?.operand.register?.key == "x16",
+                      case .loaded(let got)? = tracer.finalState(of: load)["x16"], isMessengerSlot(got)
+                else { continue }
+            }
             result[insn.address] = "objc_msgSend$\(selector)"
         }
         return result

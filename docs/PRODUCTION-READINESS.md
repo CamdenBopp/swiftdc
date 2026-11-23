@@ -61,6 +61,36 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: sprint F05-a, a stub named a send for its selector load
+
+**FIXED (soundness), for authored code.** Eleventh sprint of
+[ABI-SPRINTS.md](ABI-SPRINTS.md). A selector stub loads its selector into
+x1 and goes to `objc_msgSend`. A stub in `__objc_stubs` was named
+`objc_msgSend$selector` for the load alone, and every call to it rendered
+as a message send. An in-image function merely named `objc_msgSend` was
+already an ordinary call. An authored stub with a selector stub's opening
+that branches to a function adding its first and third arguments made its
+caller render `[? take:7]`.
+
+A stub is now named a send only when it goes on to libobjc's messenger,
+by binding: through the slot it loads into x16 and jumps through, or
+through the symbol stub it branches to. Fixture `selectorstubshape.s`,
+with one stub of each form.
+
+Against `113266f`, the blast radius moves only the new fixture (4 lines in
+each text view, 16 in JSON). Every genuine send in the Objective-C
+fixtures and the corpus keeps its name. Over 3,248 renders, instructions
+retired moved -0.02% and summed peak footprint -0.11%.
+
+**OPEN:** the command line names the shaped stub's call
+`sub_4a0(recovered_args: [?, ?, 7, …])` and the library API names it
+`branching_stub(…)`, after the stub's local symbol: two entry points, two
+spellings of one call. Both are sound. A foreign library that exports its
+own `objc_msgSend` is excluded by the binding; a selector stub reached
+through a pointer-authenticated slot is untested.
+
+Hosted CI for `27b6cd5` passed. `113266f` is sprint O01-a.
+
 ## 2026-11-23: sprint O01-a, a call hidden as runtime bookkeeping by its name
 
 **FIXED (soundness).** Tenth sprint of [ABI-SPRINTS.md](ABI-SPRINTS.md),
