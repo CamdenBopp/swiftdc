@@ -61,6 +61,33 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: sprint E10-b, the throw hook's evidence on a path that did not run it
+
+**FIXED (soundness), for authored code.** Ninth sprint of
+[ABI-SPRINTS.md](ABI-SPRINTS.md). The value `swift_willThrow` was called
+with, found in x21 at an exit, makes the exit a throw. The values were
+collected over the whole function. Compiler-emitted code calls the hook on
+the throwing edge and nowhere else, and four Swift shapes render their
+throw on that path only. An authored body that sets `x21 = arg1` on both
+arms of a branch and calls the hook on one rendered `throw arg1` on both,
+though on the other arm a zero argument is a normal return.
+
+A hook's value now counts only at an exit every path reaches through that
+hook call: in the same block before it, or in a block without which the
+exit is unreachable. That is asked per exit and per path into a shared
+exit. Fixture `hookpath.s`, linked against libswiftCore: two exits, one
+shared exit, and a control whose hook every path runs.
+
+Against `373f25e`, the blast radius moves only the new fixture (5 lines in
+each pseudocode view, 6 in the listing, 10 in JSON). Over 3,244 renders,
+instructions retired moved +0.01% and summed peak footprint +0.24%.
+
+**OPEN:** the arm without the hook declines, where a compare of the
+value with zero would decide it. An in-image function named exactly
+`swift_willThrow` is still trusted (E10-a).
+
+Hosted CI for `4fb7ead` passed. `373f25e` is sprint E10-a.
+
 ## 2026-11-23: sprint E10-a, error-runtime helpers recognized by prefix
 
 **FIXED (soundness), for authored code.** Eighth sprint of

@@ -12888,12 +12888,37 @@ public struct Disassembler: Sendable {
         // parameter is `mov x21, x0; bl swift_willThrow; …; ret`, and was
         // left an unresolved exit, as was any error not from
         // `swift_allocError`.
-        let willThrowErrors: [AbstractValue] = function.instructions.compactMap { insn in
+        let willThrowErrors: [(site: UInt64, value: AbstractValue)] = function.instructions.compactMap { insn in
             guard insn.controlFlow == .call,
                   DisassembledFunction.calleeName(of: insn).map(willThrowHooks.contains) == true,
                   let error = analysis.callSites[insn.address]?.errorValue
             else { return nil }
-            return error
+            return (insn.address, error)
+        }
+        // The hook proves its value an error only where the hook ran. On a
+        // path that does not pass it, the same value in x21 is whatever it
+        // is, null included: `b ? { x21 = e; swift_willThrow() } : { x21 =
+        // e }` rendered `throw arg1` on both arms.
+        let hookBlocks = willThrowErrors.isEmpty ? [] : cfg.basicBlocks(of: function, consumer: "throw-hook-dominance")
+        /// Whether every path from the entry to `address` runs the hook
+        /// call at `site`: in the same block before it, or in a block
+        /// without which `address` cannot be reached.
+        func hookDominates(_ site: UInt64, _ address: UInt64) -> Bool {
+            func block(of address: UInt64) -> BasicBlock? {
+                hookBlocks.first { $0.instructions.contains { $0.address == address } }
+            }
+            guard let entry = hookBlocks.first, let hook = block(of: site), let target = block(of: address)
+            else { return false }
+            if hook.startAddress == target.startAddress { return site < address }
+            let byStart = Dictionary(hookBlocks.map { ($0.startAddress, $0) }, uniquingKeysWith: { a, _ in a })
+            var seen: Set<UInt64> = [hook.startAddress]
+            var work = [entry.startAddress]
+            while let start = work.popLast() {
+                guard seen.insert(start).inserted, let next = byStart[start] else { continue }
+                if start == target.startAddress { return false }
+                work.append(contentsOf: next.successors)
+            }
+            return true
         }
         func isErrorBox(_ value: AbstractValue) -> Bool {
             guard case .callResult(let site) = value else { return false }
@@ -12904,8 +12929,9 @@ public struct Disassembler: Sendable {
         /// `swift_willThrow` was called with. Two unknowns are not the same
         /// value: a `ret` shared by a rethrow and a normal return has
         /// neither known.
-        func isThrownError(_ value: AbstractValue) -> Bool {
-            if value != .unknown, willThrowErrors.contains(value) { return true }
+        func isThrownError(_ value: AbstractValue, at address: UInt64) -> Bool {
+            if value != .unknown,
+               willThrowErrors.contains(where: { $0.value == value && hookDominates($0.site, address) }) { return true }
             switch value {
             case .immediate(let flag): return flag != 0
             case .callResult(let site):
@@ -12942,7 +12968,7 @@ public struct Disassembler: Sendable {
                 return true
             }
             for (exit, paths) in analysis.exitErrorValuesByPredecessor {
-                let throwing = paths.filter { isThrownError($0.value) }.map(\.key)
+                let throwing = paths.filter { isThrownError($0.value, at: $0.key) }.map(\.key)
                 guard !throwing.isEmpty else { continue }
                 if throwing.count == paths.count {
                     mergedThrowExits.insert(exit)
@@ -12970,7 +12996,7 @@ public struct Disassembler: Sendable {
         let throwExits: Set<UInt64> = {
             guard throwsSignature?.isThrowing == true, !opaqueErrorProofTransfer else { return [] }
             return asyncThrowExits.union(mergedThrowExits).union(analysis.exitErrorValues.compactMap { address, value in
-                isThrownError(value) ? address : nil
+                isThrownError(value, at: address) ? address : nil
             })
         }()
 
@@ -13726,7 +13752,7 @@ public struct Disassembler: Sendable {
                     thrown = "\(errorType).\(caseName)"
                 } else if throwsSignature?.thrownType == nil,
                           let error = analysis.exitErrorValues[insn.address].map(sanitizeValue),
-                          willThrowErrors.contains(error), !isErrorBox(error) {
+                          willThrowErrors.contains(where: { $0.value == error }), !isErrorBox(error) {
                     // An untyped error is one pointer in x21: the value
                     // `swift_willThrow` was given is what is thrown. A fresh
                     // `swift_allocError` box is no source value (its payload

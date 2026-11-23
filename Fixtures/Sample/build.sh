@@ -374,6 +374,9 @@ rm -f accesstwin.o
 echo "==> throwing functions that call returning lookalikes of the error runtime (errorlookalike.s + errorlookalike.c, -O2)"
 $CLANG -O2 -dynamiclib errorlookalike.c errorlookalike.s -o libErrorLookalike.dylib
 
+echo "==> the throw hook on one path only (hookpath.s, linked against libswiftCore)"
+$CLANG -dynamiclib hookpath.s -L"$(xcrun --show-sdk-path)/usr/lib/swift" -lswiftCore -o libHookPath.dylib
+
 echo "==> throws(Never) specializations serialized by an -O library and emitted by an -Onone client (typedthrowsnever_lib.swift -O, typedthrowsnever.swift -Onone)"
 $SWIFTC -parse-as-library -O -emit-library -emit-module -module-name TypedThrowsNeverLib typedthrowsnever_lib.swift -o libTypedThrowsNeverLib.dylib
 $SWIFTC -parse-as-library -Onone -emit-library -module-name TypedThrowsNever typedthrowsnever.swift -I . -L . -lTypedThrowsNeverLib -o libTypedThrowsNever.dylib
