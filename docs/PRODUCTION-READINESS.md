@@ -61,6 +61,36 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: sprint G06-a, a cast target cut short
+
+**FIXED (soundness).** Second sprint of [ABI-SPRINTS.md](ABI-SPRINTS.md).
+A cast's target was named from its metadata argument cut at the first
+`(`, to drop an accessor's call arguments. That also cut a type with a
+parenthesis in it: `x is Shelf<(Int, Int)>` rendered
+`(arg0 as? CastTargets.Shelf<)`, and a tuple target named nothing. A
+generic type's accessor call, whose arguments are the type's parameters,
+was named by the type alone: `x as? Shelf<T>` rendered
+`as? CastTargets.Shelf`, a type the program does not have.
+
+`type metadata for X` is now X whole. An accessor call names its type only
+with no argument or a constant request; any other call declines and the
+cast stays `swift_dynamicCast(…)`. Fixture `casttargets.swift` at -O and
+-Onone.
+
+Against `c3c80c3`, the blast radius moves only the two new fixture images
+(14 lines in each pseudocode view, 4 in the listing, 18 in JSON): no
+existing fixture and neither swift-syntax dylib holds such a cast. Over
+3,208 renders, instructions retired moved -0.12% and summed peak footprint
+-0.04%.
+
+**OPEN:** the positive case, naming `Shelf<T>` from the accessor's
+arguments, is sprint G08-a. A generic accessor call prints four unknown
+arguments at -Onone where it takes two.
+
+Hosted CI for `bb04d2a` passed:
+[run 45134540997](https://github.com/CamdenBopp/swiftdc/actions/runs/45134540997).
+`c3c80c3` is sprint G01-a.
+
 ## 2026-11-23: sprint G01-a, a metatype argument dropped from its call
 
 **FIXED (soundness).** First sprint of [ABI-SPRINTS.md](ABI-SPRINTS.md).

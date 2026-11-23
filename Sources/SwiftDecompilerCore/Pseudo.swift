@@ -313,19 +313,54 @@ public extension DisassembledFunction {
         }
     }
 
-    /// The Swift type named by a metadata argument — `type metadata accessor for
-    /// Foo.Bar(0)` / `type metadata for Swift.String` → `Foo.Bar` / `Swift.String`
-    /// — or nil when the argument is not a nameable metadata reference (e.g. a
-    /// mangled-name instantiation we can't resolve to a spelling here).
+    /// The Swift type named by a metadata argument, or nil when the argument
+    /// does not name one complete type.
+    ///
+    /// `type metadata for X` is X whole. The name was cut at its first `(`
+    /// to drop an accessor's call arguments, which also cut a type that
+    /// contains one: `x as? Shelf<(Int, Int)>` rendered `as? Cast.Shelf<`,
+    /// and a tuple target named nothing.
+    ///
+    /// `type metadata accessor for N(…)` is a call. With no argument, or
+    /// a constant metadata request alone, N is not generic and the result
+    /// is N.
+    /// With more, N is generic and the arguments are its parameters, which
+    /// the spelling N does not carry: `x as? Shelf<T>` rendered
+    /// `as? Cast.Shelf`, a type the program does not have. That declines,
+    /// and the cast stays the runtime call it is.
     static func swiftTypeName(fromMetadata argument: String) -> String? {
-        let prefixes = ["type metadata accessor for ", "type metadata for ", "type metadata pattern for "]
-        guard let prefix = prefixes.first(where: argument.hasPrefix) else { return nil }
-        var name = String(argument.dropFirst(prefix.count))
-        // An accessor is a call — drop its "(metadataRequest)" argument group,
-        // which a nominal or generic type name (using `<>`, not `()`) never has.
-        if let paren = name.firstIndex(of: "(") { name = String(name[..<paren]) }
-        name = name.trimmingCharacters(in: .whitespaces)
-        return name.isEmpty ? nil : name
+        for prefix in ["type metadata for ", "type metadata pattern for "] where argument.hasPrefix(prefix) {
+            let name = argument.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+            return name.isEmpty ? nil : name
+        }
+        let accessor = "type metadata accessor for "
+        guard argument.hasPrefix(accessor) else { return nil }
+        let call = argument.dropFirst(accessor.count)
+        // The call's own argument group is the last, balanced one: a name
+        // can open with a group of its own (`(extension in M):N.T`).
+        guard call.hasSuffix(")") else { return nil }
+        var depth = 0
+        var open: Substring.Index?
+        for index in call.indices.reversed() {
+            if call[index] == ")" { depth += 1 }
+            if call[index] == "(" {
+                depth -= 1
+                if depth == 0 { open = index; break }
+            }
+        }
+        guard let open else { return nil }
+        let name = call[..<open].trimmingCharacters(in: .whitespaces)
+        let arguments = splitTopLevelArguments(call[call.index(after: open)..<call.index(before: call.endIndex)])
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        // The one argument a non-generic accessor takes is its request, a
+        // constant. `…` is an unproven list, and `?` an unknown argument:
+        // neither shows the accessor takes no type.
+        let isRequest = arguments.first.map { text in
+            let digits = text.hasPrefix("0x") ? text.dropFirst(2) : Substring(text)
+            return !digits.isEmpty && digits.allSatisfy(\.isHexDigit)
+        } ?? true
+        guard !name.isEmpty, arguments.count <= 1, isRequest else { return nil }
+        return name
     }
 
     /// Whether a `swift_dynamicCast` flags operand has `DynamicCastFlags`'
