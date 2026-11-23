@@ -61,6 +61,38 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: sprint F06-a, objc_direct inferred from missing metadata
+
+**OPEN (soundness), reproduced with authored code, not fixed.** Twelfth
+sprint of [ABI-SPRINTS.md](ABI-SPRINTS.md). A method is taken for
+`objc_direct`, with no `_cmd`, when its symbol is `-[C sel]`, C is defined
+in the image and the address is in no method list
+(`isDirectObjCMethod`). Absence is the whole of the evidence. An ordinary
+IMP that carries a method's symbol name and is installed at runtime with
+`class_addMethod` has the same absence and does take `_cmd`:
+
+    long lateImp(id self, SEL _cmd, long a, long b) __asm__("-[Crate late:with:]");
+    long lateImp(id self, SEL _cmd, long a, long b) { record(a, b); return a; }
+
+Its entry is seeded `x1=arg0 x2=arg1`, one register early, and it renders
+`return // x0 = arg1` where it returns its first keyword argument. The
+listed method beside it, same body, renders `return arg0`. The compiler
+does not emit this shape from Objective-C source; it takes an `__asm__`
+label.
+
+Two ways to close it, neither taken yet because each changes what ships:
+
+1. Decline: a method with no metadata has an unknown entry layout. Sound,
+   and genuine `objc_direct` methods (`objcdirect.m`, ObjCDirectTests)
+   lose their arguments and their sends' layout until item 2 lands.
+2. Positive proof: direct only when some instruction in the image
+   branches straight to the method and its address is nowhere taken as
+   data or materialized as a pointer. That needs a whole-image set of
+   direct branch targets on every entry path (array, streaming and
+   filtered), which the per-function context does not carry today.
+
+The gate passed `477c832` (sprints O01-a and F05-a) with 2,144 tests.
+
 ## 2026-11-23: sprint F05-a, a stub named a send for its selector load
 
 **FIXED (soundness), for authored code.** Eleventh sprint of
