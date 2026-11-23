@@ -383,6 +383,9 @@ $CLANG -arch arm64 -dynamiclib selectorstubshape.s -o libSelectorStubShape.dylib
 echo "==> an ordinary IMP with a method's symbol name and no method-list record (lateimp.m, -O1)"
 $CLANG -O1 -fobjc-arc -dynamiclib -framework Foundation lateimp.m -o libLateIMP.dylib
 
+echo "==> the sprint fixtures run natively: what each call returned, threw, trapped or hung (sprintnative.c)"
+$CLANG -O1 -fobjc-arc -framework Foundation sprintnative.c -o sprint-native-oracle
+
 echo "==> throws(Never) specializations serialized by an -O library and emitted by an -Onone client (typedthrowsnever_lib.swift -O, typedthrowsnever.swift -Onone)"
 $SWIFTC -parse-as-library -O -emit-library -emit-module -module-name TypedThrowsNeverLib typedthrowsnever_lib.swift -o libTypedThrowsNeverLib.dylib
 $SWIFTC -parse-as-library -Onone -emit-library -module-name TypedThrowsNever typedthrowsnever.swift -I . -L . -lTypedThrowsNeverLib -o libTypedThrowsNever.dylib

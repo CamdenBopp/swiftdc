@@ -61,6 +61,43 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: the sprint fixtures run natively
+
+**ADDED (tests).** Each sprint fixture says in a comment what its code
+does, and five are hand-written assembly. Nothing ran them: a test
+compared swiftdc's render with a reading of the source.
+`Fixtures/Sample/sprintnative.c` builds `sprint-native-oracle`, which
+loads ten fixture images and prints what each call did: returned and with
+what, threw, trapped, or hung. A throwing Swift function is called
+through a trampoline that clears x21 and hands it back; a call that may
+not return runs in a child process under a one-second alarm.
+
+It makes 39 observations, and all agree with the comments: the error
+lookalikes return 5, 7 and 6 with no error; the arm without the throw
+hook returns 7 for a zero argument and throws for a non-zero one; the
+trap-tail wrappers trap on 0 and hang on 9, with and without symbols; two
+reads of one field differ by 18 across the access twin; the deferred
+store reaches 99 on the throwing path; the late-installed method, sent as
+a message with 5 and 9, returns 5.
+
+The first run found one defect in a fixture: `always` in `hookpath.s`
+used x19 without saving it, and the caller's x19 was gone. It is fixed,
+and its render is unchanged.
+
+SprintNativeOracleTests holds renders to the observations: a function
+seen to return is not rendered throwing, a wrapper seen to trap is not a
+plain return, and the value recovered for six scalar cases, evaluated on
+the oracle's inputs, equals what the machine returned (`allows(7, 5)`
+through `bics`, `wideCombine(100, 7, 3)` = 79). Reverting each of eight
+fixes turns one of them red: E10-b, E10-a, E07-b, the `bics` flags,
+F06-a, F05-a, O06-a and E05-a.
+
+**OPEN:** the metatype, cast-target and function-storage fixtures need a
+Swift driver (generics and closures) and are not run. Field names are
+checked through the value computed from them, not as names.
+
+Hosted CI for `477c832` passed. `cd5db2c` is sprint F06-a.
+
 ## 2026-11-23: sprint F06-a, objc_direct inferred from missing metadata
 
 **FIXED (soundness), for authored code.** Twelfth sprint of

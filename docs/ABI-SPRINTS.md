@@ -41,9 +41,14 @@ the prediction with a measurement.
    -Osize.
 4. **Prove every test red** by mutating each independent gate separately,
    with a rebuild between mutations.
-5. **Measure** the full enforcing suite and the blast radius against the
+5. **Run it.** Where the fixture's functions can be called, add them to
+   `Fixtures/Sample/sprintnative.c` and hold the render to what the
+   machine did (SprintNativeOracleTests). A hand-written body is run
+   before it is trusted: the first native run found one that broke the
+   calling convention.
+6. **Measure** the full enforcing suite and the blast radius against the
    tip, and explain every changed line.
-6. **Commit** with the readiness record, set the status here to the commit
+7. **Commit** with the readiness record, set the status here to the commit
    hash, and publish through `Tools/integration-gate.sh --push`.
 
 A sprint that grows past one behaviour is split, and the new sprint takes
@@ -71,7 +76,7 @@ premise touches.
 | 9 | [E10-b](research/abi-sprints-2026-11-23/03-async-errors.md) | Make willThrow evidence path-local | soundness | S/M | fixed in `27b6cd5`: reproduced with authored assembly only, see [readiness](PRODUCTION-READINESS.md#2026-11-23-sprint-e10-b-the-throw-hooks-evidence-on-a-path-that-did-not-run-it) |
 | 10 | [O01-a](research/abi-sprints-2026-11-23/04-foreign-ownership.md) | Hide runtime calls only under an exact effect contract | soundness | S | fixed in `113266f`: reproduced with an in-image twin, see [readiness](PRODUCTION-READINESS.md#2026-11-23-sprint-o01-a-a-call-hidden-as-runtime-bookkeeping-by-its-name) |
 | 11 | [F05-a](research/abi-sprints-2026-11-23/04-foreign-ownership.md) | Prove the dispatcher before interpreting an Objective-C send | soundness | M | fixed in `477c832`: reproduced with authored assembly only, see [readiness](PRODUCTION-READINESS.md#2026-11-23-sprint-f05-a-a-stub-named-a-send-for-its-selector-load) |
-| 12 | [F06-a](research/abi-sprints-2026-11-23/04-foreign-ownership.md) | Stop deriving objc_direct from missing metadata | soundness | S | fixed: reproduced with authored code, see [readiness](PRODUCTION-READINESS.md#2026-11-23-sprint-f06-a-objc_direct-inferred-from-missing-metadata) |
+| 12 | [F06-a](research/abi-sprints-2026-11-23/04-foreign-ownership.md) | Stop deriving objc_direct from missing metadata | soundness | S | fixed in `cd5db2c`: reproduced with authored code, see [readiness](PRODUCTION-READINESS.md#2026-11-23-sprint-f06-a-objc_direct-inferred-from-missing-metadata) |
 | 13 | [F01-a](research/abi-sprints-2026-11-23/04-foreign-ownership.md) | Reject address-shaped x20 as external nominal Self proof | soundness | S | open |
 | 14 | [E07-a](research/abi-sprints-2026-11-23/03-async-errors.md) | Propagate a callee's no-success result | soundness | M | open |
 | 15 | [E03-a](research/abi-sprints-2026-11-23/03-async-errors.md) | Require a proven direct typed-error carrier | soundness | S/M | open |

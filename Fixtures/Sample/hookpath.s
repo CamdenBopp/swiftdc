@@ -43,16 +43,20 @@ _$s8HookPath6mergedySiSb_SitKF:
     ret
 
 // HookPath.always(Swift.Bool, Swift.Int) throws -> Swift.Int
-// The control: the hook runs on every path, before the branch.
+// The control: the hook runs on every path, before the branch. x19 holds
+// the flag across the call and is saved: run natively without that, the
+// caller's x19 was gone (sprintnative.c found it).
 .globl _$s8HookPath6alwaysySiSb_SitKF
 _$s8HookPath6alwaysySiSb_SitKF:
-    stp x29, x30, [sp, #-16]!
+    stp x29, x30, [sp, #-32]!
     mov x29, sp
+    str x19, [sp, #16]
     mov x21, x1
     mov x19, x0
     bl _swift_willThrow
     tbz w19, #0, 4f
     mov x0, #1
 4:
-    ldp x29, x30, [sp], #16
+    ldr x19, [sp, #16]
+    ldp x29, x30, [sp], #32
     ret

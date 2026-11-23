@@ -33,6 +33,7 @@ Fixtures/Sample/*.o
 Fixtures/Sample/*.a2s
 Fixtures/Sample/*.shape
 Fixtures/Sample/abi-source-oracle
+Fixtures/Sample/sprint-native-oracle
 Fixtures/Sample/abi-source-resilient-oracle
 Fixtures/Sample/exception-cleanup-oracle
 Fixtures/Sample/async-fp-raw-oracle
