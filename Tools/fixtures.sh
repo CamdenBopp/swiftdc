@@ -8,7 +8,7 @@
 #
 # The key hashes every tracked or untracked-but-not-ignored file under
 # Fixtures/Sample (working-tree contents, so an uncommitted edit is a new
-# key), the toolchain (swiftc, clang, both SDKs, the host OS, go) and a
+# key), the toolchain (swiftc, clang, both SDKs, the host OS, go, unicorn) and a
 # schema number. The build runs in a private copy of those files, so the
 # worktree's own directory is never half-built, and the result lands in
 # the cache by an atomic rename. Restoring is an APFS clone (cp -c), so
@@ -41,6 +41,7 @@ key() {
     echo "iphonesimulator $(xcrun --sdk iphonesimulator --show-sdk-build-version 2>/dev/null || echo none)"
     echo "host $(sw_vers -buildVersion)"
     if command -v go > /dev/null; then go version; else echo "no go"; fi
+    pkg-config --modversion unicorn 2>/dev/null || echo "no unicorn"
   } | shasum -a 256 | cut -c1-20
 }
 

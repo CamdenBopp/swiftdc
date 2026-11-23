@@ -61,6 +61,53 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: an emulator checks what the pipeline states
+
+**ADDED (validation).** `Fixtures/Sample/emuoracle.c` builds `emu-oracle` on Unicorn 2.1.4. It maps
+a thin arm64 Mach-O, starts at any address with any registers, and reports
+how the run ended (returned, trapped, hung, faulted, left the image), the
+final registers, every conditional branch with whether it was taken, and
+every call. The native oracle can only call exported functions with a C
+convention. This one runs a stripped body, a funclet or a fragment.
+
+EmulatorOracleTests sweeps 18 fixture images. For each function it seeds
+the registers from the `analysis.entry` record, runs 8 input vectors twice
+(unseeded registers all distinct, then all zero), and checks three kinds of
+statement against the machine: a `render.return-value` claim in x0, the x0
+a `return // x0 = …` comment names, and a branch condition rendered `1` or
+`0`. A claim that depends on a stack argument is skipped, because a run
+seeds no stack. A run that calls out of the image checks nothing after the
+call. The default list checks 1,868 returns and 216 constant conditions in
+7 s. `SWIFTDC_EMU_IMAGES=all` swept all 671 fixture dylibs: 12,854
+functions, 205,664 runs, 89,776 returns and 4,744 conditions.
+
+It found two false statements no test had caught. Both are **OPEN**
+soundness defects, listed in `knownFalseStatements`; the test fails when
+one stops disagreeing, so a fix removes its line.
+
+- **OPEN** `_async_memory_st4` (libAsyncMemoryEffects.dylib) renders
+  `return // x0 = 7`. The fragment it calls writes 64 bytes with `st4`
+  across the caller's frame, and the machine returns
+  0x4444444444444444. The existing test asserted only the native value.
+- **OPEN** `_entry_pointer_copy_probe` (libCallerFrameAlias, -Onone, -O
+  and -Osize) renders `if (1)` for a compare of a frame slot with 99. The
+  callee writes 99 to that slot through a pointer made from its entry
+  stack pointer, so the machine does not take the branch.
+
+The emulator agrees with native execution on 11 cases from the sprint
+fixtures, including a trap, a loop and the swifterror register.
+
+Unicorn is now a build requirement of the enforcing suite, like Go:
+`Tools/ci/environment.sh` fails without it, hosted CI installs it, and
+the fixture cache key includes its version.
+
+Verified: each check was seen red. Dropping the zero baseline, the
+`x0 =` check or the constant-condition check makes a known false
+statement stop disagreeing. Dropping the stack-argument skip reports
+`sub_790` and `sub_32d0`. Swapping add and subtract in the tracer
+reports 36 return claims in libSwiftArgumentBoundary.O.dylib, and none
+with the return check removed.
+
 ## 2026-11-23: the sprint fixtures run natively
 
 **ADDED (tests).** Each sprint fixture says in a comment what its code

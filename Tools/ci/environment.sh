@@ -23,6 +23,7 @@ xcode=$(xcodebuild -version 2>/dev/null | awk 'NR==1{print $2}')
 swift_line=$(xcrun swiftc --version 2>/dev/null | head -1)
 swift=$(printf '%s' "$swift_line" | sed -n 's/.*Swift version \([0-9][0-9.]*\).*/\1/p')
 go_version=$(go version 2>/dev/null | awk '{print $3}')
+unicorn_version=$(pkg-config --modversion unicorn 2>/dev/null)
 free_gb=$(df -g "$HOME" | awk 'NR==2{print $4}')
 memory_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1073741824 ))
 
@@ -32,6 +33,7 @@ echo "  macOS         $macos"
 echo "  Xcode         ${xcode:-not found}"
 echo "  Swift         ${swift:-not found}"
 echo "  Go            ${go_version:-not found}"
+echo "  Unicorn       ${unicorn_version:-not found}"
 echo "  memory        ${memory_gb} GB"
 echo "  free disk     ${free_gb} GB"
 echo "  tested with   Swift $TESTED_SWIFT, Xcode $TESTED_XCODE"
@@ -50,6 +52,7 @@ else
     fi
 fi
 [ -n "$go_version" ] || fail "Go is not on the PATH: the Go fixtures cannot be built, and the enforcing suite names them as missing. 'brew install go'."
+[ -n "$unicorn_version" ] || fail "Unicorn is not installed, or pkg-config cannot see it: the emulator oracle cannot be built, and the enforcing suite names it as missing. 'brew install unicorn pkgconf'."
 [ "${free_gb:-0}" -ge "$MIN_FREE_GB" ] || fail "only ${free_gb} GB free: a checkout, its build and the fixtures need about $MIN_FREE_GB GB."
 
 if [ "$failures" -gt 0 ]; then

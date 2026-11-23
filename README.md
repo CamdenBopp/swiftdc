@@ -49,7 +49,7 @@ swiftdc objc MyApp.app --methods         # ObjC headers and recovered bodies
 `swiftdc <path>` with no subcommand runs `analyze`.
 
 The examples below run on the test fixtures in `Fixtures/Sample/`, which
-aren't checked in. Install Go if needed and run `Tools/fixtures.sh` from the
+aren't checked in. Install Go and Unicorn (`brew install go unicorn pkgconf`) if needed and run `Tools/fixtures.sh` from the
 repository root. See the [fixture prerequisites](CONTRIBUTING.md#setup).
 
 ### What the output looks like

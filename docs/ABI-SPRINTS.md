@@ -45,7 +45,9 @@ the prediction with a measurement.
    `Fixtures/Sample/sprintnative.c` and hold the render to what the
    machine did (SprintNativeOracleTests). A hand-written body is run
    before it is trusted: the first native run found one that broke the
-   calling convention.
+   calling convention. A body that cannot be called (a funclet, a
+   stripped or hand-written fragment) goes in the emulator sweep
+   instead: add its image to `sweptImages` in EmulatorOracleTests.
 6. **Measure** the full enforcing suite and the blast radius against the
    tip, and explain every changed line.
 7. **Commit** with the readiness record, set the status here to the commit

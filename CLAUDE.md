@@ -378,6 +378,8 @@ deployment; the full fixture-enforced suite is verified with Swift 6.4 /
 Xcode 27.1. `Tools/ci/environment.sh` requires Swift 6.4 or newer: 6.2.4
 fails while building fixtures, and 6.3 is untried.
 
-The Go fixtures (`Fixtures/Sample/gofunctions`) need `go` on the path;
+The emulator oracle (`Fixtures/Sample/emu-oracle`) needs Unicorn
+(`brew install unicorn pkgconf`); without it `build.sh` skips it and the
+enforcing suite names it. The Go fixtures (`Fixtures/Sample/gofunctions`) need `go` on the path;
 without it `build.sh` skips them and the enforcing suite names them.
 `brew install openssl@3` is needed only for the device commands.

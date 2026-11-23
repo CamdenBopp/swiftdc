@@ -30,6 +30,9 @@ jobs:
         if: runner.environment == 'github-hosted'
         with:
           go-version: stable
+      - name: Install Unicorn for the emulator oracle
+        if: runner.environment == 'github-hosted'
+        run: brew install unicorn pkgconf
       - name: Select the tested Xcode
         if: runner.environment == 'github-hosted'
         run: sudo xcode-select --switch /Applications/Xcode_27.1.app

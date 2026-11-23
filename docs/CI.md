@@ -113,6 +113,7 @@ the local and gate results are not a hosted 2,007-test result.
 | Machine | Apple Silicon | Apple Silicon |
 | Swift | 6.4 (Xcode 27.1) | 6.4 or newer; 6.2.4 fails, 6.3 is untried |
 | Go | 1.27 | any, on the `PATH` (for the Go fixtures) |
+| Unicorn | 2.1.4 | any 2.x that `pkg-config` finds (for the emulator oracle): `brew install unicorn pkgconf` |
 | Free disk | | 15 GB |
 
 Check a machine, and print exactly what it has:

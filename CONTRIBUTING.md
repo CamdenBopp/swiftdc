@@ -52,7 +52,7 @@ soundness and verification apply to everyone.
 ## Setup
 
 The fixture-enforced suite requires an Apple Silicon Mac, Swift 6.4 or
-newer, Go on `PATH`, and at least 15 GB of free disk. The tested toolchain
+newer, Go on `PATH`, Unicorn where `pkg-config` finds it, and at least 15 GB of free disk. The tested toolchain
 is Xcode 27.1 with Swift 6.4. Check your selected toolchain before
 building. [CI environment and toolchain](docs/CI.md#the-environment)
 
@@ -60,10 +60,10 @@ building. [CI environment and toolchain](docs/CI.md#the-environment)
 Tools/ci/environment.sh
 ```
 
-Install Go if needed.
+Install Go and Unicorn if needed.
 
 ```bash
-brew install go
+brew install go unicorn pkgconf
 ```
 
 swiftdc itself needs only Xcode: SwiftPM builds Capstone from source, so
