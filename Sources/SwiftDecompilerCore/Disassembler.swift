@@ -12905,11 +12905,36 @@ public struct Disassembler: Sendable {
         var mergedThrowEnds = Set<UInt64>()
         var mergedThrowExits = Set<UInt64>()
         if throwsSignature?.isThrowing == true && !opaqueErrorProofTransfer {
+            let sharedExitBlocks = cfg.basicBlocks(of: function, consumer: "merged-throw-epilogue")
+            /// Whether the block a throwing path shares with the return does
+            /// nothing a reader sees before its `ret`. The throw is printed
+            /// at the end of the throwing path, ahead of that block, so work
+            /// in the block read as skipped by the throw: `defer {
+            /// log.entries = 99 }; if x == 3 { throw … }` rendered `throw ?`
+            /// and only then `arg0.entries = 99`, under a plain `return`.
+            /// A store and a call that is not runtime noise are such work.
+            /// An exit that is not found shares nothing provable.
+            func sharedBlockIsEpilogueOnly(before exit: UInt64) -> Bool {
+                guard let block = sharedExitBlocks.first(where: { $0.instructions.contains { $0.address == exit } })
+                else { return false }
+                for insn in block.instructions.prefix(while: { $0.address != exit }) {
+                    if insn.controlFlow == .call, !DisassembledFunction.isRuntimeNoise(insn) { return false }
+                    // Every store mnemonic (`str`, `stp`, `stur`, `strb`,
+                    // `st1`, …): none is part of an epilogue, which loads.
+                    if insn.text.hasPrefix("st") { return false }
+                }
+                return true
+            }
             for (exit, paths) in analysis.exitErrorValuesByPredecessor {
                 let throwing = paths.filter { isThrownError($0.value) }.map(\.key)
                 guard !throwing.isEmpty else { continue }
                 if throwing.count == paths.count {
                     mergedThrowExits.insert(exit)
+                } else if !sharedBlockIsEpilogueOnly(before: exit) {
+                    // Neither a throw before the shared work nor a return
+                    // after it is true of every path: the exit stays
+                    // unresolved.
+                    continue
                 } else {
                     mergedThrowEnds.formUnion(throwing)
                     // The value returned is the normal paths' alone: the

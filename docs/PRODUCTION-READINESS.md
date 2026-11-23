@@ -61,6 +61,38 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: sprint E05-a, a throw printed ahead of work it shares
+
+**FIXED (soundness), by declining.** Third sprint of
+[ABI-SPRINTS.md](ABI-SPRINTS.md), and the "throw placed before merged
+cleanups" entry of the wrong-render tables below. A throw that joins the
+normal path before the `ret` was printed at the end of its own path, on
+the assumption that the block the two share is the epilogue alone. With a
+`defer` it holds the deferred work: `defer { ledger.entries = 99 }; if x
+== 3 { throw … }` at -O rendered `throw ?`, then `arg0.entries = 99`, then
+`return`, as if the throw skipped the store and the function then
+returned.
+
+When the shared block holds a store or a call that is not runtime noise,
+the throw is no longer moved ahead of it. The work prints once, for both
+paths, and the exit is the existing
+`machine_return() /* unresolved Swift success/error exit */`. A shared
+block that is the epilogue alone keeps its `throw ?`. Fixture
+`deferthrow.swift`.
+
+Against `a16d9d0`, the blast radius moves three files: the new fixture,
+and `PluginMessage.MacroRole.init(from:)` in
+libSwiftCompilerPluginMessageHandling and its stripped copy, where one
+`throw ?` was printed ahead of shared work. 8 lines in each pseudocode
+view, 12 in the listing, 16 in JSON. Over 3,212 renders, instructions
+retired moved -0.02% and summed peak footprint +0.25%.
+
+**OPEN (completeness):** the exit declines where it could say more. The
+shared work could be printed on each path, ending one in its throw and
+the other in its return.
+
+`a16d9d0` is sprint G06-a. Both sprints passed the gate with 2,120 tests.
+
 ## 2026-11-23: sprint G06-a, a cast target cut short
 
 **FIXED (soundness).** Second sprint of [ABI-SPRINTS.md](ABI-SPRINTS.md).

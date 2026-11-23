@@ -61,8 +61,8 @@ premise touches.
 | # | Sprint | Behaviour | Axis | Size | Status |
 |---|---|---|---|---|---|
 | 1 | [G01-a](research/abi-sprints-2026-11-23/02-generics-closures.md) | Keep a source metatype argument visible | soundness | M | fixed in `c3c80c3`: reproduced, see [readiness](PRODUCTION-READINESS.md#2026-11-23-sprint-g01-a-a-metatype-argument-dropped-from-its-call) |
-| 2 | [G06-a](research/abi-sprints-2026-11-23/02-generics-closures.md) | Do not print a generic cast with a truncated target | soundness | S | fixed: reproduced, see [readiness](PRODUCTION-READINESS.md#2026-11-23-sprint-g06-a-a-cast-target-cut-short) |
-| 3 | [E05-a](research/abi-sprints-2026-11-23/03-async-errors.md) | Keep shared cleanup before throw | soundness | M | open |
+| 2 | [G06-a](research/abi-sprints-2026-11-23/02-generics-closures.md) | Do not print a generic cast with a truncated target | soundness | S | fixed in `a16d9d0`: reproduced, see [readiness](PRODUCTION-READINESS.md#2026-11-23-sprint-g06-a-a-cast-target-cut-short) |
+| 3 | [E05-a](research/abi-sprints-2026-11-23/03-async-errors.md) | Keep shared cleanup before throw | soundness | M | fixed by declining: reproduced, see [readiness](PRODUCTION-READINESS.md#2026-11-23-sprint-e05-a-a-throw-printed-ahead-of-work-it-shares) |
 | 4 | [E07-b](research/abi-sprints-2026-11-23/03-async-errors.md) | Retain trapping-tail outcome uncertainty | soundness | S/M | open |
 | 5 | [F04-a](research/abi-sprints-2026-11-23/04-foreign-ownership.md) | Never fold a virtual tail through a base implementation's body | soundness | S | open |
 | 6 | [C10-a](research/abi-sprints-2026-11-23/02-generics-closures.md) | Reject a storage property's function type as its entry signature | soundness | S | open |
