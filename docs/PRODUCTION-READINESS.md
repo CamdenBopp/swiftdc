@@ -94,7 +94,8 @@ The original publication gate for `ff02d78` passed **2,105 enforcing
 tests / 43 suites (1,423.500 s)** and all **3,180 cost rows** met default
 budgets. Total retired instructions increased by **0.04%** and summed
 per-run peak footprint decreased by **0.22%**. The gate pushed `ff02d78`
-to `dev`. Hosted CI is pending.
+to `dev`. Hosted CI passed **2,105 tests / 43 suites (2,411.742 s)**
+on the same published commit.
 [Hosted run 45101565065](https://github.com/CamdenBopp/swiftdc/actions/runs/45101565065)
 
 ## 2026-11-22: local Go build-ID streaming fix
