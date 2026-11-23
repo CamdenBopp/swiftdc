@@ -61,6 +61,36 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: an inlined fragment's call keeps its library binding
+
+**FIXED (completeness).** -Osize outlines the tail of a runtime call into
+a fragment (`mov x2, #0; mov x3, #0; b swift_beginAccess`), and the site
+that reaches it is rewritten to the call the fragment makes. The rewritten
+site kept the callee's name and target but not `namedABIContract`, the
+proof that the name is bound to the library's function, so it was laid out
+as an unknown call. It now takes the fact from the fragment's own
+terminator.
+
+Against `e4a5913`, the blast radius moves 24 files, all -Osize images:
+339 lines in each pseudocode view, 1,398 in the listing, 4,126 in JSON.
+Runtime calls at inlined sites gain their arguments
+(`swift_allocObject(…)` to `swift_allocObject(type metadata for
+Swift._ContiguousArrayStorage<Any>, 64, 7)`, and the same for
+`swift_allocError`, `swift_initStackObject`, `swift_deallocClassInstance`,
+`swift_setDeallocating` and `swift_willThrowTypedImpl`). A call whose one
+argument is the previous call's result now nests it
+(`malloc_size(swift_allocObject(…, 288, 7))`). 22 lines are binding names
+shifted by one where a new `let` precedes them. Over 3,228 renders,
+instructions retired moved +0.11% and summed peak footprint -0.16%.
+
+Found while preparing sprint O06-a, which needs this fact at such a site.
+
+Hosted CI for `e4a5913` passed:
+[run 45178500722](https://github.com/CamdenBopp/swiftdc/actions/runs/45178500722).
+`e4a5913` is sprint C10-a, and the hosted run for `a16d9d0`
+([45152385554](https://github.com/CamdenBopp/swiftdc/actions/runs/45152385554))
+passed before it.
+
 ## 2026-11-23: sprint C10-a, a property's function type read as its accessor's signature
 
 **FIXED (soundness).** Sixth sprint of [ABI-SPRINTS.md](ABI-SPRINTS.md),

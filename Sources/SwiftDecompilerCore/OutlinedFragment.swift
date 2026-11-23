@@ -229,11 +229,17 @@ struct OutlinedFragment: Sendable {
             guard mnemonic == "b" else { return .declined("terminator") }
             let text = reachedByCall ? "bl" + terminator.text.dropFirst() : terminator.text
             let annotation = [terminator.annotation, note].compactMap { $0 }.joined(separator: "  ")
+            // The site calls the terminator's target, so that target's
+            // library binding is the site's: an access marker reached
+            // through `mov x2, #0; mov x3, #0; b swift_beginAccess` is the
+            // runtime's own.
+            var facts = origin
+            facts.namedABIContract = terminator.facts.namedABIContract
             let visible = Instruction(
                 address: site.address, text: text, annotation: annotation,
                 controlFlow: reachedByCall ? .call : .branch, branchTarget: terminator.branchTarget,
                 detail: reachedByCall ? site.detail : terminator.detail,
-                callee: .kept(terminator.callee), facts: origin)
+                callee: .kept(terminator.callee), facts: facts)
             return .inlined(Plan(visible: visible, prefix: body.map(rebased), prefixWrites: writes(body),
                                  kind: reachedByCall ? "call" : "tail-call"))
         }
