@@ -61,6 +61,31 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: sprint F04-a, a virtual tail is not folded through the base body
+
+**GUARDED, not reproduced.** Fifth sprint of
+[ABI-SPRINTS.md](ABI-SPRINTS.md). The source read predicted that a tail
+call through self's vtable could take the base implementation's
+unwritten-result summary and render `return arg0` when an override may
+run. It does not. With `class B { func f(_ x: Int) -> Int { x }; func
+g(_ x: Int) -> Int { f(x) } }` and an override `f` returning `x &+ 9`,
+`B.g` renders `return self.f(arg0)` at -Onone, -O and -Osize, and
+`h(x) { f(x) &+ 1 }` renders `return (self.f(arg0) + 1)`.
+
+The mechanism: the dispatch is `ldr x8, [x20]; ldr x1, [x8, #slot]; br
+x1`, and the passthrough fold reads only a direct branch's target, so a
+branch through a register is never a candidate. `selftail.swift` already
+pins self-dispatched tails, so no fixture was added. No code changed.
+
+**OPEN (completeness), seen while probing:** dispatch on an object
+argument (`func via(_ b: B, _ x: Int) -> Int { b.f(x) }`) declines as an
+unresolved indirect call whose recovered arguments repeat one register
+(`[arg1, arg1, …]`), and dispatch on a stored field prints the slot's
+method with no receiver (`Virt.Base.pass(arg0)` for `self.b.pass(x)`).
+Sprints F01-b and F04-b cover the receiver.
+
+`3625d5b` is sprint E07-b.
+
 ## 2026-11-23: sprint E07-b, a tail into a body that may not return
 
 **FIXED (soundness).** Fourth sprint of [ABI-SPRINTS.md](ABI-SPRINTS.md).
