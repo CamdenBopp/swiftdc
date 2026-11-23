@@ -1270,7 +1270,12 @@ public extension DisassembledFunction {
     /// the program logic stands out.
     static func isRuntimeNoise(_ insn: Instruction) -> Bool {
         guard let callee = calleeName(of: insn) else { return false }
-        return (!isARCReferenceHelper(callee) || insn.facts.arcIdentityContract) && isRuntimeNoise(callee)
+        // Hiding a call says it is the runtime's bookkeeping. The name
+        // says that only for the library's own function: an ARC entry
+        // point by its identity contract, anything else by its binding.
+        // An in-image `swift_endAccess` that wrote a field was hidden.
+        let bound = isARCReferenceHelper(callee) ? insn.facts.arcIdentityContract : insn.facts.namedABIContract
+        return bound && isRuntimeNoise(callee)
     }
 
     static func isRuntimeNoise(_ callee: String) -> Bool {

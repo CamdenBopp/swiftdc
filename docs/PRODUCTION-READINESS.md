@@ -61,6 +61,40 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: sprint O01-a, a call hidden as runtime bookkeeping by its name
+
+**FIXED (soundness).** Tenth sprint of [ABI-SPRINTS.md](ABI-SPRINTS.md),
+and the open half of sprint O06-a. Retains, releases, access markers and
+task allocation are hidden so the program's own statements stand out. A
+call was hidden for its name. An ARC entry point already needed its
+identity contract; anything else did not, so the in-image
+`swift_endAccess` of `accesstwin.swift`, which writes a field, was absent
+from the render: after O06-a the value read `?` with nothing shown that
+could have changed it.
+
+A call is now hidden only with its library binding. The twin's call
+prints (`swift_endAccess(arg0)` before `return ?`). The runtime's own
+markers, bound to libswiftCore, stay hidden.
+
+libobjc's register-specific releases (`objc_release_x20`) are assembly
+entry points with no SDK declaration, so the provider table, built from
+declarations, did not list them and the first run showed one in
+libRetainRegister.sim.dylib. A reference of that exact shape bound to
+libobjc is now admitted.
+
+Against `27b6cd5`, the blast radius moves three files, 6 lines in each
+pseudocode view, none in the listing, 5 in JSON: the two twin images, and
+libUnprovenResult.dylib, where a `swift_task_alloc` resolved by flat
+lookup, with no binding, is now shown. No bound runtime call became
+visible across the corpus. Over 3,244 renders, instructions retired moved
++0.02% and summed peak footprint +0.05%.
+
+**OPEN:** where a hidden call's result is used as a value, the name alone
+still decides (`isRuntimeNoise(_:at:)` in enrichment); no fixture reaches
+it.
+
+The gate passed `27b6cd5` (sprints E10-a and E10-b) with 2,139 tests.
+
 ## 2026-11-23: sprint E10-b, the throw hook's evidence on a path that did not run it
 
 **FIXED (soundness), for authored code.** Ninth sprint of

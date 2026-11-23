@@ -61,7 +61,22 @@ struct RuntimeFunctionReference: Sendable, Equatable {
     func permitsNonThrowingABI(named callee: String) -> Bool {
         guard callee == symbolName else { return false }
         if DisassembledFunction.isARCReferenceHelper(callee) { return permitsARCIdentity(named: callee) }
+        // libobjc's register-specific releases (`objc_release_x20`) are
+        // assembly entry points with no SDK declaration, so the provider
+        // table, built from declarations, does not list them. Bound to
+        // libobjc they are its own.
+        if Self.isRegisterSpecificObjCRelease(callee) {
+            return ["/usr/lib/libobjc.A.dylib", "/usr/lib/libobjc.dylib"].contains(libraryName)
+        }
         return NonThrowingABIProviders.permits(callee, from: libraryName)
+    }
+
+    /// `objc_release_x<n>` for a register number, and nothing longer.
+    static func isRegisterSpecificObjCRelease(_ name: String) -> Bool {
+        let prefix = "objc_release_x"
+        guard name.hasPrefix(prefix) else { return false }
+        let digits = name.dropFirst(prefix.count)
+        return (1...2).contains(digits.count) && digits.allSatisfy(\.isNumber)
     }
 
     /// Exact symbol/provider agreement. A consumer still needs its matching

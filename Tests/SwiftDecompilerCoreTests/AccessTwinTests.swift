@@ -56,3 +56,62 @@ func aFieldReadWithNoCallBetweenIsStillNamedIfPresent(image: String) async throw
     #expect(!ValueTracer.CallFacts(callee: "swift_retain").writesNoFields)
     #expect(ValueTracer.CallFacts(callee: "swift_retain", arcIdentityContract: true).writesNoFields)
 }
+
+/// A call is hidden as runtime bookkeeping by its name. The twin's call
+/// was hidden with the rest, so the function that changed the field was
+/// not in the render at all: `acrossEnd` read as a lone `return`. A call
+/// is hidden only with its library binding; the twin's is shown.
+@Test(arguments: ["libAccessTwin.dylib", "libAccessTwin.onone.dylib"])
+func anAccessMarkersNameTwinIsNotHiddenAsRuntimeNoiseIfPresent(image: String) async throws {
+    guard let end = try await views(image, "acrossEnd"),
+          let begin = try await views(image, "acrossBegin") else { return }
+    for text in end {
+        let lines = text.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        let call = try #require(lines.firstIndex { $0.hasPrefix("swift_endAccess(") }, Comment(rawValue: text))
+        // Before the exit whose value it changed.
+        #expect(try #require(lines.firstIndex(of: "return ?")) > call, Comment(rawValue: text))
+    }
+    for text in begin {
+        let lines = text.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        let call = try #require(lines.firstIndex { $0.hasPrefix("swift_beginAccess(") }, Comment(rawValue: text))
+        #expect(try #require(lines.firstIndex(of: "AccessTwin.consume(?)")) > call, Comment(rawValue: text))
+    }
+}
+
+/// The control: the runtime's own markers, bound to libswiftCore, stay
+/// hidden. `Holder.total` brackets each field read with one
+/// (reconstruction.swift, -Osize).
+@Test func theRuntimesOwnAccessMarkersStayHiddenIfPresent() async throws {
+    let path = "Fixtures/Sample/libReconstruction.osize.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path)
+    }
+    let total = try #require(functions.first { $0.displayName.hasPrefix("Reconstruction.BoxA.Holder.total.getter") })
+    #expect(total.instructions.contains { DisassembledFunction.calleeName(of: $0) == "swift_beginAccess" })
+    for text in [total.renderStructured(), total.renderPseudo()] {
+        #expect(!text.contains("swift_beginAccess"), Comment(rawValue: text))
+        #expect(text.contains("return (self.first + self.second)"), Comment(rawValue: text))
+    }
+}
+
+/// libobjc's register-specific releases have no SDK declaration, so the
+/// provider table does not list them. Bound to libobjc they are still its
+/// own, and stay hidden (retainregister.swift, built for the simulator).
+@Test func aRegisterSpecificReleaseBoundToLibobjcStaysHiddenIfPresent() async throws {
+    let path = "Fixtures/Sample/libRetainRegister.sim.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path)
+    }
+    let join = try #require(functions.first { $0.displayName.hasPrefix("RetainRegister.Node.join(") })
+    #expect(join.instructions.contains { DisassembledFunction.calleeName(of: $0) == "objc_release_x20" })
+    for text in [join.renderStructured(), join.renderPseudo()] {
+        #expect(!text.contains("objc_release"), Comment(rawValue: text))
+    }
+    #expect(RuntimeFunctionReference.isRegisterSpecificObjCRelease("objc_release_x20"))
+    #expect(RuntimeFunctionReference.isRegisterSpecificObjCRelease("objc_release_x1"))
+    for name in ["objc_release", "objc_release_x", "objc_release_x20_probe", "objc_release_x200", "objc_retain_x20"] {
+        #expect(!RuntimeFunctionReference.isRegisterSpecificObjCRelease(name), "\(name)")
+    }
+}
