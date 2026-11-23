@@ -11895,7 +11895,8 @@ public struct Disassembler: Sendable {
                        let constant = Self.renderTypedConstant(bits: bits, type: types[index]) {
                         parts.append(constant)
                     } else {
-                        parts.append(renderValue(Self.floatingPointValue(values[index], type: types[index]), depth: depth))
+                        let rendered = renderValue(Self.floatingPointValue(values[index], type: types[index]), depth: depth)
+                        parts.append(DisassembledFunction.sourceMetatypeArgument(rendered, parameterType: types[index]) ?? rendered)
                     }
                     index += 1
                 }

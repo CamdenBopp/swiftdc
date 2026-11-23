@@ -636,7 +636,7 @@ struct ABISourceLoweringTests {
     }
     // x0 still holds `k`: the callee ignores `t`, so nothing set it.
     #expect(try text("callDescribe").contains("MetatypeArgs.describe<A>(?, arg0)"))
-    #expect(try text("callClassMeta").contains("MetatypeArgs.classMeta(type metadata accessor for MetatypeArgs.Base(), arg0)"))
+    #expect(try text("callClassMeta").contains("MetatypeArgs.classMeta(MetatypeArgs.Base.self, arg0)"))
     // A generic value-type method: `self` and then T's metadata follow the
     // formals, so nothing past them is shown. callPut's own `k` is seeded
     // after its Box (one Int word), so it reads arg1.

@@ -61,6 +61,41 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: sprint G01-a, a metatype argument dropped from its call
+
+**FIXED (soundness).** First sprint of [ABI-SPRINTS.md](ABI-SPRINTS.md).
+A metatype formal is one word of type metadata in its own position. The
+display strip removes trailing metadata by its spelling, as the plumbing a
+generic callee takes after its formals, and a metatype in the last formal
+position went with it: `describe(Crate<Int>.self)` rendered `describe()`
+and `trailing(9, String.self)` rendered `trailing(9)`, at -O and -Onone,
+in both pseudocode views. The analysis held the right value; only the
+render lost it.
+
+Where a signature placed the argument and its parameter type is a
+metatype, one named type's metadata now renders as the source value
+`X.self`, which the strip leaves alone. Fixture `metatypeformals.swift`.
+Hidden generic metadata after the formals stays hidden:
+`sized<A>(7, Crate<Swift.Int>.self)` shows two arguments.
+
+Against `10f90df`, the blast radius moves 13 files: 110 lines in each
+pseudocode view, 166 in the listing, 400 in JSON. Two renders in an
+existing fixture were wrong and are now right (`droppedargs.swift`:
+`last(a, b, Int16.self)` read `last<A>(arg0, arg1)` and `only(Int32.self)`
+read `only<A>()`). Standard-library calls in four swift-syntax dylibs
+regain theirs, such as
+`KEY_TYPE_OF_DICTIONARY_VIOLATES_HASHABLE_REQUIREMENTS(Swift.String.self)`.
+Every other changed line is a metatype that was already shown, respelled
+from `type metadata for X`. Over 3,200 renders, instructions retired moved
++0.10% and summed peak footprint -0.06%.
+
+**OPEN:** a trailing metatype at a call with no signature layout is still
+stripped by spelling. At -O a specialization shows under its generic name
+without the metatype (`specialization <Swift.Int> of keep<A>()`); the
+specialized function does not take it. `load(fromByteOffset:as:)` shows
+its metatype but not its defaulted offset, which the default-argument
+rule drops.
+
 ## 2026-11-23: bics flags and subset tests
 
 **FIXED (completeness).** `bics d, n, m` sets the flags a test of `n & ~m`

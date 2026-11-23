@@ -345,6 +345,10 @@ $SWIFTC -parse-as-library -Onone -emit-library -module-name Int64Fields int64fie
 echo "==> subset tests lowered to bics (optionsubset.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -module-name OptionSubset optionsubset.swift -o libOptionSubset.dylib
 
+echo "==> a metatype passed as a source argument (metatypeformals.swift, -O and -Onone)"
+$SWIFTC -parse-as-library -O -emit-library -module-name MetatypeFormals metatypeformals.swift -o libMetatypeFormals.dylib
+$SWIFTC -parse-as-library -Onone -emit-library -module-name MetatypeFormals metatypeformals.swift -o libMetatypeFormals.onone.dylib
+
 echo "==> throws(Never) specializations serialized by an -O library and emitted by an -Onone client (typedthrowsnever_lib.swift -O, typedthrowsnever.swift -Onone)"
 $SWIFTC -parse-as-library -O -emit-library -emit-module -module-name TypedThrowsNeverLib typedthrowsnever_lib.swift -o libTypedThrowsNeverLib.dylib
 $SWIFTC -parse-as-library -Onone -emit-library -module-name TypedThrowsNever typedthrowsnever.swift -I . -L . -lTypedThrowsNeverLib -o libTypedThrowsNever.dylib

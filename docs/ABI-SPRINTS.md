@@ -60,7 +60,7 @@ premise touches.
 
 | # | Sprint | Behaviour | Axis | Size | Status |
 |---|---|---|---|---|---|
-| 1 | [G01-a](research/abi-sprints-2026-11-23/02-generics-closures.md) | Keep a source metatype argument visible | soundness | M | open |
+| 1 | [G01-a](research/abi-sprints-2026-11-23/02-generics-closures.md) | Keep a source metatype argument visible | soundness | M | fixed: reproduced, see [readiness](PRODUCTION-READINESS.md#2026-11-23-sprint-g01-a-a-metatype-argument-dropped-from-its-call) |
 | 2 | [G06-a](research/abi-sprints-2026-11-23/02-generics-closures.md) | Do not print a generic cast with a truncated target | soundness | S | open |
 | 3 | [E05-a](research/abi-sprints-2026-11-23/03-async-errors.md) | Keep shared cleanup before throw | soundness | M | open |
 | 4 | [E07-b](research/abi-sprints-2026-11-23/03-async-errors.md) | Retain trapping-tail outcome uncertainty | soundness | S/M | open |

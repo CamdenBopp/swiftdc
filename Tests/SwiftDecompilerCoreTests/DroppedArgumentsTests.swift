@@ -332,7 +332,7 @@ func aClosurePropagatedTailCallIsAReturnIfPresent(path: String) async throws {
 @Test func anUnoptimizedCallKeepsItsMetatypeIfPresent() async throws {
     guard let functions = try await functions("Fixtures/Sample/libDroppedArgs.Onone.dylib") else { return }
     let text = try caller(functions, "useMeta")
-    #expect(text.contains("DroppedArgs.meta<A>(type metadata for Swift.Int8, arg0"), Comment(rawValue: text))
+    #expect(text.contains("DroppedArgs.meta<A>(Swift.Int8.self, arg0"), Comment(rawValue: text))
 }
 
 /// A folded address has no symbol, and a `Tt` clause is then invisible: the

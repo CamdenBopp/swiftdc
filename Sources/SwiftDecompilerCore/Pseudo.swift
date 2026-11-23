@@ -1433,6 +1433,33 @@ public extension DisassembledFunction {
         "__swift_instantiateConcreteTypeFromMangledName",
     ]
 
+    /// A metadata reference as the source value it is when the callee's
+    /// own parameter is a metatype: `type metadata for X` passed for a
+    /// `T.Type` or `Any.Type` formal is the argument `X.self`. Metadata
+    /// passed after the formals is plumbing and is stripped by spelling, so
+    /// a formal left in that spelling was stripped with it:
+    /// `describe(Box<Int>.self)` rendered `describe()`, a call with fewer
+    /// arguments than it makes. Nil for any other parameter type, and for
+    /// a value that is not one named type's metadata.
+    static func sourceMetatypeArgument(_ rendered: String, parameterType: String) -> String? {
+        guard parameterType.trimmingCharacters(in: .whitespaces).hasSuffix(".Type") else { return nil }
+        let name: Substring
+        if rendered.hasPrefix("type metadata for ") {
+            name = rendered.dropFirst("type metadata for ".count)
+        } else if rendered.hasPrefix("type metadata accessor for "), rendered.hasSuffix("()") {
+            // A non-generic type's accessor takes nothing and returns that
+            // type's metadata; a generic one takes arguments and is left.
+            name = rendered.dropFirst("type metadata accessor for ".count).dropLast(2)
+        } else {
+            return nil
+        }
+        guard !name.isEmpty else { return nil }
+        // `(any P).self`, `((Int) -> Int).self`: a spelling with a space
+        // binds looser than the member access.
+        let simple = !name.contains(" ") || (name.hasPrefix("(") && name.hasSuffix(")"))
+        return simple ? "\(name).self" : "(\(name)).self"
+    }
+
     /// Drop implicit-plumbing arguments, leaving the source-level values.
     ///
     /// Two removal rules, matched to how each kind sits in the Swift calling
