@@ -229,6 +229,7 @@ now represented directly:
 | `async.context-escape-cap` | blocks, cap; no slots proven after an incomplete analysis |
 | `async.context-escape-unknown` | reason; missing instruction semantics |
 | `async.slot-proven` | offset, value; a portable slot fact assigned to a resume funclet |
+| `async.descriptor-handoff` | descriptor, entry, resume, sizeOperand, sizeLoad, allocationCall, provider, incomingPrivacy; the requested size and direct machine handoff, with incoming privacy unknown |
 
 `ProbeValue` supports exact unsigned bit patterns (`uint`, JSON hex strings),
 arrays and objects. Nested `name` values follow the existing redaction policy.

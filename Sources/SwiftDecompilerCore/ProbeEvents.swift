@@ -61,6 +61,9 @@ extension ProbeEvent {
 }
 
 extension ProbeEvent {
+    static let asyncDescriptorHandoff = ProbeEvent("async.descriptor-handoff", .async, .claim,
+        "A linked descriptor supplied the task allocator size operand and agrees with the direct context handoff.")
+
     // MARK: values (outlined fragments)
     static let outlinedFragmentInlined = ProbeEvent(
         "values.outlined-inlined", .values, .decision,

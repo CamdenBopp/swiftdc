@@ -2123,8 +2123,32 @@ public struct Disassembler: Sendable {
         let hints = AsyncFuncletIndex.hintSections(in: machO) { address, size in
             self.sectionBytes(address: address, size: size, in: machO)
         }
+        // The first consumer is the structured probe. Regular analysis has
+        // no additional body decode or binding scan until it consumes this fact.
+        guard Probe.isActive else {
+            return AsyncFuncletIndex.build(
+                hints: hints, functionStarts: boundaries, instructions: instructions, nameOf: nameOf
+            )
+        }
+        // Resolve the provider only for an otherwise eligible handoff. Names
+        // used by the existing grouping pass remain presentation evidence.
+        var allocatorReferences: [UInt64: RuntimeFunctionReference]?
+        let evidence = AsyncDescriptorHandoff.Evidence(allocatorAt: { stub in
+            if allocatorReferences == nil {
+                allocatorReferences = self.validatedFunctionReferences(in: machO) {
+                    $0.rawSymbol == "_swift_task_alloc"
+                }
+            }
+            return allocatorReferences?[stub]
+        }, descriptorAt: { address, entry in
+            guard let ranges = FileBackedRanges(standalone: machO) else { return nil }
+            return AsyncFunctionDescriptor.read(at: address, in: machO, ranges: ranges,
+                codeSections: self.codeSections(in: machO),
+                functionStarts: Set(Self.linkerFunctionStarts(of: machO)), expectedEntry: entry)
+        })
         return AsyncFuncletIndex.build(
-            hints: hints, functionStarts: boundaries, instructions: instructions, nameOf: nameOf
+            hints: hints, functionStarts: boundaries, instructions: instructions, nameOf: nameOf,
+            handoffEvidence: evidence
         )
     }
 
@@ -2644,6 +2668,25 @@ public struct Disassembler: Sendable {
             case .binary(_, let lhs, let rhs): return isPortable(lhs) && isPortable(rhs)
             case .unary(_, let operand): return isPortable(operand)
             default: return false
+            }
+        }
+        if Probe.isActive {
+            for (source, transfers) in index.transfers.sorted(by: { $0.key < $1.key }) {
+                for transfer in transfers {
+                    guard let handoff = transfer.descriptorHandoff else { continue }
+                    Probe.inFunction(source, function(source)?.displayName ?? "async handoff") {
+                        Probe.record(.asyncDescriptorHandoff, at: transfer.site, [
+                            "descriptor": .address(handoff.descriptor.address),
+                            "entry": .address(handoff.descriptor.entry),
+                            "resume": .address(transfer.resume),
+                            "sizeOperand": .int(Int(handoff.descriptor.requiredContextSize)),
+                            "sizeLoad": .address(handoff.sizeLoad),
+                            "allocationCall": .address(handoff.allocationCall),
+                            "provider": .label(handoff.allocator.libraryName),
+                            "incomingPrivacy": .label("unknown")
+                        ])
+                    }
+                }
             }
         }
         var result: [UInt64: [Int: AbstractValue]] = [:]

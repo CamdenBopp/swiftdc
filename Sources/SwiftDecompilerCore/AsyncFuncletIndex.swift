@@ -129,6 +129,7 @@ struct AsyncFuncletIndex: Sendable {
         let calleeName: String?
         /// The destination ABI according to this specific handoff and the hints.
         let resumeKind: AsyncResumeKind
+        var descriptorHandoff: AsyncDescriptorHandoff? = nil
 
         var runtimeWait: String? {
             if case .runtimeWait(let name) = kind { return name }
@@ -482,7 +483,8 @@ struct AsyncFuncletIndex: Sendable {
         hints: HintSections?,
         functionStarts: Set<UInt64>,
         instructions: (UInt64) -> [Instruction],
-        nameOf: (UInt64) -> String?
+        nameOf: (UInt64) -> String?,
+        handoffEvidence: AsyncDescriptorHandoff.Evidence? = nil
     ) -> AsyncFuncletIndex {
         var index = AsyncFuncletIndex(hintSectionsPresent: hints != nil)
 
@@ -938,9 +940,16 @@ struct AsyncFuncletIndex: Sendable {
                 else if item.isExecutorHop { kind = .executorHop }
                 else if let wait = item.runtimeWait { kind = .runtimeWait(wait) }
                 else { kind = .awaitCall }
+                let destinationKind = resumeKind(item.resume, item)
+                let descriptorHandoff: AsyncDescriptorHandoff? = if kind == .awaitCall,
+                    destinationKind == .awaitReturn, let entry = item.callee,
+                    functionStarts.contains(entry), let handoffEvidence {
+                    AsyncDescriptorHandoff.prove(instructions(source), source: source, site: site,
+                        resume: item.resume, entry: entry, evidence: handoffEvidence)
+                } else { nil }
                 return TransferEdge(source: source, site: site, resume: item.resume,
                                     kind: kind, callee: item.callee, calleeName: item.callee.flatMap(nameOf),
-                                    resumeKind: resumeKind(item.resume, item))
+                                    resumeKind: destinationKind, descriptorHandoff: descriptorHandoff)
             }
         }
         // Paths that share a tail share its suspension instruction: two awaits
