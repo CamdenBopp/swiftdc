@@ -118,6 +118,17 @@ private func checkAgainstNative(path: String, prefix: String, expected: Int,
 }
 
 
+/// `bics` sets the flags a test of `n & ~m` would: N and Z from the result,
+/// C and V clear. Its flags were unmodelled, so every condition after one
+/// declined: `OptionSet.contains` at -O is `bics xzr, need, have; cset eq`
+/// and rendered `return ?`. Both destinations (the zero register and a
+/// scratch register), both widths, each shift of the second operand and
+/// every condition code must agree with native execution.
+@Test func bitClearConditionsAgreeWithNativeAtBothWidthsIfPresent() async throws {
+    try await checkAgainstNative(path: "Fixtures/Sample/libFlagWidthProbes.dylib", prefix: "fn", expected: 420) { _, _ in false }
+}
+
+
 /// A join can select both the NZCV producer and its width. Query each arm's
 /// actual flags; treating the selected arithmetic result as a test invents
 /// C/V, and treating a selected width as 64 misreads bit31 and word carry.

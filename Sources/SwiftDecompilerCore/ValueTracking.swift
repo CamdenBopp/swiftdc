@@ -4229,6 +4229,14 @@ public struct ValueTracer: Sendable {
                                                      source(detail.operands[2], in: registers), value: result)
                 registers[Self.flagsWidthKey] = .immediate(UInt64(effect.destination.widthBits))
             }
+            if detail.id == AARCH64_INS_BICS {
+                // `bics d, n, m` sets the flags `tst n, ~m` would: N and Z
+                // of the result, C and V clear. It is how `-O` lowers a
+                // subset test (`OptionSet.contains` is `bics xzr, need,
+                // have; cset eq`), usually with xzr for a destination.
+                registers[Self.flagsKey] = testFlags(result, .immediate(.max), value: result)
+                registers[Self.flagsWidthKey] = .immediate(UInt64(effect.destination.widthBits))
+            }
             write(effect.destination, result, into: &registers)
 
         case AARCH64_INS_CLZ, AARCH64_INS_CLS, AARCH64_INS_RBIT:

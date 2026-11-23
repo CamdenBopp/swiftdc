@@ -61,6 +61,37 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: bics flags and subset tests
+
+**FIXED (completeness).** `bics d, n, m` sets the flags a test of `n & ~m`
+would: N and Z from the result, C and V clear. The tracer cleared the
+flags and modelled nothing, so every condition after a `bics` declined.
+`-O` lowers a subset test that way, usually with the zero register as
+destination: `have.contains(need)` on an `OptionSet` is `bics xzr, need,
+have; cset eq` and rendered `return ?`. It now renders
+`return ((arg1.rawValue & ~arg0.rawValue) == 0)`. Fixture
+`optionsubset.swift`.
+
+The model is checked against native execution. `flagwidth.swift` appends
+420 probes (prefix `fn`): both widths, the zero register and a scratch
+destination, five forms of second operand and all 14 condition codes,
+`cset` and branch consumers. All 420 are claimed and agree on 119,700
+comparisons. Earlier probes keep their addresses.
+
+Against `ca9eef5`, the blast radius moves two files, both fixtures this
+change adds or extends: 808 lines in the structured view and the listing,
+568 in pseudo, 698 in JSON. No other fixture and neither swift-syntax
+dylib changed. Over 3,192 renders, instructions retired moved -0.07% and
+summed peak footprint +0.15%.
+
+**OPEN:** the 32-bit `asr` form evaluates correctly but prints its
+sign-extended operand as `?` inside the expression
+(`~(((? << 32) >>ˢ 32) >>ˢ 3)`), as `bic w, w, w, asr` already did.
+`ccmn` still declines: `a == -1 || b == -2` renders `return ?`.
+
+Hosted CI for `1265db5` (folded symbol candidates) passed:
+[run 45119513492](https://github.com/CamdenBopp/swiftdc/actions/runs/45119513492).
+
 ## 2026-11-23: Int64 and UInt64 struct fields in registers
 
 **FIXED (completeness).** A small struct of scalars is passed one register

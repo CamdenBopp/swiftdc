@@ -187,4 +187,18 @@ for code in ["hs", "lo", "vs", "vc"] {
 out += [".globl _fp_source", "_fp_source:", "    str x1, [x0]", "    ret"]
 out += [".globl _fp_identity", "_fp_identity:", "    ret"]
 
+
+// `bics d, n, m` sets the flags of a test of `n & ~m`: N and Z from the
+// result, C and V clear. Its destination is usually the zero register:
+// `OptionSet.contains` at -O is `bics xzr, need, have; cset eq`. Appended
+// last, so every earlier probe keeps its address.
+for r in ["w", "x"] {
+    for operand in ["\(r)1", "\(r)1, lsl #4", "\(r)1, lsr #3", "\(r)1, asr #3", "\(r)1, ror #7"] {
+        for code in codes {
+            probe("fn", "bicsz", ["bics \(r)zr, \(r)0, \(operand)"], code, branch: true)
+            probe("fn", "bics", ["bics \(r)8, \(r)0, \(operand)"], code, branch: false)
+        }
+    }
+}
+
 print(out.joined(separator: "\n"))
