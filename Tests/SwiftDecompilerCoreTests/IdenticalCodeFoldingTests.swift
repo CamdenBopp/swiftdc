@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Demangling
 @testable import SwiftDecompilerCore
 import MachOKit
 
@@ -45,7 +46,13 @@ private func foldedAddresses(in machO: MachOFile) -> [UInt64: [String]] {
           let machO = try? BinaryLoader.load(path: optimizedFixture)
     else { return }
 
-    let folded = foldedAddresses(in: machO)
+    // A function and its own witness are one function described twice, not
+    // a fold (`OwnWitnessTests`): that address keeps the function's name.
+    let folded = foldedAddresses(in: machO).filter { _, symbols in
+        Disassembler.functionBehindOwnWitnesses(symbols) { symbol in
+            (try? demangleAsNode(String(symbol.dropFirst())))?.print(using: .default)
+        } == nil
+    }
 
     // Adversarial: the fixture must actually EXHIBIT folding, or the assertions
     // below are vacuous. A `-O` build with a linker default of `-icf` does; if a

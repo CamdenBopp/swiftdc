@@ -29,8 +29,9 @@ private func sharedBodyAddress() throws -> UInt64? {
     let expected = [
         "FoldedCalls.callPair()": "\(sub)(3, 4)",
         "FoldedCalls.callAdd(Swift.Int)": "\(sub)(arg0, 5)",
-        // x1 is the caller's `b.a`, unproven here, but the body reads it.
-        "FoldedCalls.callBox(FoldedCalls.Box)": "\(sub)(6, ?)",
+        // x1 is the caller's `b.a`: its struct parameter, passed as its
+        // field in x0 and moved there.
+        "FoldedCalls.callBox(FoldedCalls.Box)": "\(sub)(6, arg0.a)",
     ]
     // The unfiltered decode (objdump) and a filtered one (Capstone) name
     // calls on different paths.

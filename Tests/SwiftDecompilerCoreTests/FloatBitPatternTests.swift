@@ -27,7 +27,7 @@ import Testing
 }
 
 /// A bit-level operator's result is an integer whatever it read. A word
-/// moved by `memcpy` has no known register file, so the Double arrives bare:
+/// moved by `memcpy` retains the FP store's encoding as a raw integer:
 /// `str d0, [sp, #8]; memcpy(sp, sp + 8, 8); ldrb w8, [sp]; cmp w8, #7`
 /// (`floatbitswidth.s`), and the 7 rendered as the Double `3.5e-323`. A byte
 /// reversal (`ldr x8, [sp]; rev x8, x8`) is integer-only the same way.
@@ -39,10 +39,10 @@ import Testing
         try #require(functions.first { $0.displayName.hasPrefix("FloatBitsWidth.\(name)(") }).renderStructured()
     }
     let copied = try render("copied")
-    #expect(copied.contains("(arg0 & 255) != 7"), "\(copied)")
+    #expect(copied.contains("(arg0.bitPattern & 255) != 7"), "\(copied)")
     #expect(!copied.contains("e-323"))
     let swapped = try render("swapped")
-    #expect(swapped.contains("byteSwap64(arg0) != 7"), "\(swapped)")
+    #expect(swapped.contains("byteSwap64(arg0.bitPattern) != 7"), "\(swapped)")
     #expect(!swapped.contains("e-323"))
 }
 
@@ -62,7 +62,7 @@ import Testing
         let result = ValueTracer().analyze(function, entry: nil)
         return (result.exitValues[body.last!.address], result.exitFloatValues[body.last!.address])
     }
-    let double = AbstractValue.unary(.toFloat(bits: 64), .immediate(5))
+    let double = AbstractValue.unary(.floatResult(bits: 64, upperZero: true), .unary(.toFloat(bits: 64), .immediate(5)))
     // mov w8, #5; scvtf d1, w8; fmov x0, d1; ret
     #expect(trace([0x528000a8, 0x1e620101, 0x9e660020, 0xd65f03c0]).value
         == .unary(.bitPattern(bits: 64), double))
@@ -70,7 +70,7 @@ import Testing
     #expect(trace([0x528000a8, 0x1e620101, 0x9e660029, 0x9e670120, 0xd65f03c0]).float == double)
     // mov w8, #5; scvtf s1, w8; fmov w0, s1; ret
     #expect(trace([0x528000a8, 0x1e220101, 0x1e260020, 0xd65f03c0]).value
-        == .unary(.bitPattern(bits: 32), .unary(.toFloat(bits: 32), .immediate(5))))
+        == .unary(.bitPattern(bits: 32), .unary(.floatResult(bits: 32, upperZero: false), .unary(.toFloat(bits: 32), .immediate(5)))))
     // mov x9, #0x4059000000000000; fmov d2, x9; fmov x0, d2; ret: the same bits
     #expect(trace([0xd2e80b29, 0x9e670122, 0x9e660040, 0xd65f03c0]).value == .immediate(0x4059000000000000))
 }
@@ -123,9 +123,9 @@ import Testing
         return (result.exitValues[body.last!.address], result.exitFloatValues[body.last!.address])
     }
     // fmov d0, x0; ret
-    #expect(trace([0x9e670000, 0xd65f03c0]).float == .unary(.floatFromBits(bits: 64), .argument(0)))
+    #expect(trace([0x9e670000, 0xd65f03c0]).float == .unary(.floatResult(bits: 64, upperZero: true), .unary(.floatFromBits(bits: 64), .argument(0))))
     // fmov s0, w0; ret
-    #expect(trace([0x1e270000, 0xd65f03c0]).float == .unary(.floatFromBits(bits: 32), .argument(0)))
+    #expect(trace([0x1e270000, 0xd65f03c0]).float == .unary(.floatResult(bits: 32, upperZero: true), .unary(.floatFromBits(bits: 32), .argument(0))))
     // fmov d1, x0; fmov x0, d1; ret
     #expect(trace([0x9e670001, 0x9e660020, 0xd65f03c0]).value == .argument(0))
 }
@@ -171,7 +171,7 @@ import Testing
         try #require(functions.first { $0.displayName.hasPrefix("FloatReinterpret.\(name)(") }).renderStructured()
     }
     #expect(try render("doubleFromBits").contains("sd((Swift.Double.init(bitPattern:)(arg0) * 2.0))"))
-    #expect(try render("floatFromBits").contains("sf((Swift.Float.init(bitPattern:)(arg0) * 2.0))"))
+    #expect(try render("floatFromBits").contains("sf((Swift.Float.init(bitPattern:)(arg0) * Float(2.0)))"))
     #expect(!(try render("doubleFromBits")).contains("Swift.Double.init(arg0)"))
 }
 
@@ -265,9 +265,9 @@ import Testing
     #expect(trace([0xfd0007e0, 0xfd4007e0, ret]).float == .argument(0))
     // str d0, [sp, #8]; str x0, [sp, #8]; ldr x0, [sp, #8]: the last store's file
     #expect(trace([0xfd0007e0, 0xf90007e0, 0xf94007e0, ret]).value == .argument(0))
-    // str d0, [sp, #16]; str q0, [sp, #16]; ldr x0, [sp, #16]: a store of no
-    // known file leaves none behind
-    #expect(trace([0xfd000be0, 0x3d8007e0, 0xf9400be0, ret]).value == .argument(0))
+    // str d0, [sp, #16]; str q0, [sp, #16]; ldr x0, [sp, #16]: Q stores
+    // raw words, including the bit pattern of a tracked scalar low lane.
+    #expect(trace([0xfd000be0, 0x3d8007e0, 0xf9400be0, ret]).value == double)
     // str d0, [sp, #8]; ldr s0, [sp, #8]: a Double's word is no Float
     #expect(trace([0xfd0007e0, 0xbd400be0, ret]).float == .unknown)
     // str x0, [sp, #8]; ldr s0, [sp, #8]: half of a general store

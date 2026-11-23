@@ -78,8 +78,11 @@ func main() throws -> Int32 {
     guard !regions.isEmpty, regions.allSatisfy({ $0.size > 0 && $0.offset >= 0 && $0.offset <= base.count && $0.size <= base.count - $0.offset }) else {
         throw FuzzError.invalid("no valid mutation ranges")
     }
-    let commands = container ? [["dump"], ["layout"], ["objc"], ["interface"], ["swift-version"]]
-        : [["dump"], ["interface"], ["objc"], ["objc", "--methods"], ["layout"], ["disasm"], ["xrefs", "--unreferenced"], ["analyze"]]
+    // Every entry point: the plain listing (llvm-objdump), the streamed
+    // Capstone views and the call graph each read the image differently.
+    let analysis = [["disasm"], ["disasm", "--pseudo"], ["disasm", "--structured"], ["xrefs", "--unreferenced"]]
+    let commands = container ? [["dump"], ["layout"], ["objc"], ["interface"], ["swift-version"]] + analysis
+        : [["dump"], ["interface"], ["objc"], ["objc", "--methods"], ["layout"], ["analyze"]] + analysis
     let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("swiftdc-fuzz-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: scratch) }

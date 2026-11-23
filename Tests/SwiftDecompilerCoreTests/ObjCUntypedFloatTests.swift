@@ -34,6 +34,9 @@ func anUntypedSendPassingAFloatDeclinesItsArgumentsIfPresent(path: String) async
         "_copyThenTake": "[? take:3 and:4]",
         // The 128-bit zeroing of the enumeration state is no float.
         "_countAll": "[? countByEnumeratingWithState:local_",
+        // A Swift callee returns its struct in x0 and d0 at once, so a send
+        // to its x0 result does not prove d0 holds nothing of it.
+        "_putPairPart": "[? put:? at:?]",
     ]
     // A method's own double, in d0 from its entry at -O2 or reloaded there
     // at -O0, may be the send's; its long may not.

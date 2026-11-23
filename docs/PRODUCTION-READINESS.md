@@ -4,14 +4,28 @@ What stands between swiftdc and a decompiler whose output can be trusted without
 hand-checking it. Organised by **risk**, not by feature appeal.
 
 Each item is `[status] claim — evidence`. Status is one of **OPEN**, **FIXED**,
-**MITIGATED**, or **UNKNOWN**. *UNKNOWN means nobody has measured it* — it is not
+**MITIGATED**, **UNKNOWN**, **DEAD END** (measured, did not beat baseline) or
+**SUPERSEDED** (an intermediate status a later entry replaces). *UNKNOWN means nobody has measured it* — it is not
 a synonym for "probably fine", and an UNKNOWN in Soundness or Completeness
 outranks an OPEN in Reconstruction quality.
 
 Every claim here should carry either a commit, a file:line, or a command you can
 re-run. Claims without one are marked UNKNOWN by definition.
 
-Last audited: 2026-10-12, unified merge of all feature branches (MachOSwiftSection
+Last comprehensive audit: 2026-11-10, against 9369b0e. Every OPEN and UNKNOWN
+entry (93) was checked against the code and, where a fixture or a small build could show
+it, reproduced with a release binary. 11 were fixed or superseded and are
+marked so, 7 frame-memory entries are SUPERSEDED by one, and about 20 had
+stale counts, renamed symbols or a wrong stated cause, now corrected and marked
+"audited 2026-11-10". Entries not re-measured (they need a private app or a
+whole large image) say so. A 1,210-line block the 2026-11-08 commit 077d4f0
+pasted a second time, with one entry in the earlier copy corrupted, was
+removed, keeping the later copy. At that date, two remaining OPEN entries
+rendered a wrong value or crashed: the async-context assumption (`incomingLeaf`)
+and the nested ObjC type encoding. Later hash-pinned entries below record
+targeted follow-ups; they do not constitute another sweep of all 93 entries.
+
+Previously audited: 2026-10-12, unified merge of all feature branches (MachOSwiftSection
 0.22.0, Capstone 6, x8 indirect returns, arm64e preflight, async funclets), then a
 sweep of every subcommand over 7 large apps and 5 dyld-cache frameworks (partial
 when written: Prime Video, Fiery Feeds, part of Swiftcord). Re-audited the same
@@ -46,9 +60,972 @@ harness reports timeouts separately from crashes and counts subcommand runs.
 The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
+
+## 2026-11-22: local Go build-ID streaming fix
+
+**Fixed at `9341f33`, published in `3c9b005`** on Darwin arm64. The function
+table must identify `go:buildid`, its bytes must carry the Go build-ID
+prefix, and the next streaming boundary must agree with the table's
+span. The streaming path retains the named empty row, clears the
+same-address symbol fold and excludes the data start from executable
+call-target analysis. The established array and filtered behavior is
+unchanged.
+
+The expanded integration test covers four Go binaries across the
+listing, array, filtered and streaming APIs. A new test exercises
+exclusion from callable starts. The compiled baseline produced six
+issues. Re-enabling only data decoding produced four issues. Re-admitting
+only the data start to callable membership produced one. Removing
+streaming label normalization failed the pseudocode and structured
+output checks. Both CLI commands exited successfully.
+The restored focused tests and both label checks passed. The change
+expands one test, adds one and removes none.
+
+The local enforcing run passed **2,091 tests / 43 suites (1,326.776 s)**.
+All **3,180 cost rows** met default budgets against the published
+`65a627b` release. Total retired instructions decreased by **0.0246212089%**
+and the sum of per-run peak footprints increased by **0.7476131036%**.
+Eight renders changed, one structured and one pseudocode output per
+Go fixture. Each difference is confined to the first data block and
+its header. The remaining bytes and function order are identical.
+Listing and JSON outputs and all four SDK output digests are unchanged.
+
+Postchecks passed **1,092 CLI invocations**, **eight serial streaming
+invocations** and **ten guarded runs across five original apps**. Ten CLI
+pairs changed: the eight Go data blocks and two unstripped unreferenced
+build-ID names. The other output bytes are unchanged. Both binaries
+produced **84,833 ordered app function headers**, with identical app
+stdout and stderr and **228 MB** maximum sampled footprint. Independent
+raw-evidence audits passed with no unresolved differences.
+
+The original integration gate for `3c9b005eff019458dd0aa897f2c1e5c6bdd36b3e`
+passed **2,091 enforcing tests / 43 suites (1,451.119 s)** and all
+**3,180 cost rows** met default budgets. Against the published `65a627b`
+baseline on the gate inputs, total retired instructions decreased by
+**0.00334908546%** and summed per-run peak footprints increased by
+**0.2449156142%**.
+
+The gate binary SHA-256 is
+`8a10abfa2b3f390359bbf78a8a09244b16cc36c14e352cebed85c6a6c646ab66`.
+Independent gate review found byte equality with the qualified
+artifact across all **3,176 corpus renders**. The four Go fixtures
+retain the empty named data entry and the first executable function
+after it. This includes the stripped oracle whose changed build-ID
+bytes exposed the prior error.
+
+Separate verification of the published executable passed **1,092 CLI
+invocations**, **eight serial streaming invocations** and **ten guarded
+app runs**. All stdout and stderr bytes match the qualified artifact.
+The original five apps retain **84,833 ordered function headers per binary**;
+the maximum sampled footprint is **225 MB**. Independent review checked
+all 2,220 losslessly retained output streams and 18 guard logs, the original
+app identities, and both source and native-fixture inventories. No runtime
+output difference remains. Hosted CI for `3c9b005` passed **2,091
+fixture-enforced tests / 43 suites (2,370.145 s)**. The decoded checkout
+and enforcing command match that revision, and Build, Enforcing suite and
+Suite log succeeded. GitHub records the `suite-log` artifact.
+[Hosted run 45080738370](https://github.com/CamdenBopp/swiftdc/actions/runs/45080738370)
+
+## 2026-11-22: local indirect typed-error guard
+
+**FIXED at `6959523`, published in `65a627b`**, for ordinary synchronous,
+nongeneric native Swift free functions on Darwin arm64 whose exact
+same-module nominal result is five contiguous `Swift.UInt64` fields. The
+result requires indirect transport. The throw edge remains proven and renders
+`throw ?` while the indirect error payload is unresolved.
+
+The authored ABI-valid [veneer](../Fixtures/Sample/typed_error_inactive_veneer.S)
+writes two different inactive W0 values on the throw edge. The separately
+compiled [caller](../Fixtures/Sample/typed_error_inactive_client.swift) and
+[provider](../Fixtures/Sample/typed_error_inactive_provider.swift) agree on
+the actual outcomes in **54 native observations** across `-Onone`,
+`-O` and `-Osize`. The linked boundary for this signature has separate
+success and typed-error storage in X8 and X1, with X21 carrying the error
+flag. The baseline chose two different error names from the inactive word.
+Both variants return the same native errors and success values. The direct
+mixed-bank result and four-word result retain their direct error names.
+Removing the guard alone reproduces the false case and restoring it passes.
+The compiler-owned indirect probe declined on the archived baseline. The
+measured wrong case is from the authored veneer.
+
+The local enforcing suite passed **2,090 tests / 43 suites (923.138 s)**,
+with two tests added and none removed. The four-view comparison changed
+**24 streams across six new fixture images**, with the same bounded
+unresolved error statement. The SDK comparison outputs were unchanged.
+All **3,180 raw cost rows** meet default budgets. Total instructions changed
+by **−0.0244679808%** and summed per-run footprint peaks by
+**−0.1354506061%** against the published `27258f9` release.
+
+The local candidate passes **988 CLI invocations** across 38 inputs and 13 routes. The 42
+changed output pairs contain only the same error-name correction; direct
+controls and ordered function headers are preserved. Ten guarded pseudocode
+runs of the five original apps have identical output and **84,833 ordered
+headers per binary**, with a maximum sampled footprint of **217 MB**.
+Independent review reconstructs the raw costs, complete outputs, native
+return addresses and final source and fixture snapshot.
+
+The original integration gate for `65a627b` passed **2,090 enforcing tests
+/ 43 suites (1,057.716 s)** and **3,180 cost rows** within default budgets.
+Published-artifact verification covered **988 CLI checks** and **10
+guarded pseudocode runs across the five original apps**. App outputs matched
+the qualified artifact with **84,833 ordered function headers per binary**
+and a peak sampled footprint of **224 MB**. The nine typed-error fixture
+products retain the linked code and dependency records. Their SDK version
+field, UUID and signature payload differ between the qualified overlay and
+the fresh gate cache. The gate rechecked the native outcomes.
+
+Hosted CI for `65a627b` passed **2,090 fixture-enforced tests / 43 suites
+(2,251.762 s)**. The decoded job log confirms the checkout and suite result.
+[Hosted run 45063952031](https://github.com/CamdenBopp/swiftdc/actions/runs/45063952031)
+
+**Historical open finding at `65a627b`:** four cross-input renders differed
+between the qualified overlay and the fresh gate cache for
+`x8-entry-go-stripped-oracle`. Both the baseline and candidate rendered Go
+data as code in structured and pseudocode output. Different fixture bytes
+exposed the same defect in each binary. The
+[fix at `9341f33`, published in `3c9b005`](#2026-11-22-local-go-build-id-streaming-fix)
+corrects the streamed data-as-code defect.
+
+Reproduce the public fixture checks with:
+
+```sh
+Tools/fixtures.sh
+swift build --build-tests
+SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter 'inactiveX0CannotNameAnIndirectTypedError|indirectTypedErrorNeedsAnExactClosedNativeResultLayout'
+```
+
+**OPEN:** recover the actual indirect error buffer and its initialized byte
+on the producing edge. General direct and indirect typed success/error
+placement, resilience, generic and wrapper conventions, async error
+continuations, and the ordered native oracle remain open. The bound above
+does not establish an X1 rule for another signature or any helper's effects.
+
+## 2026-11-22: local signed self-storage qualification
+
+**FIXED at `eb129dad01c21faf92a4f8cd136f8bd62cbcf1c6`:** scalar self loads
+preserve their signed or zero-extending memory view before W-register
+normalization. The owned [Swift fixture](../Fixtures/Sample/SignedSelfLoad.swift)
+and [assembly](../Fixtures/Sample/signed_self_load.s) expose the former
+Float-as-integer return and duplicated full-word upper lane. Exact leaf-body,
+storage-type, return-bank, LR and scratch proofs now produce the appropriate
+conversion or separate byte/word lanes. The fixture checks 276 native
+observations across three Swift optimization levels. Subword loads no longer
+supply class ISA identity to the tested witness dispatch. Class-image mutations
+are analyzer-only; full-width metadata and the established Float32 round trip
+remain controls. No tests were removed. The isolated native tests and full
+enforcing suite pass. Eleven compiled mutation reds and the restored focused
+pass were independently checked from their logs. The mutation driver itself
+returned a failure when its parser rejected the singular final diagnostic.
+
+The local suite passed **2,088 tests / 43 suites (916.941 s)**. The 785-input
+four-view comparison retains 35 unchanged preflight declines. It and the
+four SDK rows met default budgets, with
+**3,144 cost rows**, total instructions **−0.039265%**, and the sum of
+per-run footprint peaks **+0.096846%** against published `b7bd1fa`.
+
+All **754 CLI invocations / 377 pairs** pass. All 60 changed CLI pairs match
+the reviewed corpus or exact lab producer checks. The five original guarded
+pseudocode app comparisons preserve **84,833 ordered function headers per
+binary**, with **216 MB** peak sampled footprint. All 114 changed app lines
+were checked against decoded loads, uses, Boolean metadata and receiver paths.
+These checks cover the local candidate; the hosted result below covers the
+earlier published `b7bd1fa`.
+
+**OPEN:** an additional unrestricted GoodLinks plain listing exceeded the
+unchanged **2,000 MB** guard on both baseline and candidate. These censored
+runs do not establish eventual peaks or performance equivalence. Ten guarded
+function-group captures covered all 32 changed GoodLinks functions, peaking
+at **259 MB**, to complete the instruction review.
+
+Reproduce the public fixture checks after rebuilding:
+
+```sh
+Tools/fixtures.sh
+swift build --build-tests
+SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter 'signedSelfLoads|selfStorageLoads|narrowClassISAReads|selfLoadTypedReturns'
+```
+
+The SDK Radix change preserves finite discriminator ordering. Its named
+ordering expression is pseudocode for a tag comparison. Swift source
+expressibility still needs a tag-explicit spelling. General receiver
+freshness, wider and partial FP field views, ordered native result roles,
+typed error storage and cross-await transport remain open.
+
+## 2026-11-22: recover exact narrow scalar views
+
+**FIXED at `859c38e7e5a8e67d50cee06248808a8ae46b46fa`, published in
+`b7bd1fad06e84516be3d7a4d87314e1997d407c2`:** the native
+[`LoadBits.FloatBox`](../Fixtures/Sample/LoadBits.swift) methods
+`plain` and `masked` return their Float32 field unchanged, but the
+[matching assembly](../Fixtures/Sample/load_bits.s) made the renderer print
+integer AND/shifts on `self.f`. Independent Swift IR, linked instruction
+bytes, field metadata and native calls establish the actual x20 receiver,
+32-bit storage and S0 result. These are ABI-valid assembly methods with
+compiled Swift callers and metadata; the instruction bodies were authored
+for the reduction.
+
+The tracer now simplifies an equal 64-bit LSL/ASR sign-extension pair only
+when a narrower read excludes all replicated sign bits. It crosses an AND
+only if every requested bit survives, and retains the actual read mask.
+Wider reads and unequal shifts preserve their operations. New `-Onone`,
+`-O` and `-Osize` fixtures compare native bit patterns for negative zero,
+NaN payloads and signed values. All **72 native comparisons per run** pass.
+
+The unchanged baseline produces **36 typed-return failures** across three
+APIs and both renderers. The baseline evidence script initially rejected
+Swift Testing's changed diagnostic spelling; its original failure receipt
+is retained, and separate root/independent audits certify the actual saved
+semantic failures. Five separately compiled mutations fail the intended
+assertions for the fold, mask crossing, read width, equal shifts and mask
+coverage; restored **61 focused tests** pass. The full enforcing suite
+passes **2,084 tests / 43 suites (895.015 s)**, two added and none removed.
+All **1,217 public inputs and 921 fixture products** stayed frozen through
+qualification and postchecks.
+
+The **782-input four-view comparison / 3,128 streams** changes only eight
+return sites in 16 streams. Six `plain`/`masked` returns show `return self.f`.
+Two existing `SwiftTailResults` `-Onone` functions retain their producer
+and low-8/low-16 masks while dropping sign extension outside those bits.
+Their authored Swift source, actual machine code, existing native oracle
+(**714 cases per optimization level**) and five-API tests prove the same
+truncations. The `-O`/`-Osize` controls, every other instruction and ordered
+function identity, 35 validated preflight declines and four SDK outputs
+are unchanged.
+
+All **3,132 cost rows** meet default budgets against published `c3b0c5e`:
+instructions **8,804,276,753,565 → 8,803,118,240,055 (−0.01316%)**;
+summed per-run physical peaks **29,315,133,560 → 29,475,352,624 bytes
+(+0.54654%)**.
+
+All 676 CLI invocations pass (26 inputs, 13 paths, both binaries). The
+32 changed pairs are the same eight RET facts on eight affected paths per
+image; function order/headers and stderr match. Original five guarded apps
+match all 84833 headers and output bytes; peak sampled footprint is 228 MB.
+All 260 retained published-baseline command hashes match. Historical input
+joins independently bind all old/current bytes: two retained Onone images
+change only UUID/signature bytes, as does the newly surveyed Onone tail
+image; optimized tail controls are byte-identical across fixture caches.
+
+The **original release gate** passed **2,084 enforcing tests / 43 suites
+(975.059 s)**. All **1,135 compiled-scope paths** and **921 fixture
+products** matched the local qualification. The published release
+SHA-256 is
+`40e01e1d4947be0145c2d33cd52693090ad10f5a8b7735e56b72193ad9436059`.
+Its **3,132 cost rows** met default budgets against `c3b0c5e`.
+Total instructions changed by **−0.019789%** and the sum of per-run
+physical footprint peaks changed by **+0.350021%**.
+
+The published binary matches all **338 CLI checks** and five original
+guarded apps: **84,833 ordered function headers**, identical output and
+stderr, and **215 MB** peak sampled footprint. The independent audit binds
+the release digest, native fixtures, source scope and retained evidence.
+Hosted Build and Enforcing suite passed **2,084 tests / 43 suites
+(2,515.900 s)** and uploaded suite-log.
+[Hosted run 45035744076](https://github.com/CamdenBopp/swiftdc/actions/runs/45035744076)
+
+Reproduce the fixture-backed controls with:
+
+```sh
+Tools/fixtures.sh
+Tools/test.sh file ExactNarrowNativeTests IntegerTailReturnTests
+```
+
+**OPEN:** signed subword ISA provenance, wider and partial FP field-bit
+projections, qualified nominal receiver identity/freshness, ordered result
+roles, positive pack recovery, typed-error storage and cross-await values.
+These tasks remain separate from the qualified exact scalar transport.
+
+## 2026-11-22: published raw-bit transport verification
+
+**PUBLISHED at `c3b0c5ec04e41b2ec279524b5430e0e7d327e129`:** the original
+integration gate passed **2,082 tests / 43 suites (968.002 s)** and
+published raw-bit fix `a065ae1`, its qualification record and the contributor
+issue-form source. The gate's **1,132 compiled-scope paths** match the
+qualified source, as do all **919 frozen fixture products**. One additional
+Python cache was generated by the suite; its bytecode matches the unchanged
+public source and is recorded separately from fixture products.
+The published release SHA-256 is
+`ecebc9c14e90218643ba0a578bef3e8157ca52c223ef453c62188a50dc33c504`.
+
+All **3,116 render streams** and **four SDK outputs** match the reviewed
+local candidate. Only the known `_fpwide_word` return changes against the
+previous published revision. All **3,120 original-gate cost rows** meet
+default budgets against `408ca9a`: instructions **8,798,375,708,944 →
+8,797,610,613,675 (−0.00870%)**; summed per-run physical peaks
+**29,193,013,648 → 29,281,929,600 bytes (+0.30458%)**. These fresh-build
+gate measurements are separate from the local qualification below.
+
+Fresh published-binary runs match all **260 CLI outputs** and the **five
+original guarded app renders / 84,833 function headers**. Both streams,
+function counts and ordering match the reviewed candidate. Peak sampled app
+footprint is **216 MB**, with no guard kills. No private app bodies are
+committed.
+
+[Hosted run 45027421151](https://github.com/CamdenBopp/swiftdc/actions/runs/45027421151)
+completed successfully for the exact published commit: **2,082 enforcing
+tests / 43 suites (1,857.356 s)**. Build and Enforcing suite passed and the
+suite-log artifact was uploaded. The decoded log and artifact metadata
+confirm the commit and test result. This hosted result covers `c3b0c5e`;
+later local qualifications remain separate. The wider ABI tasks listed
+with the fix below remain open.
+
+## 2026-11-22: preserve narrow raw bits through wider FP views
+
+**FIXED at `a065ae13b66a8eb86834ed91875a340ae9753437`, published in `c3b0c5e`:**
+`FMOV S0,W0; FMOV X0,D0` returns only the
+original low 32 bits, with zero upper bits. The tracer peeled the matching
+raw-bit constructor while widening the scalar view and recovered the entire
+original UInt64 expression instead. The native
+[`fp_wide_raw.s`](../Fixtures/Sample/fp_wide_raw.s) fixture proves the word
+and halfword behavior with eight literal input/result comparisons, including
+high-word differences, negative-zero and NaN bit patterns. These are raw
+moves, with no floating-point conversion.
+
+Widening now preserves the original source-width mask. A controlled,
+read-only variant of ordinary `PlainBox.identityA` also demonstrates the
+consequence for pointer provenance: a truncated object header moved through
+S then D cannot regain a full ISA identity or its named value witness. The
+actual unresolved indirect transfer stays visible through all three APIs
+and both text renderers. The real 64-bit ISA load retains its A witness;
+W/S/W and halfword controls remain declined. Modified images are analyzed,
+never executed; the separate C-ABI native fixture supplies the execution
+oracle. Signed subword ISA loads remain a separate open task.
+
+Four independently compiled mutations fail the intended assertions:
+remove the mask, truncate the word to 16 bits, let the halfword retain
+32 bits, or replace the known bits with unknown. The restored build passes
+59 focused tests. The rebuilt full enforcing suite passes **2,082 tests /
+43 suites (935.606 s)**, four more tests and no removals. All **1,213 public
+inputs and 919 fixture products** remain frozen through qualification and
+postchecks.
+
+The **779-input four-view comparison / 3,116 streams** changes only
+`_fpwide_word` at its return: text now explicitly shows the low-32-bit mask
+where the old text omitted the leaf return; listing and JSON carry the same
+fact. The halfword body and every pre-existing fixture stream are unchanged.
+The 35 independently validated preflight declines and all four SDK outputs
+are unchanged. All **3,120 cost rows** meet default budgets: instructions
+**8,797,792,599,911 → 8,796,481,937,887 (−0.01490%)**; summed per-run peak
+footprints **29,273,463,432 → 29,198,423,056 bytes (−0.25634%)**.
+
+All 520 CLI invocations pass (20 inputs, 13 paths, both binaries). Eight
+changed pairs show the same word return, including lab's raw x0 mask;
+headers, order and stderr match. The original five guarded apps match all
+84,833 headers and output bytes; peak sampled footprint 226 MB. All 247
+historical CLI outputs match G07; two rebuilt `-Onone` inputs differ only in
+UUID/signature bytes, independently bound to their old recorded hashes.
+
+Reproduce the fixture-backed and raw-tracer regressions with:
+
+```sh
+Tools/fixtures.sh
+Tools/test.sh file FPWideRawMaskTests FPWideRawNativeTests
+```
+
+This is one raw-bit transport fix. It does not establish positive packed
+metadata recovery, signed-load pointer provenance, nominal receiver identity,
+ordered aggregate roles, typed-error projection or cross-await value transport.
+The original gate, published-binary checks and hosted CI passed for `c3b0c5e`.
+
+## 2026-11-22: published scalar metadata and test-tooling verification
+
+**PUBLISHED at `408ca9a8ccbf24c5bcd2fb157ad1655132c15377`:** the original
+integration gate passed **2,078 tests / 43 suites (959.233 s)** and published
+the scalar-admission fix and preceding test-tooling changes. Independent
+Git-blob checks match **1,129 compiled-scope paths** to the qualified tree,
+with only the recorded documentation update between `e795299` and `408ca9a`.
+All **918 fixture products** match. The actual published binary's SHA-256 is
+`de5eda75771365342dadd2b23225819822303656777197b1c2cca7e376daea30`.
+
+All **3,112 render streams** and **four SDK outputs** match the reviewed
+local candidate. All **3,116 original-gate cost rows** pass default budgets
+against published `72c9879`: instructions **8,797,833,006,057 →
+8,796,346,643,358 (−0.01689%)**; summed peak physical footprints
+**29,179,054,720 → 29,231,841,120 bytes (+0.18091%)**. These are the gate's
+fresh-build measurements, separate from the local qualification below.
+
+Published-binary reruns match all **247 CLI outputs** and the **five
+original guarded app renders / 84,833 function headers**. All stderr and
+header ordering match; peak sampled app footprint is **201 MB**, with no
+guard kills. No app bodies are committed.
+
+The [hosted run for `408ca9a`](https://github.com/CamdenBopp/swiftdc/actions/runs/45019821118)
+completed successfully: **2,078 enforcing tests / 43 suites (2,380.181 s)**.
+Both Build and Enforcing suite passed, and their logs were uploaded. The
+decoded job log binds the exact published commit. This record supersedes pending
+publication statements for `e795299`, `0376d7d` and `f5a4471`, while their
+original local measurements remain intact. Positive G07 recovery remains open.
+
+## 2026-11-22: scalar class metadata admission
+
+**FIXED at `e79529936abfe05855add423752f32bd6e9504e1`, published in `408ca9a`:**
+`PackBox<A, each T>.identityA` uses A's copy witness, but the scalar class
+index called it B. The [paired fixture](../Fixtures/Sample/generic_class_packs.swift)
+and independently decoded descriptor/instructions show the pack shape
+length at +0x50, A metadata at +0x58 and the metadata pack at +0x60.
+Ordinary `PlainBox<A, B>` instead has A at +0x50.
+
+Scalar names now require known header flags, no pack/value trailers,
+plain keyed type parameters and enough key words. The existing witness
+suffix proof remains separate. The real regression fails before the fix;
+six individually compiled mutations fail the consumer assertion for the
+pack trailer, value trailer, parameter kind, key bit, unknown header flags
+and short key count. Restored **10 focused tests** pass. No existing tests
+were removed.
+
+After rebuilding, **2,078 fixture-enforced tests / 43 suites pass
+(968.792 s)**. All **1,210 public inputs / 918 fixture products** stay fixed
+through qualification and postchecks. Frozen release SHA-256:
+`c8c14048b0886116d01d6ad0e13cd5382bb71742d5ff3cfaf6e319b0fb6626db`.
+
+The full **778-input / 3,112-render** comparison changes only two transfers
+in each view: `-Onone` keeps the call, recovered arguments and return;
+`-O` keeps the unresolved branch. Both lose the false B name. PlainBox,
+`typeOfA`, `-Osize` and all other output remain identical, including **35
+independently confirmed preflight declines**. All four SDK outputs match.
+All **3,116 default-budget rows** pass: instructions
+**8,793,503,290,279 → 8,796,820,952,581 (+0.03773%)**; summed peak physical
+footprints **29,251,768,904 → 29,240,428,560 bytes (−0.03877%)**.
+
+All **494 CLI invocations / 247 pairs** succeed across 19 inputs and 13
+paths. The 16 changed pairs are these same two sites on eight affected
+paths; all headers, order and stderr match. The original 16-input matrix
+is retained, with historical digests checked separately from current
+paths. One rebuilt input differs only in UUID and code-signature bytes.
+All **five original apps / 10 guarded runs / 84,833 headers per binary**
+have identical output; peak sampled footprint is **227 MB**. No private
+app bodies or strings are committed.
+
+**OPEN:** G07 positive scalar metadata recovery in pack/value layouts.
+This fix declines unproved names; it does not implement shape-class,
+metadata-pack or witness-pack roles. Its publication is recorded above;
+hosted verification of `408ca9a` passed 2,078 tests / 43 suites.
+
+## 2026-11-22: test-tier guidance and published super-result verification
+
+**FIXED locally at `f5a4471`:** `Tools/test.sh` now reports selected filters
+or quick-tier exclusions, identifies the full enforcing suite, provides
+successful `--help` / `-h`, and names the full command after a focused run.
+Contributor guidance describes conservative affected selection and the
+isolated fixture-free selection regression. Selection behavior is unchanged.
+After rebuilding, **2,075 tests / 43 suites pass (1004.864 s)** with fixtures
+enforced. All **1,207 public / 915 fixture product hashes** stay fixed during
+qualification; debug and frozen release binary bytes are unchanged. Help,
+filtered, quick, full and documentation-only output checks also pass.
+Publication of this tooling change remains pending.
+
+**PUBLISHED at `72c987900c81da4f385d54837e9798351d0eed53`:** the original
+integration gate passed **2,075 tests / 43 suites (1065.282 s)** and pushed
+the super-result fix and CI build-status correction. The published release
+SHA-256 is `101226433eea59f6f2e9c87acb43b23bd4409bbb66f0a14ef38a6d748b6dc35d`.
+Its 3,100 render streams across 775 inputs and all four SDK outputs match
+the reviewed candidate. All 3,104 cost rows pass default budgets:
+instructions **8,773,938,503,065 → 8,785,179,743,854 (+0.1281%)**; summed
+peak footprints **29,162,632,312 → 29,011,844,200 bytes (−0.5171%)**.
+Independent published-binary reruns match all **208 CLI checks** and the
+**five original guarded app renders / 84,833 function headers**. These
+checks compare actual output bytes, with no app bodies committed.
+
+The [hosted run for `72c9879`](https://github.com/CamdenBopp/swiftdc/actions/runs/45012625048)
+passed **2,075 fixture-enforced tests / 43 suites (1,583.991 s)**, with Build
+and Enforcing suite both successful and both logs uploaded. This publication record
+supersedes the earlier pending publication statements for the super-result
+and CI build-status changes, retaining their original local measurements.
+
+## 2026-11-22: conservative affected-test selection
+
+**FIXED locally at `0376d7d061dba870d7788ab4dc38605250c310d5`:** affected
+mode now includes untracked paths, preserves spaces and literal regex
+characters in test filenames, and runs the full enforcing suite for
+unmapped sources or shared test/build/tool/workflow inputs. Tooling
+Markdown retains the focused baseline. Missing comparison history or a
+failed Git query stops selection and names `Tools/test.sh full`.
+
+`bash Tools/test-tier-contract.sh` tests this selection with temporary Git
+repos and a Swift stub, requiring Bash, Git and Python 3, with no Swift
+toolchain or compiled fixtures. It checks the script rather than repeating
+the classifier in a second implementation. The old script and six isolated
+mutations each parse but fail at their predicted assertions. The intact
+test passes even with inherited Git pointers, hooks, signing and ignores
+aimed at a separate sentinel; the sentinel's bytes and modes are unchanged.
+
+After rebuilding, **2,075 tests / 43 suites pass (995.715 s)** with fixtures
+enforced. All **1,207 public / 915 fixture product hashes** stay fixed;
+debug binary bytes and frozen S01 release match. This changes contributor
+validation, not decompiler output or the historical accuracy scores.
+Original-gate publication and hosted verification of this change remain
+pending.
+
+## 2026-11-22: authoritative CI build status
+
+**FIXED locally at `f25575fdce9a348d9e90b6ec9bb6e4b279d85fcc`:** the CI
+Build pipeline previously discarded Swift's failure behind `tee`, then
+used an `error:` log grep as its status. An independent Bash probe of the
+exact old/new workflow commands makes silent exit 17 change from success
+to exit 17, keeps success at zero and preserves diagnostic exit 23 instead
+of the grep's exit 1. Visible and saved logs match. The Build step now ends
+at the pipeline with `pipefail` enabled.
+
+After rebuilding, the enforcing suite passes **2,075 tests / 43 suites
+(954.827 s)**. All **1,206 public / 915 fixture product hashes** stay fixed;
+the debug binary and frozen S01 release are byte-identical. This validation
+change introduces no decompiler output or cost difference. Original-gate
+publication and the patched hosted workflow run remain pending. See the
+[CI guide](CI.md) for log artifacts and the current published result.
+
+## 2026-11-22: qualified Objective-C super-result adoption
+
+**FIXED locally at `d8a00e038263bcc28b2d340ea42dcd7c81d83cf5`:** an ordinary
+`[super description]` in an initializer was rendered as a self assignment.
+The new own-source fixture `objc_super_initializer.m` reproduces the old
+claim across `-O0/-O2/-Os`. Exact call-result identity is now retained.
+Receiver adoption additionally requires a bound Super2 entry, resolved
+init-family selector, the current receiver/current-class header, an own
+ivar write through that result and complete forward paths returning the
+result or nil. Old receiver reads, possibly exposed frame bytes, incomplete
+detail/CFG and cycles veto adoption. Tracer and renderer share the result.
+
+**Verified:** all 21 separately compiled mutations fail at their intended
+assertions, including independent real-binary selector-family and search
+class controls. A restored rebuild passes 21 S01/ObjCMetadata tests. The
+full fixture-enforced suite passes **2,075 tests / 43 suites (901.653 s)**;
+no existing test changed or was removed. Reproduce with `Tools/fixtures.sh`,
+`swift build --build-tests`, then `SWIFTDC_REQUIRE_FIXTURES=1 swift test
+--skip-build`. The focused tests are in `ObjCSuperInitializerTests.swift`.
+
+The frozen release against published `1fc51d3` covers **775 inputs x four
+views** plus four SDK workloads. All 22 changed fixture files / 33 entries
+are accounted for: actual result forwarding, ordinary message producers,
+and conservative adoption/field-name declines. Structured/pseudo/listing/
+JSON change 156/144/212/412 lines. Function and instruction identity/order,
+CFG and targets are unchanged; 35 prior independently raw-checked
+preflight declines match. All eight SDK corpus copies and four large
+workload outputs match. **3,104 default-budget cost rows** pass:
+**8,773,938,503,065 -> 8,779,927,497,074 instructions (+0.0683%)** and
+**29,162,632,312 -> 29,120,674,184 bytes summed per-run peaks (-0.1439%)**.
+Command: `Tools/blast-radius.sh <1fc51d3-release> <d8a00e0-release> <out>
+--real --perf`; no cost override.
+
+All **416 CLI invocations / 16 inputs / 13 paths** pass; five stdout pairs
+change only the same forwarding initializer, with stderr and positive
+function identity/order checks unchanged. All ten original five-app runs
+pass the 2,000 MB guard and retain **84,833 function headers per binary**.
+Private review accounts for **249 changed methods / 248 hunks / 3,198
+display lines**. Additional store expressions match original instructions
+or paired-store lane expansion; no unexplained operation change remains
+in the reviewed hunks. Private code and receipts remain ignored.
+
+**OPEN completeness:** spilled ARC locals at `-O0`, logical adoption through
+`objc_storeStrong`, and optimized opaque C consumer arguments still need
+their own proofs. The fix does not implement all super messenger variants,
+receiver ownership or ABI gaps. Original-gate publication and hosted CI for
+this revision remain pending. Historical accuracy scores are unchanged.
+
+## Next: rules from LLVM's calling-convention tests (2026-11-14)
+
+LLVM's AArch64 code-generation tests for the Swift conventions
+(`llvm/test/CodeGen/AArch64/swiftself.ll`, `swifterror.ll`,
+`swiftasync*.ll`, `swifttail*.ll`, `swiftcoro*.ll`) each state a few
+rules about one register as compact input and expected assembly. Read as
+rules and rewritten as hand-made fixtures (clean room: the rules, not the
+tests, so nothing is copied), each gives a small checklist swiftdc must
+render right.
+
+- **FIXED (ff7264f): swiftself.** Seven rules in `selfregister.s`. Five
+  rendered right; a tail call dropped its receiver (`return C.me()`) and
+  shows it now. Still open: rule seven, a self-returning callee's result
+  stored after the call, renders as the raw `x0`.
+- **FIXED in part (81ecc13): swifterror.** Six rules, checked by hand-written
+  and compiled fixtures. Eight arguments with `self` and the error
+  rendered right. A throw of an existing error (`throw e`) was an
+  unresolved exit and now renders `throw arg0`. Still open: a thrown
+  stored error, a rethrow of a callee's error and the `try?` caller's
+  test, where x21 after the call is not tracked; and a forwarding tail
+  call to a throwing function loses its `return` in hand-written code
+  (compiled code renders `return try …`).
+- **FIXED in part (ff0e782): swiftasync.** Five rules. The frame-pointer
+  marking (bit 60 of the saved x29) and the context spill below the
+  frame record already render as nothing. A caller's stores into a new
+  callee context's header leaked at -Onone (and in two -O fixtures) and
+  are hidden now. Still open: a value kept in the context across an
+  `await` is lost (`await work(?)` for `work(k + 1)`, `return ?` for a
+  sum of two awaited results).
+- **OPEN: swifttail, swiftcoro.** The tail-call convention and
+  coroutine frames.
+
+
+## Next: native execution as an oracle (2026-11-13)
+
+Prompted by a look at Microlift and Rosemary. The useful part is the
+experiment, not either project: compare what swiftdc predicts for a
+fixture function with what the CPU does when the function runs on this
+Mac. A prototype ran on `libReconstruction.dylib` (`gradeOf`), outside
+the tree: an in-process single-step trace through a Mach exception port
+needed no entitlement, root or prompt with SIP on, cost 20 to 28 steps
+per call, and checked the three branch conditions and the exit x0 over
+five inputs (17 verified, 0 refuted; a negated prediction was refuted).
+Native first, by priority 5 and 6 above: these give the condition and
+return-value fixes independent evidence.
+
+1. **OPEN: check branch decisions against native execution.** Evaluate
+   each `values.condition` probe record on chosen inputs and compare it
+   with the direction the CPU took in a single-step trace. Denominator:
+   every conditional branch in the callable scalar fixtures, with
+   never-reached and not-evaluable counted apart, never as passes. Our
+   own code only.
+2. **OPEN: check register facts at calls and exits against the same
+   trace.** Compare `values.call` and `values.exit-registers` (x0, x1,
+   x8, x20, x21, d0) with the stepped registers. Denominator: every such
+   fact; an unknown is a decline, not a pass.
+3. **OPEN: widen the native return oracle past x0.** A thunk that seeds
+   x20 and x21 and captures x0, x1, d0 to d3 and x21, so throwing, pair
+   and float returns are scored by execution and not from text.
+   Denominator: every rendered return value and return outcome in the
+   fixtures.
+4. **OPEN: a native sample profile mapped to swiftdc's functions.**
+   Sampled program counters, unslid by the image's load address and
+   bound to it by UUID, bucketed by swiftdc's function ranges and
+   cross-checked against `LC_FUNCTION_STARTS`. A sample outside every
+   function is a completeness defect; a run with no samples is an error,
+   not an empty profile (`sample` returned an empty call graph once).
+5. **DEAD END, for now: Microlift as a second oracle.** It is
+   GPL-3.0-only, so nothing of it may enter this MIT tree: not vendored,
+   no driver that links it, no test that needs it, no committed value
+   derived from it. Its AArch64 guest is early by its own README (no
+   `bl` in execution, no `br`, `ccmp`, bitfield moves, byte or halfword
+   loads, floating point or SIMD) and has no oracle of its own, so a
+   disagreement could not be attributed. By mnemonic, the functions it
+   could run are ones native execution already covers. Rosemary runs
+   apps and observes nothing. Revisit Microlift only as an optional tool
+   a developer installs, whose output is compared from outside. If
+   symbolic reach is wanted, look at permissively licensed tools first.
+
+
+## Next: defects from reading the compiler source (2026-11-13)
+
+Thirty agents read the Swift compiler's IRGen, SILGen, stdlib and runtime
+sources against swiftdc, one area each. The findings, with the compiler
+line that states each rule, are in
+[research/compiler-source-read-2026-11-13.md](research/compiler-source-read-2026-11-13.md).
+They are leads with a stated reproduction; each becomes FIXED only with
+its own fixture and a test seen red. Ordered by the priorities above:
+wrong output first, by how much ordinary code it touches.
+
+1. **OPEN: a storage entity's type read as a parameter list.** A setter,
+   getter, addressor or key path thunk for a function-typed property is
+   seeded from the property's type. FIXED in part: a getter of
+   function-typed storage was judged unable to throw, which folded the
+   caller's error test to `(0 == 0)`; it may now throw, and the three
+   callers in `throwinggetter.swift` keep `error != nil` and decline the
+   merged value (60ce7c7). Still open: the entry and call-site seeds, and a
+   `@_silgen_name` Swift function, which has no `.` in its name and is
+   taken as unable to throw.
+2. **FIXED (28df4e7): overflow-guard folding hid preconditions.** A branch
+   to a trap on V or carry was dropped without checking which edge
+   trapped, which instruction last wrote the flags, or that a carry test
+   matched its operation. `precondition(a < b); return a &- b` rendered
+   `return (arg0 - arg1)`. The guard now folds only on its arithmetic's
+   own overflow; four preconditions in `guardfold.swift` render their
+   trap and three real checks still fold. Blast radius is that fixture
+   alone, so this is not the mechanism of the open loop bounds-check
+   item. Still open from the same report: a tail branch into a merged
+   body that can trap renders as a plain return, and float compare
+   conditions are declined (`if (?) trap()`).
+3. **FIXED in part (77a2886): stores hidden as runtime noise.** `outlined
+   init/assign` helpers, an outlined enum tag store and the existential
+   assign helper are the statement; a setter through one rendered as an
+   empty leaf. They are shown now: 177 store statements appear across 24
+   fixture files and 33 functions lose the empty-leaf note. Still open:
+   the call is printed as a call, not as `dest = src`, and the empty-body
+   message still covers "nothing here" and "everything hidden".
+4. **FIXED (4eac4f5): a local function's captures.** `$defer` and named
+   local functions were laid out from their printed list and got a stale
+   argument (`$defer #1 (r0)`) or lost their captures. They are now laid
+   out by what their bodies read, as closures were. Still open: merged
+   closures and partial apply forwarders keep their own layout.
+5. **FIXED (c45f1ca): resilient value types.** In a library-evolution image
+   a public struct or enum is passed by address and was read from
+   registers by field: `afterPoint(_ p: Point, _ n: Int) { n &* 5 }`
+   rendered `return (arg0.y + (arg0.y << 2))`. An enum with case
+   descriptors, and an exported struct, are no longer lowered to
+   registers; a frozen enum and internal types still are. Eleven files
+   move, 250 structured lines, 85 of them getter calls in the
+   swift-syntax dylibs that now show an unknown receiver where they
+   showed none. Still open: an exported `@frozen` struct is declined too,
+   and the parameter after a resilient value is not seeded though its
+   register is known when the type is not frozen.
+6. **FIXED for soundness (29bb3b2): a hidden leading isolation parameter**
+   on `nonisolated(nonsending)` async functions shifts GP formals by two
+   registers; the symbol does not record it. Unproved GP arguments, fields
+   and metadata now decline. Independent FP and dedicated self facts remain.
+   **OPEN:** recovering which isolation prefix a particular entry uses,
+   including its shifted stack arguments.
+7. **FIXED in part (7311942): an outlined fragment's x0/v0** is no longer
+   taken for a new call result when its decoded body proves it unwritten.
+   The physical input survives, retaining FP precision; typed Swift/C result
+   contracts keep priority. **FIXED in part (9479048):** an incoming x8 read
+   no longer establishes result-buffer ownership; entry and caller
+   interpretation require the supported ordinary ABI. **OPEN:** a census of
+   actual hidden-result parameters and other unmodelled helper effects.
+8. **OPEN: the rest of the wrong-render tables** in the findings
+   document: metatype arguments stripped as plumbing, generic cast types
+   cut short, a tail-called retain printing its call twice, a throw
+   placed before merged cleanups, tuple results with an indirect
+   element, untyped sends with struct arguments, field types collapsed
+   when reflection names are off, `Bool` taken as 0 or 1, `-> Never`
+   callees, direct typed errors, merged specializations, small strings.
+9. **OPEN: the declines both rounds ranked first**: globals named by
+   their symbol, closure contexts typed from capture descriptors, class
+   initializer entries, generic witness calls without method
+   descriptors, collection storage headers, payload enums in registers.
+
+- **FIXED — an import addend with the top bit set trapped `disasm`,
+  `xrefs` and `analyze`.** Found by the runtime read: the direct
+  retain/release runtime binds
+  `__swift_retainRelease_slowpath_mask_v1 + 0x8000000000000000`, and
+  MachOKit's `addend` converts that field to `Int`. `ChainedFixupTable`
+  now compares the raw field with zero. Baseline exits 133 on
+  `libBindAddend.dylib` in five commands, the fix 0 in all ten entry
+  points; blast radius is the new fixture alone (b814bc0).
+
+
+## Next: features from comparable tools (2026-11-13)
+
+Taken from reads of strongarm (datatheorem), macho_re,
+threatflux-binary-analysis, XMachOViewer, retools, HexLab, ktool and jtool;
+none of them decompiles Swift. Each fills a gap swiftdc has. Ordered by the
+priorities above: completeness and soundness first, reconstruction last.
+
+1. **OPEN: cross-references by selector, string and data symbol.**
+   strongarm's `objc_calls_to(classes, selectors)` lists every send of a
+   selector, and it cross-references C strings. `xrefs -f` matches only
+   function names: `xrefs -f _gCounter` answers "No function matched" for a
+   global that exists (second ABI probe, globals). Wanted: `xrefs
+   --selector`, `--string` and data-symbol targets, each consulting the
+   symbol table before reporting nothing (the empty-result rule), and
+   naming defined data symbols in renders, which the probe also found
+   missing.
+2. **OPEN: block literals.** jtool follows the `str`/`stp` stores that
+   build a stack block to name its invoke function and captures. swiftdc
+   has no block model (no reference to `_NSConcreteStackBlock` in Sources;
+   the first ABI probe: direct block invokes lose returns and captures), so
+   every `dispatch_async(queue, ^{…})` and completion handler loses its
+   body's link. Wanted: a block literal recognised from a bound isa
+   (`_NSConcreteStackBlock`/`GlobalBlock`), an in-image invoke pointer and
+   a descriptor, its captures read at their fixed offsets, each part
+   declined when not proven.
+3. **OPEN: compact unwind as a boundary and frame oracle.** HexLab
+   evaluates `__unwind_info`. It describes nearly every function and where
+   it saves callee-saved registers: a third boundary source beside
+   `LC_FUNCTION_STARTS` and the symbol table (the empty-result rule), and
+   the fix for a stripped `bl` target never split when function starts are
+   absent (second ABI probe, linker). Its saved-register layout checks the
+   frame analysis independently.
+4. **OPEN: an A64 semantics coverage audit.** retools generates its
+   semantics from the architecture manual. swiftdc models them by hand, and
+   gaps are found by luck: `negs` records no flags and `ccmn` declines
+   (second ABI probe, integer arithmetic). Wanted: from Arm's
+   machine-readable A64 specification, every instruction that writes a
+   register or the flags, against what `ValueTracking` models; each
+   unmodelled one an OPEN entry, and native execution (as the CCMP tests
+   do) the oracle for each one modelled.
+5. **OPEN: a built-in resource budget.** threatflux enforces a maximum
+   input size and per-parse caps (100,000 records, 4 KiB names, 32 MiB of
+   names) with a typed error. swiftdc's preflight declines malformed input,
+   but a large app's memory is held only by the external
+   `Tools/audit/guard.sh`. Wanted: a footprint budget inside the run that
+   fails with a diagnostic naming the limit, never a kill.
+6. **OPEN: a reverse-engineering task benchmark.** Sixty practical tasks
+   a reverser really does (a type's layout, which function implements a
+   requirement, a call's argument values, a branch's condition, an app's
+   API endpoints, keychain items, URL routes), each asked of our own
+   fixtures and answered by an oracle that is not swiftdc (source,
+   `.swiftinterface`, reflection dump, dSYM, native execution). Scored as
+   correct, wrong (must stay zero) and declined, per task and optimization
+   level, per commit: [research/re-task-benchmark.md](research/re-task-benchmark.md).
+   Started from doronz88/swift_reversing's hand-reversing questions. A
+   first look: `dump` names no implementation for a resilient
+   conformance's requirements.
+7. **OPEN: DWARF as a validation oracle.** HexLab imports DWARF. Built
+   with `-g`, a fixture's dSYM states its parameters, locals, types and
+   field offsets: an independent check of what swiftdc recovers. Today a
+   valid dSYM is reported as a malformed Mach-O on every entry point (first
+   ABI probe, diagnostics); that is fixed first.
+8. **OPEN: a user annotation file.** jtool's companion file holds
+   user-edited names and per-argument signatures that later runs read.
+   swiftdc's largest error class is a signatureless callee taking stale
+   registers as arguments. Wanted: user-stated signatures and names,
+   rendered marked as asserted by the user, never as proven.
+9. **OPEN: a binary summary.** macho_re and strongarm report signing,
+   entitlements, hardened runtime, library validation and the
+   `MH_ALLOW_STACK_EXECUTION` and no-heap-execution header flags. swiftdc
+   reads `LC_ENCRYPTION_INFO` and reports none of these. Wanted: an `info`
+   view of the header flags, the code signature's flags and entitlements,
+   and encryption, each read from the binary or reported absent.
+10. **OPEN: library signature catalogs.** HexLab matches functions
+   against versioned catalogs and reports an ambiguous match as ambiguous.
+   For stripped apps with statically linked libraries this names `sub_…`
+   functions; a match must be exact and unique, or it declines.
+11. **OPEN: control-flow graphs as DOT.** threatflux exports DOT;
+   `disasm --cfg` is text only. Wanted: a DOT form of the same graph.
+12. **OPEN: cryptographic constants named.** XMachOViewer searches for
+   known tables (the AES S-box, SHA and MD5 round constants). A load from
+   such a table, matched byte for byte, renders its name instead of a
+   `__const` address and an index.
+
+Not taken: patching, `insert_dylib`, re-signing and entitlement injection
+(swiftdc reads binaries); entropy and packer heuristics, the ELF, PE, Java
+and Wasm formats, kernelcaches and MIG tables (outside the Swift and
+Objective-C scope); bitcode extraction (no longer embedded); `.tbd`
+generation; a Python API (the JSON output serves scripts); binary diffing
+and debugging; an LLM rewrite of the output (it cannot decline, and a
+reader cannot tell its guesses from proven facts).
+
+## Assumptions the output depends on
+
+Each render is sound under these ABI facts and no others. Code that breaks
+one (hand-written assembly, or Swift that reaches private memory through
+unsafe pointers) can be rendered wrongly; each has a fixture that shows the
+shape it excludes.
+
+- **The frame record and the prologue's register saves are no object.** A
+  pointer to a local below them grants no write to the saved x29 and x30
+  (7c04597) or to the x19–x28 the prologue stored before setting x29
+  (2026-11-10). The saved x30 coming back intact is already what every
+  call's return assumes. A save at or above entry sp is the caller's memory
+  and gets no exemption (abi_frame_ownership.s), nor does a body spill after
+  the prologue, which may be a word of a local (frame_preserve_alias.s).
+  Bytes of the save area the prologue never stored are padding, where LLVM
+  places small locals; an address there is a local's and reaches no save.
+- **A callee's async context is private to it.** Its caller allocates it but
+  keeps no pointer into it, as an argument or anywhere else, so its slots
+  change only through the callee's own stores and pointers the callee hands
+  out. The original `incomingLeaf` counterexample (async_call_effects.s)
+  passes an Int pointing to the callee's slot 16: it rendered `observe(7)`
+  against native 11. `774ed5` now retains `observe(?)` instead of that stale
+  value (rechecked with this revision's frozen release); general context-slot
+  transport and opaque context identities remain open.
+- **Unescaped negative save slots are the function's own.** A store through
+  an incoming pointer cannot reach them unless the frame's address escaped.
+- **Outlined code saves x21 where it writes it.** A chain of fragments
+  writing x21 would go unseen by its callers' summaries.
+- **A module with no sign of library evolution was built without it.**
+  A resilient struct is passed by address, and is recognised only in an
+  image that defines an enum-case descriptor, a dispatch thunk or a
+  stored-property descriptor (`LibraryEvolutionEvidence`). A resilient
+  module whose public types have no public stored property, enum, class
+  or protocol defines none of them, and its public structs would be read
+  from registers by field. No fixture shows it: such a module's symbols
+  and sections equal a plain build's, so there is nothing to detect.
+
 ---
 
 ## 1. Soundness — can it fabricate or misattribute semantics?
+
+- **FIXED — a callee could reuse the stack below the caller's sp.** A
+  frame fact below the call-time sp, or any frame fact once sp is unknown
+  after a dynamically sized stack adjustment, survived an unproved call,
+  though the callee may allocate or reuse that storage: stack_lifetime.s
+  returns 99 natively where swiftdc read the earlier callee's 7, and
+  `sub sp, sp, x20` with an unproven size may move sp up over a live slot.
+  Such facts are now forgotten at an unproved call (the tracer and the
+  preservation summary share `FrameMemoryEffect.calleeStack`). Ported from
+  the compiler-ir-integration-20261106 worktree. Cost: GoodLinks
+  unresolved indirect calls 12,577 -> 15,531, nearly all in functions
+  whose sp is unknown (generic code sizing a buffer from a type's runtime
+  size); the exact-sp rule alone costs none.
+
+- **FIXED — a `___chkstk_darwin`-proven allocation forgot the whole
+  frame.** Swift sizes a stack buffer from a type's runtime size and
+  probes it first; the probe faults unless `sp - x9` is a valid downward
+  allocation. sp moving from an exact frame offset k (or from a proven
+  allocation below it) by the probed x9, or its 16-byte rounding, now
+  keeps facts at and above k across an unproved call. A memory write or
+  another call between probe and allocation ends the proof, since a
+  reload of the size can then read a different value; an unprobed
+  adjustment anywhere in the chain still forgets everything.
+  stack_lifetime.s carries native counterexamples for each. GoodLinks
+  unresolved indirect calls 15,531 -> 14,853 (`swiftdc xrefs GoodLinks
+  --unreferenced --probe - --probe-filter
+  event=cfg.unresolved-indirect-call`); countAll's associated-type
+  witness names are back.
+- **FIXED — a call through a pure branch thunk lost its inputs.** A body
+  that is one direct `b` to another declared function (a merged witness, an
+  outlined relay) proved no input of its own, so its callers rendered
+  `sub_ad0()` or `witness(?, ?, ?)` where the target reads x0. Register
+  summaries now carry the target's proved integer and floating-point inputs,
+  with their widths, backwards through such an alias. Both the alias's and
+  the target's decoded entry must match their summary keys; a body with a
+  prologue, a move, a call, an indirect or conditional branch, a cycle or a
+  missing target gains nothing. PureTailInputTests covers every summary
+  route. Ported from the compiler-ir-arc-origin-20261107 worktree.
+
+- **FIXED (soundness, 2026-11-10) — an entry spill was used as an escaped
+  local's object bound; ported with the rest of the frame-ownership work.**
+  `frame_preserve_alias.s`: an x19 spill that is a word of the local passed
+  to a call was kept across it, where native execution rewrites it. An
+  escaped local's MAY reach is now its whole frame. Ported from the
+  compiler-ir-frame-ownership worktree (Codex) together with its entry-register
+  roles, indirect-result and context-result producer order, complete-body
+  register transfer, caller-owned frame aliases and imported-receiver proofs.
+- **DECIDED and FIXED (2026-11-10, completeness): an escaped local's
+  address no longer reaches its frame's record.** The cost above came from
+  `otherWide`-like bodies: a local passed to a callee with no store plan
+  could reach the whole frame, the saved x29 included, so the body was
+  summarised as clobbering x29 and 47ceb26 escaped every caller's frame.
+  The policy: the frame record (the entry x29 and x30 the prologue stores at
+  the frame pointer) is no object of the frame, so a pointer to a local below
+  it grants no write there. The analysis already assumes the saved x30 comes
+  back intact at every call; the x29 beside it is the same assumption. The
+  exemption holds only while nothing that could address the record has
+  escaped: the frame pointer itself, an address at or above it, an address
+  that escaped before the record was written, a frame address spilled below
+  sp, a callee that reads x29, or an unmodelled store of a frame alias each
+  keep the record reachable (`recordReachable`, joined by OR). The register
+  saves between the locals and the record get no exemption. Against
+  9369b0e: 33 fixtures, 4,779 structured lines, `?`-bearing lines 768 ->
+  263 (whole results bound and returned, call arguments named, spills read
+  back); GoodLinks cfg.unresolved-indirect-call 15,504 -> 15,350.
+  `frame_preserve_alias.s`, the soundness counterexample, still renders
+  `return ?`. Bounded writes through passed pointers (a callee's own store
+  extents) remain the precise fix for the saves below the record.
+- **OPEN — unknown-sp sites remain (audited 2026-11-10).** The 2,276 figure
+  (14,853 − 12,577) is stale: GoodLinks has 15,504 unresolved indirect calls
+  at 9369b0e, and the unknown-sp share is not separated from the
+  frame-ownership cost. Stripped countAll (libAssociatedWitness.stripped
+  `sub_590`) names its witnesses since the argument-metadata size is followed
+  (2026-11-10). The preservation
+  summary forgot every saved value when sp was not exact; since 774a43e it
+  keeps a `___chkstk_darwin`-probed allocation's bound, as the tracer does.
+  Re-measured 2026-11-11 at d49207f: GoodLinks has 10,849 unresolved
+  indirect calls. Since 2ec4e99 (12,451) the probe proof survives pushes and
+  pops of stack arguments (e978917, 5581ef5, 32bfbfe, d49207f), spills of
+  the new sp (d1754ef), long chains (d997846), sizes only the summary
+  proves (10e0f62, d7a8de3) and stub-called probes (8acb347). Of a fixed
+  40-function sample, 26 are now free of every whole-frame escape (14 at
+  2ec4e99); an unknown sp remains in 6, a callee that reads a register
+  holding a frame address in 9 (d674f17 removed those it never reads), and
+  an unbounded value in 4.
+
+- **FIXED — a callee that may clobber x29 left the caller's frame
+  intact.** A call to a body summarised as not preserving x29, made while
+  x29 held a frame address, forgot only the register. The callee can
+  keep that address, reload it, or hand it to a later callee that writes
+  through it: frame_may.s returns 99 and 7 natively where swiftdc kept the
+  stale slot. Such a call now escapes the whole frame. Ported from the
+  compiler-ir-frame-may-20261107 worktree. Cost: the summary's
+  conservative x29 claims now reach callers' frames, so spills across
+  those calls render as registers (`mem128[x0 + 0x10] = q0` where it read
+  `(1, 2)`); GoodLinks unresolved indirect calls 12,518 -> 12,577.
+
+- **FIXED — a void value witness's x0 flowed on as its result.** A call
+  named through a value-witness table (`destroy value witness for
+  Swift.Int`) was resolved after the first trace, and nothing marked
+  destroy, storeEnumTagSinglePayload or the enum projections as returning
+  nothing, so the next call that read x0 took the witness:
+  `vwSink(destroy value witness for Swift.Int(?))`. They now join the void
+  calls the trace is rerun with: `vwSink(?)`. Cost +0.71% instructions in
+  total (the rerun).
 
 - **FIXED — a generic function's metadata was counted past an argument
   IRGen does not pass.** Metadata was seeded one register per type
@@ -99,21 +1076,65 @@ results do not replace previously recorded release performance measurements.
   become `(…)`: 17 of the old lines were an empty `()`, and 46 calls that
   had been nested inside a false argument list become their own statements.
   Binding names renumber around them.
-- **OPEN (completeness): recover the arguments the unproven-arity decline
-  costs, from declarations.** Terminal's 125 calls to 69 functions and
-  TextEdit's 7 render `(…)` (entry above). Add the functions the SDK headers
-  declare to `SDKCPrototypes`, and render a variadic such as `open`, `fcntl`
-  or `ioctl` by its fixed arguments only. A function no header declares
-  (TextEdit's is private) stays `(…)`. Keeping the registers written since
-  the previous call was rejected: it guesses at arity, which the rule forbids.
+- **FIXED (2026-11-11, completeness): a declared variadic rendered `(…)`.**
+  `open` and `fcntl` have been in SDKCPrototypes since a395807 (`iw...`,
+  `ww...`), yet a call read `open(…)` with x0 and w1 set just before it.
+  A call to an SDK variadic with only integer fixed parameters and no format
+  now renders its fixed arguments from their registers at their declared
+  widths, then `…` (Apple arm64 passes every variadic argument on the
+  stack); the typed argument renderer now appends that `…` too. Fixture
+  variadic_calls.c: `open(?, 0, …)`, `open(?, 513, …)`, `fcntl(?, 0, …)`
+  and `open(?, -1, …)`. Against f77b7a0: the fixture and goProgram's open
+  and fcntl calls (24 structured lines); GoodLinks stays 10,849.
+- **FIXED (c149b8e) — SDK functions the prototype table lacked.**
+  `closedir`, `sysctl` and `ioctl` were missing: the generator compiled
+  each framework's umbrella and one unit of 22 library headers, so no unit
+  included `dirent.h`, `sys/sysctl.h` or `sys/ioctl.h`, and a framework
+  with no umbrella named after it (IOKit's is `IOKitLib.h`) contributed
+  nothing. Every `usr/include` header (less C++, Apache, APR, net-snmp,
+  i386 and pexpert) and every header of an umbrella-less framework (less
+  Kernel and DriverKit) is now a unit of its own: 1,458 of 1,578 units
+  compile, against 224 of 333. The table grows from 20,279 to 26,992
+  functions; no earlier entry is dropped or changed, and 4 names declared
+  two ways are declined. `variadic_calls.c`: `ioctl(…)` became `ioctl(?,
+  0x8004667e, …)`, `closedir(…)` `closedir(arg0)`, and `sysctl args(…)`
+  `args(local_20, 2, local_24, local_30, 0, 0)`. The 120 units that still
+  fail are Swift-only frameworks with no headers and headers that do not
+  compile alone. Terminal 125 / TextEdit 7 not re-measured since 0e4b26c.
+  Also changed: `__clang_call_terminate(_Unwind_Resume(?))` in
+  `libLandingPadLoop` became `_Unwind_Resume(?)` then
+  `__clang_call_terminate()`: `_Unwind_Resume` is declared void and never
+  returns, so its "result" was no argument; the helper's x0 is now
+  unknown, and a reserved `__` name keeps the positional layout, which
+  drops it (the OPEN arity entry below).
+- **FIXED (e15558c) — every process built a dictionary of the whole SDK
+  prototype table.** Looked up once per C callee, the 20,279-entry table
+  was parsed into a `[String: String]` in each run; at 26,992 entries the
+  blast radius's median render grew 2.5 MB and total footprint 17%. The
+  sorted lines are now binary-searched in place (a `StaticString`):
+  instructions -8.06% and footprint -24.10% over 1,780 renders, no render
+  changed (`Tools/blast-radius.sh … --real --perf` against d4a7154).
 
   Not covered: a call through a register (`blr x8` can land on an
   in-image body), and names whose arity is knowable though no table holds
   it yet: an Itanium-mangled C++ name, a reserved `__` name, and the Swift
   and Objective-C runtimes' entry points. Those keep the positional
-  layout and stay OPEN: `_ZSt9terminatev(__cxa_begin_catch())`
-  (`std::terminate()` takes nothing), `__cxa_begin_catch()`, and
-  `objc_retain_x20`'s listing note `args(arg0)` (it takes x20). Blast
+  layout and stay OPEN: a nested or templated Itanium name, whose mangling
+  does not say whether it takes `this`. FIXED (5ff2b18): `objc_retain_xN`
+  takes its one argument from xN: `objc_retain_x20  args(arg0)` in
+  `RetainRegister.Node.join` read x0, which holds `k`, an Int; it is now
+  `args(?)` (x20 is `self`, which the tracer does not seed for a Swift
+  method of an NSObject subclass), and `objc_retain_x19` in `enroll`
+  gained `args(arg0)`, the object x19 keeps. FIXED (507b8f9): an unscoped or `std::`
+  Itanium free function whose parameter list is `v` takes nothing:
+  `_ZSt9terminatev(__cxa_begin_catch(?))` became `__cxa_begin_catch(?)`
+  then `_ZSt9terminatev()`. FIXED (4a95e81): the C++ ABI runtime
+  (`__cxa_begin_catch(void *)`, `__cxa_throw`, 35 functions) is declared
+  `extern "C"` in `cxxabi.h`, which the generator now reads as one
+  Objective-C++ unit, keeping only declarations in an `extern "C"` block
+  (anything else there has C++ linkage; on SDK 27.0 that filter drops
+  nothing). `__cxa_begin_catch()` became `__cxa_begin_catch(?)` at all
+  five `libLandingPadLoop` sites; nothing else moved. Blast
   radius against origin/dev: 7 files (the two new fixtures included),
   structured 141 lines, pseudo 137,
   listing 140, all argument lists of `A`, `B`, `C`, `P`, `Q`,
@@ -416,7 +1437,7 @@ results do not replace previously recorded release performance measurements.
   `%hd` as Int16, `%hhd` as Int8, `%ld` as Int, and the unsigned
   conversions as the UInt of that width. A Double keeps its own typing.
   Fixture `cformat.c`. Blast radius: one line.
-- **FIXED — a narrow C integer argument rendered its whole register.**
+- **FIXED (constant operands; computed/atom follow-up below) — a narrow C integer argument rendered its whole register.**
   `close(-1)` read `close(0xffffffff)`. The caller writes `mov w0, #-1`,
   and the SDK table recorded only that an `int` travels in an x register.
   The generator now records a parameter narrower than a register by width
@@ -904,29 +1925,11 @@ because it cannot be distinguished from a right one by reading the output.
   selector spelling alone does not decide it. `VoidCallResultTests` includes a
   compiled void send whose unspecified x0 previously rendered as its value.
   Callees without a proven return convention remain unknown.
-- **OPEN — arguments a callee does not take.** Getters, private methods
-  and value-type methods have names that decline the signature layout but
-  parse, which skips the body-reads bound. The parked-x20 `self:` on an
-  ordinary qualified Swift free function is fixed (`49f42ce`). Getters of
-  static, class and global properties (specializations included) now take
-  no arguments, and private `(name in _HASH)` callees get the signature
-  layout. Getters printed with an argument fell from 605 to 531, 321 to
-  251 and 816 to 785 on three release apps. A value type's method takes
-  its formal parameters from x0 whether or not it is mutating, so they
-  are now laid out from its signature and the registers after them kept
-  as found (`swift-leading`): GoodLinks `String.append()` 308 → 2,
-  `Hasher._combine()` 192 → 0, `String.hash()` 312 → 0, and
-  `append(10, 0xe100000000000000)` reads `append("\n")`. Fixed
-  2026-11-08: a non-mutating method's `self` words print as its `self`
-  when its type's descriptor proves it non-generic and the type lowers to
-  that many integer words (a generic type's metadata goes there instead;
-  an enum payload or a String keeps the positional words), not after the
-  parameters (`Pair(a: 3, b: 4).scaled(k)` read
-  `Pair.scaled(arg0, 3, 4)`, now `Pair.scaled(self: (3, 4), arg0)`), and
-  a value type's instance getter takes its type's words as `self` and
-  nothing else (`Pair.total.getter(self: (arg0, 4))`, was `(arg0, 4)`).
-  Every path that renders a call shows a site's `self` (the exits passed
-  none). Test `aStructsSelfWordsRenderAsItsSelfIfPresent` (`valueself.swift`).
+- **OPEN (residual) (audited 2026-11-10): arguments a callee does not take.**
+  The self-word, static-getter and private-callee fixes are in (49f42ce,
+  c6aa594). Getters were still printed with an argument on release apps (531 /
+  251 / 785) at the last measurement, which predates them: re-measure before
+  keeping this open.
 - **FIXED (soundness) — a member of an extension in another module took
   every register a call found.** `(extension in Foundation):` failed the
   layout's identifier test, so `static (extension in
@@ -1178,12 +2181,84 @@ because it cannot be distinguished from a right one by reading the output.
   the body summary does not count x0 passed through to the return as a
   read, so its argument is dropped. True of any signatureless identity
   function, folded or not.
+- **FIXED — a name landed on a folded body after strip.** Strip removes the
+  evidence of a fold: `MetadataSymbolizer` counts owners with records, and
+  `foldedSymbolAddresses` needs a second symbol. A closure-propagated
+  specialization folded with `K.other()` read `sf.K.method()` at its call site;
+  a coroutine's resume half, a bare `ret`, read as the one export left on it
+  (`return cc_co.Ov2.w.setter`). In an image that strip touched, a reference to
+  a body that is `ret`, or at most two constants or arguments moved into result
+  registers and returned, now declines as at a proven fold. The heading keeps
+  its name, which is true of the body, with a listing note. A dispatch through
+  a slot still names its owner. Strip reads as a function start with no symbol
+  and no local symbol in code; an image with its locals keeps every partner.
+
+  Measured over 425 inputs (fixtures, swift-syntax, a -O/-Osize/-Onone matrix),
+  `strip -x` twins and full-strip executables against each unstripped twin's
+  `nm`, sites being calls, tail branches and address references, in images
+  strip touched: 81 names on a body with a distinct partner, 6,643 right. The
+  rule removes 59 of the 81 and costs 23 right names.
+
+  | Rule at a reference | wrong removed of 81 | right lost of 6,643 |
+  |---|---|---|
+  | **`ret`, moves, return (shipped)** | **59** | **23** |
+  | length <= 1 | 35 | 304 |
+  | length <= 2 (the sweep's suggestion) | 58 | 525 |
+  | length <= 3 | 63 | 1,203 |
+  | length <= 8 | 66 | 2,817 |
+  | a second identical body in the image | 18 | 211 |
+  | metadata name, caller set no x20 | 17 | 521 |
+  | one `b` (forwarder) | 0 | 284 |
+  | value witness name | 14 | 390 |
+  | every metadata name | 27 | 785 |
+
+  **DEAD END — identical bodies as the signal.** The linker removes the
+  evidence itself: bodies it folded are gone, so a twin in the image mostly
+  marks bodies it did not fold. **DEAD END — a forwarding `b`.** The 12 sites
+  that looked wrong in libReconstruction are vtable dispatches on self whose
+  owner is proven; the unstripped build names them too.
+- **FIXED — a cache image listed types it does not declare.** A prespecialized
+  generic's `__swift5_types` record is indirect. On disk the cell is a bind and
+  reads as nothing; in a shared cache the bind is resolved, so
+  libswiftObservation listed `Optional` and `Dictionary` out of libswiftCore in
+  `interface`, `dump` and `layout`, and every metadata index read them too. A
+  record whose descriptor lies outside the image's segments is now dropped
+  (`ImageExtent`, `UnrecordedTypes.ownRecords`). `interface` indexes the section
+  inside MachOSwiftSection, so the block it printed for such a type is removed
+  by its exact text. `dump` printed a conformance's requirement in another image
+  as a function, `sub_1927A4351` for `associated conformance descriptor`: it is
+  now named from the owning image's export trie, and read through
+  `CacheSymbolResolver.exportName(inTextSegmentAt:)`, since a descriptor lies
+  outside `__text`. `interface`, `dump` and `layout` of the host cache's image
+  match the RuntimeRoot twin line for line. `CacheImageOwnershipTests`.
+- **FIXED — a function and its own witness read as a fold.** With symbols,
+  `GaugeKit.Tank.level.getter` and its witness for `Gauge.level` at one address
+  declined as `sub_640`, while `MetadataSymbolizer` already read a class method
+  and its own witness as one function. The witness is the function, with nothing
+  to adapt. Two symbols now collapse when one is a function and every other is
+  a witness for the same member, with the same signature, in a conformance of
+  that type, and the function's symbol labels the address. `ImplS.y()` folded
+  with the witness for `Impl2.x()` stays a fold, and so does
+  `__derived_enum_equals` with `==` (different members, 5 addresses). 80
+  addresses over the 425 measured inputs. `OwnWitnessTests`.
+- **OPEN — what strip still hides.** 22 of the 81 remain. 14 are value witness
+  names whose partner is a `merged` alias or `outlined` copy of the same
+  operation on the same type: true of the body, and declining all of them costs
+  390 right names. 8 have bodies of two or more real instructions (`str x0,
+  [x20]; ret` with an outlined fragment, a closure with its enclosing
+  function). Separately, 6 sites sit in images with no unlabeled start
+  (libFoldedCalls, libCallArity `strip -x`): every function is exported, so the
+  gate cannot see strip, and a fully exported C dylib looks the same. An image
+  with no LC_FUNCTION_STARTS has no gate evidence either. The toolchain's
+  swift-syntax dylibs keep some locals, so they are not gated, and their own
+  `nm` is not a complete twin: their numbers above come from `strip -x` copies.
 - **OPEN — a metadata name cannot see a fold partner that has no metadata
-  record.** libReconstruction -O: `Counter.value.getter` shares its body with the
-  accessors of the `final` classes `BoxA.Holder` / `BoxB.Holder`, which have no
-  vtable entries, so a stripped binary keeps no trace of them and the address is
-  named `Counter.getter`. True of the body (the bytes are identical), but a call
-  from `Holder` code reads as a `Counter` call. No metadata-only fix exists.
+  record, in a body with work of its own.** libReconstruction -O:
+  `Counter.value.getter` shares its body with the accessors of the `final`
+  classes `BoxA.Holder` / `BoxB.Holder`, which have no vtable entries, so a
+  stripped binary keeps no trace of them and the heading reads
+  `Counter.getter`. True of the body (the bytes are identical). No metadata-only
+  fix exists.
 - **FIXED (`6018c78`) — other first-writer-wins maps at folded
   addresses.** Reproduced: `FoldRight.twiceTotal()` rendered `self.count`. `SelfTypeIndex` (`bindings[address] == nil`) and the vtable
   dispatch naming in `resolveVTableMethod` keep whichever owner reaches an
@@ -1343,6 +2418,77 @@ because it cannot be distinguished from a right one by reading the output.
   `AwaitResults.sink(?)` where `sink(awaited1 + 2)` is true. An indirect
   result needs the same, plus the buffer the caller passed (`add x0, x22,
   #0x10`): `useGeneric` reads its Int back from `[x22, #0x10]`.
+- **FIXED (942703e) — a closure's call dropped what it captured.** A closure's
+  printed signature lists its formals only, and its captures follow them as
+  arguments: the forwarder for `{ y in y &+ k }` passes k in x1
+  (`ldr x1, [x20, #0x10]`) and rendered `closure #1 (arg0)`. A closure's call
+  is now laid out from the registers its body reads: `closure #1 (arg0, ?)`.
+  Found by a probe sweep; 112 structured lines in 16 files gain capture
+  arguments, and one stale x0 leaves a precondition message's autoclosure
+  (`implicit closure #1 ()`, whose body reads no argument).
+
+- **FIXED (9d19914) — a small struct's method with formals had no `self`.** A
+  non-mutating method of a struct of integer words takes its self's words in
+  the general registers after its formals (`g(_ k:)`: k in x0, s in x1). Self
+  was seeded only for a method with no formals, so every one with a formal
+  read `return ?`. It is now seeded after the formals: `return (self.s -
+  arg0)`, `return ((self.a * arg0) + self.b)` for the non-commutative `a * k +
+  b`. Found by a probe sweep; 62 structured lines in 17 files, each a `return
+  ?` or raw-register condition becoming its fields.
+
+- **FIXED (7cf3711) — a call to an in-image callee that reads stack arguments
+  showed only its registers.** `stackargs.c`: `nine(q, 1, …, 7, 100)` read
+  `nine(?)`, a claim of one argument, though `nine` loads its ninth from
+  `[sp]`. A callee whose straight line from the entry loads an argument
+  register from at or above its entry sp reads the caller's outgoing area,
+  so its call now ends in `…` (`nine(?, …)`); the registers between are not
+  filled in, since a float or an aggregate can go to the stack first. A
+  load into x19-x30 there is an outlined epilogue's restore, not an
+  argument. Found by a probe sweep; Go's ABI0 stubs (all stack-passed) and
+  frame-reading outlined fragments also gain `…`.
+- **FIXED (651cc12) — a loop counter held in a register read as a constant.**
+  `registerloop.swift` at -O: `countUp` keeps `i` in x19 and steps it
+  before the test (`add x19, x19, #3; …; cmp x19, #0x3e5; b.lo`), and
+  rendered `if (x19 <ᵁ 0x3e5) { continue }`, a test on a register nothing
+  in the loop changes. Only frame slots were induction candidates, and the
+  compared operand had to be the bare placeholder. A 64-bit register is
+  now a candidate, and the test may read it stepped by a constant
+  (`i + 3`): `var i = -3 … sink((i + 3)) … i += 3`. A register counter is
+  named only where the lap's closing test renders from the counter,
+  constants and arguments (a flags branch, not a 0/1 Bool test). Named
+  where it does not, swift-syntax declared and stepped an `i` nothing read,
+  and `untilLimit` (a closure's result in the test) read `sink(i)` with no
+  declaration. A register secondary is never renamed in the body, so it is
+  not named. Found by a probe sweep (flow/subs.c).
+- **FIXED (ed8ba03) — a loop counter that starts from an argument stayed
+  raw.** `registerloop.swift` countDown (`var i = n`) read `if (x19 > 0)`
+  at -O and LoopEntry's `unknownStart` `while (x8 < x9)` at -Onone: only a
+  constant entry was declared. An entry that is an incoming argument is
+  now declared from it (`var i = arg0`), and a start from a call's result
+  still is not (`fromCall`). The register gate builds the header's real
+  condition and asks the renderer's own Bool-idiom test, so an ordered
+  test against 0 (`(i - 2) > 0`, Go's `printhexopts` `i <= 0`) is named.
+- **OPEN — loop counters still raw.** A 32-bit counter (`int` at -O1:
+  `subs w19, w19, #2`) wraps each step (`((i & M) - 2) & M`) and is not
+  matched.
+- **FIXED (cd0057e) — Swift's checked step left its loop counter raw.**
+  `registerloop.swift` checkedDown (`i -= 2`) at -O ends the header in
+  its overflow guard (`subs x19, x19, #2; b.vs trap`) and tests in the
+  block that closes the lap (`cmp x19, #0; b.gt header`), so the header's
+  test could not name the counter. For a register counter, that closing
+  test now serves when it reads the same counter and renders: `var i =
+  arg0 … if ((i - 2) > 0) { i -= 2; continue }`. One on another value
+  names nothing. No fixture or real binary moved beyond the new fixture.
+- **FIXED (9360eeb) — `--pseudo` read a loop variable it never declared.**
+  The flat view printed `sink((i + 3))` with no `var i = …`, for slot
+  counters at -Onone as for register counters (`registerloop.swift`).
+  The tracer now also keys each loop's bindings by the last instruction of
+  every block that enters it from outside, where that instruction comes
+  before every block of the loop, and the flat view declares them there
+  (`var i = -3` above the call). A declaration no later statement reads
+  (the loop test it served is not in the flat view) is dropped, so a leaf
+  keeps its leaf note. 88 pseudo lines in Go and three fixtures, each a
+  declaration above its first read; structured unchanged.
 - **OPEN — a closure's demangled name is read as its signature elsewhere.**
   A closure emitted at a generic abstraction returns through a buffer
   whatever its printed type, and `swiftReturnRegister(forDemangledName:)`
@@ -1551,16 +2697,32 @@ because it cannot be distinguished from a right one by reading the output.
   clamped to their arity. Swift callees and every other C callee are not: see
   the OPEN arity entries above.
 - **MITIGATED — `self` is conservative.** x20 is read as `self` only for a
-  Swift-mangled callee and only when freshly written (`Disassembler.swift:2847`,
-  `ValueTracking.swift:636`). Deliberate false-negative-over-false-positive.
+  Swift-mangled callee and only when freshly written, or (since 3ae5002) when
+  the callee's own demangled name proves it an instance member of a class,
+  which takes self in x20 whoever wrote it: `c.m1() &+ c.m2()` read
+  `Box.m2()`, now `Box.m2(self: arg0)` (`selfagain.swift`). FIXED (4b6b282):
+  a fresh x20 holding a saved temporary read as a value type's receiver,
+  `Pair.sum(self: r0, 1)` and `Mode.code(self: r0)` of m1's Int; a call
+  declared to return a plain scalar is now never a receiver. DEAD END: "a
+  struct's or enum's member takes x20 only as an address" broke four
+  tests: a resilient struct (`Foundation.URL`) takes self by address in
+  x20 even when non-mutating, unprovably so, and `Mod.A.Shared.init()`
+  parses `init` as an accessor and names the enum `A` its type.
 - **MITIGATED — field naming requires two independent halves.** Receiver type
   known AND offset inside the type's trusted prefix; the `isInstance` flag
   refuses metatypes. Consulting the symbol first (which lacks that flag) produced
   a real `swift_allocObject(self, …)` fabrication before the ordering was fixed.
-- **OPEN — `X → self.layout` imprecision.** LayoutWrapper structs over `__C`
-  types render the whole `self.layout` because the backing C struct has no Swift
-  field metadata. A *real* field name at the wrong granularity — imprecise, not
-  fabricated. Needs C-struct field data.
+- **FIXED (2026-11-11, completeness): a field of an imported C struct
+  rendered as a byte range of its Swift field.** A class field `stamp:
+  timespec` read `self.stamp[8..<16]` (getter and setter) for
+  `stamp.tv_nsec`, though `layout` prints `__C.timespec +0x8 tv_nsec` from
+  the same image's field record. Part of a field whose type is an imported C
+  struct with a field record now reads as its member, through nested members
+  too; the field's type is a symbolic reference, resolved through the
+  class map's `fieldTypeNames`. A Swift struct's part keeps its byte range.
+  Fixture cstructfield.swift: `return self.stamp.tv_nsec`,
+  `self.stamp.tv_nsec = arg0`. Against cd44e31 only that fixture moves.
+  GoodLinks stays 10,849.
 - **MITIGATED — a differential oracle now exists** (`DifferentialOracleTests`).
   Every other soundness test compares recovered pseudocode against a string
   someone wrote down, which cannot catch a plausible-but-wrong render: the
@@ -1882,6 +3044,28 @@ because it cannot be distinguished from a right one by reading the output.
 
 ## 2. Completeness — what does it silently omit?
 
+- **FIXED — a function with no signature never showed its return value.**
+  A stripped `sub_…` rendered `return` or nothing, even when every caller
+  used its result: sample.stripped's `Direction.init(rawValue:)`
+  specialization showed no return. Compiled code reads x0 after a call only
+  when the callee leaves a result there, so a callee whose in-image callers
+  read x0 after the call, and none of them x1, v0, v1 or x21, now returns
+  its x0 value. It must also leave x21 as it found it, and a caller that
+  returns straight after the call (forwarding an error it may hold) counts
+  as reading x21, so a throwing thunk proves nothing. The fact is stored on
+  the function, so the structured renderer's tail exits say `return ?`
+  rather than a bare `return`.
+  GoodLinks (`xrefs --unreferenced --probe`, `render.return-outcome`):
+  recovered 1,221 -> 2,504, no-signature 43,463 -> 38,168. Checked against
+  the unstripped twins of four swift-syntax dylibs: of 353 new stripped
+  returns, 100 match the signed render, 239 are accessors whose signed
+  render has only a bare `return`, and the 14 where both show a value were
+  read by hand (two class initializers return `self`, which the signed
+  render leaves `?`). Cost +0.96% instructions in total.
+  OPEN: a float result (v0) needs its width from a type, and a two-word
+  result whose second word no in-image caller reads would show only its
+  first word; none was found among the 353.
+
 - **FIXED — a class parameter declined on a simple name its qualified
   name settles.** `func readShared(_ s: A.Shared)` read `?` because
   `B.Shared` is a struct, and `C1.Dup` because `C2.Dup` collided in the
@@ -2034,17 +3218,18 @@ because it cannot be distinguished from a right one by reading the output.
   pass a call an address inside a saved register's slot (a dead `x8 =
   x29 - 0x10` from an earlier store) or one whose offset arithmetic the
   pass does not follow.
-- **FIXED — a local inside the register save area escaped every save.**
-  Swift keeps byte locals in gaps of the save area, such as the padding
-  word `str x28, [sp, #-0x60]!` leaves at sp + 8. Their addresses go to
-  `KeyedDecodingContainer.decode(_:forKey:)` and its kin, and counted as
-  pointing at the saves. An escaped address now reaches the object it
-  points at, up to the next saved value above it; only an address inside
-  a saved value escapes them all. Escapes in different places keep
-  separate ranges. Functions summarized as clobbering x29: 63 → 41
-  (plugin library), 18 → 16 (libSwiftIfConfig), 52 → 41
-  (libSwiftParserDiagnostics). Raw `mem[x29 …]` stores: plugin library
-  15 → 1, libSwiftParserDiagnostics 419 → 325.
+- **SUPERSEDED — entry-register spills were used as object bounds.**
+  The earlier optimization bounded an escaped address at the next saved
+  entry value. Its historical clobbered-x29 counts were 63 → 41 (plugin
+  library), 18 → 16 (libSwiftIfConfig), and 52 → 41
+  (libSwiftParserDiagnostics); raw `mem[x29 …]` stores fell from 15 → 1
+  and 419 → 325 in the first and last libraries. Those reductions did not
+  prove the bound: a saved entry value can itself be a word of the object
+  passed to a call. The authored `frame_preserve_alias.s` native reduction
+  demonstrates an overwrite beyond that spill. Preservation now records
+  whole-frame MAY reach for exact-address alternatives; it retains the
+  separate legacy policy for dynamic allocations. Coordinates and saved
+  values alone are not evidence of an allocation's extent.
 - **FIXED — a frame alias whose offset a join lost escaped every saved
   register.** x1 is `sub x1, x29, #0x48` on one path into a block and no
   frame address on the other. The join kept x1 as a possible alias but
@@ -2428,11 +3613,11 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   Covered by `CapstoneResyncTests`, which pins the resync *stride* (a
   wrong-sized skip still yields the right instruction count at wrong addresses),
   and was observed failing against the single-call decode before being trusted.
-- **OPEN — names for statically-dispatched Swift on stripped binaries.** Free
-  functions, closures, thunks, and struct/enum non-protocol methods render
-  `sub_<addr>`. Boundaries recover; names have no metadata record to recover
-  *from*. Measured, on CoreLocation: 2,018 of 4,126 recovered functions
-  (~49%) render `sub_<addr>` — the single dominant real-output gap.
+- **OPEN (audited 2026-11-10): names for statically-dispatched Swift on
+  stripped binaries.** Free functions, closures, thunks and value-type methods
+  stay `sub_` once stripped (libReconstruction.opt.stripped: 94 of 283
+  headings, against 52 unstripped). The CoreLocation 2,018 / 4,126 count is
+  from 2026-07-21, before metadata witness naming; re-measure.
 
   The standard tool workaround — reading the dyld cache's **local-symbols
   region**, which is what IDA/Hopper use to name internal functions — was checked
@@ -2501,10 +3686,391 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   (`f() -> (Int) -> Int`) no longer reads as the Int its last arrow names.
   Tests: `AsyncAmbiguityTests`, `AsyncPointerWidthTests` (ported), and
   `AsyncHandoffShapeTests`, one assembled arm64e shape per rule.
-- **OPEN — unresolved indirect call edges.** Generic witness tables, unknown
-  receiver vtables, and block pointers stay unresolved. `xrefs` reports the
-  count, so this is *disclosed* rather than silent — but `--unreferenced` is
-  therefore not a dead-code proof.
+- **FIXED (2026-11-10, completeness): a vtable call on an object held in a
+  field of self stayed unresolved.** `ldr x20, [x20, #0x10]; ldr x8, [x20];
+  ldr x8, [x8, #0x78]; blr x8` (`engine.start()` in a method of Car) read
+  `indirect_call(?, …)`. The tracer now follows the two loads of a dispatch
+  through a field's object and its isa, and the call is named for the
+  field's declared class (an Optional's payload included) from that class's
+  own vtable, only when the implementation's demangled owner is the field's
+  full type: `VTableIndex` is keyed by simple name, and a field of another
+  module's same-named class read `FieldVTable.Engine.rpm.modify(self:
+  self.other)` without that check. The slot names the declaration; the
+  object may be a subclass, as for self (`Car(Turbo()).go()` runs Turbo's
+  override, native 3). Fixture fieldvtable.swift with fieldvtable_other.swift
+  (-O, -Onone). GoodLinks cfg.unresolved-indirect-call 15,350 -> 15,273;
+  `xrefs` resolves 64 more dispatch sites. A free function's class parameter
+  is typed the same way, from its exact qualified type in the signature
+  (`ClassParameterFieldIndex`): `runEngine(_ engine: Engine)` reads
+  `return FieldVTable.Engine.start(self: arg0)`, and StrippedFold's `bump(_:)`
+  names `Base.w.modify`. GoodLinks 15,273 -> 15,160. An object in a field of
+  such an argument is typed by the argument class's field record:
+  `driveHeld(_ car: Car)` reads `return FieldVTable.Engine.start(self:
+  arg0.engine)` (GoodLinks unchanged at 15,160). A call's result is typed
+  by its callee's printed result (not a specialization or an async callee):
+  `makeEngine(turbo).start()` reads `FieldVTable.Engine.start(self: r0)`.
+  GoodLinks is unchanged again: it is stripped, and a `sub_` callee has no
+  signature to type its result. Methods' and specializations' parameters,
+  results of unnamed callees and objects loaded from other memory are not
+  typed yet (existentials: the next entry).
+- **FIXED (2026-11-10, completeness): a requirement called on an opaque
+  existential argument stayed unresolved.** `measure(_ shape: any Shape)` is
+  `ldp x19, x21, [x0, #0x18]` (metadata, table), the projected value in x20,
+  `ldr x8, [x21, #8]; blr x8` with the metadata and table passed last, and
+  read `indirect_call(?, …)`: the entry convention seeded no argument once a
+  parameter was not a one-register scalar. A parameter whose printed type is
+  a protocol this image declares with an opaque existential (bit 16 of its
+  descriptor flags set, no special protocol) is now one register, the
+  container's address, and a call through its table is named from the
+  descriptor when it hands on that metadata and table: `ExistentialWitness.Shape.area()
+  witness for arg0()` under library evolution, `ExistentialWitness.Shape
+  requirement 0 (method) witness for arg0()` otherwise, at -O and -Onone.
+  Error's box is not this layout and stays as it was. GoodLinks
+  cfg.unresolved-indirect-call 15,160 -> 14,810. A free function's
+  class-bound existential (`any Named`, `Named: AnyObject`) is two registers,
+  the object and its table (`existentialWitnessTable`), and a call through
+  that table is named when it passes `swift_getObjectType(object)` and the
+  table: `ExistentialWitness.Named.name() witness for arg0(…)`. A method's
+  parameters are laid out the same way, self in x20 (`Registry.lookup(_:)`).
+  GoodLinks is unchanged at 14,810 for both.
+- **FIXED (2026-11-10, completeness): a dynamic allocation sized from
+  argument metadata had no probe proof.** A generic function's buffer size is
+  `[[arg - 8] + 0x40]`, its type's value-witness size, and the tracer followed
+  argument metadata only through the witness function slots (excluding
+  +0x40, since a tracked size once fed the pre-probe dynamic-allocation
+  rule). So the probed size was unknown and no proof formed. +0x40 is
+  followed now; the probe proof (d9bbf74, 326a7ee) needs exactly that value.
+  Stripped countAll (libAssociatedWitness.stripped), recorded OPEN as
+  declined, names its witnesses as the symbol build does, for arg1 (`destroy
+  value witness for arg1.Iterator`). GoodLinks cfg.unresolved-indirect-call
+  12,741 -> 12,451.
+- **FIXED (774a43e, completeness): the preservation summary forgot every
+  save after a probed allocation.** A Swift function with a dynamically
+  sized local (`bl ___chkstk_darwin; mov x9, sp; sub x8, x9, x8; mov sp,
+  x8`) was summarised as not preserving x19–x29: the summary saw the probe
+  as an unknown call and sp as inexact at every later call, and 47ceb26 then
+  escaped each caller's whole frame. The summary now recognises the probe
+  (`stackProbeRecognizer`: a slot or stub bound to `___chkstk_darwin`) as a
+  call that writes only the 16 bytes below sp, names a word loaded from
+  outside the frame by its load so a reload never matches the probed size,
+  and keeps the frame above a proven allocation's base while sp holds it.
+  GoodLinks cfg.unresolved-indirect-call 13,595 -> 12,741.
+- **FIXED (2026-11-10, completeness): a probed allocation lost its proof at
+  the spill of its new sp.** Swift stores the new sp to a frame slot between
+  `___chkstk_darwin` and the move (`stur x9, [x29, #-0xb0]; mov sp, x9`),
+  and any memory write ended d9bbf74's probe proof, so sp became unknown and
+  every later call forgot the fixed frame (20 of 30 sampled GoodLinks
+  frame-table sites). A store to an exact slot of this frame, while no frame
+  address has escaped, now keeps the proof: it cannot change memory read
+  through another pointer. A dynamic allocation's own marker counts as no
+  escape. probeReload (a store through a pointer to the size's global) still
+  declines. Fixtures reuseProbedSpilled and reuseProbedSpilledTwice (native
+  7). SpillWitness's `put` now names `initializeWithCopy value witness for A`,
+  true of `table[k] = v`. GoodLinks cfg.unresolved-indirect-call 14,182 ->
+  13,595.
+- **FIXED (2026-11-11, completeness): a call to an in-image function took
+  every register as an input.** Machine-outlined fragments take inputs in any
+  register, so the summary treated every register but sp and x29 as a
+  possible input to an in-image callee without an arity, and the tracer took
+  x0–x8 and x20: any frame address a body left in a scratch register
+  escaped there (GoodLinks 0x10017e040 leaves `mov x8, sp; add x8, x8, x19`,
+  a local indexed by an unknown amount, before a call, and the whole-frame
+  escape made it clobber x29 for its callers). Each summary now records the
+  incoming x0–x28 its body may read before writing them
+  (`mayReadRegisters`), closed over its in-image calls like the argument
+  reads, with an import or indirect call taking the ABI inputs and any other
+  target every register; a call takes only those (and any vector register,
+  whose reads are not tracked). libc_twins' in-image `memset` reads only x1
+  and x2, so `useFill` renders `sink(1)`, true of the source, where it
+  rendered `sink(?)`. Against d7a8de3: 3 files, 7 structured lines (also an
+  -Onone async funclet's `br x0` now reads as the return into its parent's
+  continuation, as its siblings do); no return changed from one concrete
+  value to another. GoodLinks cfg.unresolved-indirect-call 10,899 -> 10,882;
+  instructions +0.53%. The field fits the summary's padding.
+- **FIXED (2026-11-11, completeness): the summary did not report a chain's
+  later allocations to the tracer.** `provenAllocationSites` (10e0f62)
+  recorded an sp move only when sp's abstract value changed, but the second
+  allocation of a chain leaves sp `below(k)` with the same k (GoodLinks
+  0x100a9cc34 and 0x100a9cc64), so the tracer, which holds those sizes as
+  unknown, lost the chain there. Any instruction that writes sp now counts
+  as a move. Fixture reuseProbedDeepTwice (two allocations of a size three
+  loads deep, native 7, now `return 7`). Against 9b9f2bc: 5 files, 230
+  structured lines, 102 unresolved indirect calls resolved and none added;
+  no return changed from one concrete value to another. GoodLinks
+  cfg.unresolved-indirect-call 11,088 -> 10,899 (189 sites resolved, none
+  new); instructions +0.39%.
+- **FIXED (2026-11-11, correctness): the tracer did not converge where a
+  frame word alternated between unknown and absent.** 2292132 compared
+  numbered registers by facts but every slot literally, and the tracer
+  spells an unknown word both ways (a store of `.unknown`, a meet that drops
+  a key). GoodLinks 0x100a88730's slot at -256 alternated around a
+  ten-block loop until the iteration bound, so the function claimed nothing
+  (its probe calls and a witness went unnamed) once the next commit kept
+  its frame across the loop's calls. A word of the function's own frame now
+  compares by facts; an incoming slot, which reads the caller's bytes while
+  absent, still compares literally. No fixture render changes; GoodLinks
+  cfg.unresolved-indirect-call 11,099 -> 11,088.
+- **FIXED (2026-11-11, soundness): a probe of an unknown size kept the
+  last probe's size.** At `___chkstk_darwin` the tracer recorded x9 only
+  when it knew it, so a probe of an unknown size left the previous probe's
+  size standing, and an allocation after it by that earlier size was
+  accepted as probed though this probe covered another (GoodLinks
+  0x100a9cc50 probes an unknown size with the second probe's still
+  recorded). The probe now clears the size it cannot name. Fixture
+  probeStaleSize (the second allocation reuses the first rounded size
+  under a probe of `***pp`: rendered `return 7` from the stale proof, now
+  `return ?`). Against 32bfbfe: only that fixture changes; GoodLinks
+  cfg.unresolved-indirect-call stays 11,099.
+- **FIXED (2026-11-11, completeness): the tracer ended a probed
+  allocation's proof at the push of stack arguments.** The summary keeps
+  the proof across a constant shift of sp (e978917, 5581ef5), but the
+  tracer ended it at any write to sp, and made sp unknown at a writeback
+  through it: `sub sp, sp, #0x20; bl; add sp, sp, #0x20` (GoodLinks
+  0x1007b5b14) and `str x8, [sp, #-0x10]!` (0x100b04f9c) below a probed
+  allocation forgot the frame at every later call (4 of the 13 sampled
+  unknown-sp functions left). A writeback through such an sp now moves it
+  by the constant, and a constant shift of sp from itself keeps the proof
+  while sp still hangs below the base; a pop folds back exactly (`(x - c) +
+  d` is `x - (c - d)` for c >= d), and a pop past the push ends the proof.
+  Fixtures reuseProbedPushed (native 7, now `return 7`) and
+  probePopPastPush (native 99 at size 0: still `return ?`). Against
+  10e0f62: 3 files, 12 structured lines, 5 unresolved indirect calls
+  resolved and none added. GoodLinks cfg.unresolved-indirect-call 11,235 ->
+  11,099; instructions -0.12%.
+- **FIXED (2026-11-11, completeness): the tracer could not prove an
+  allocation whose size it holds as unknown.** An unnamed body reading a
+  dynamic size from its class's generic-argument metadata (`ldr x8, [x0];
+  ldr x8, [x8, #0x80]; ldur x8, [x8, #-0x8]; ldr x8, [x8, #0x40]`) gives the
+  tracer no value for x9 at `___chkstk_darwin`, since it seeds no argument
+  there, so the allocation went unproved and every later call forgot the
+  frame (5 of the 19 sampled unknown-sp functions). The preservation
+  summary already proves such allocations by naming sizes by their loads;
+  it now records the sp moves it proves on every visit
+  (`provenAllocationSites`), and the tracer accepts an allocation of
+  unknown size at one of them. Fixtures reuseProbedDeepSize (a size three
+  loads deep, native 7, now `return 7`) and probeDeepReload (overwritten
+  through another pointer and reloaded: native 99, still `return ?`).
+  Against d997846: 4 files, 332 structured lines, 16 unresolved indirect
+  calls resolved and none added, no return changed from one concrete value
+  to another. GoodLinks cfg.unresolved-indirect-call 11,273 -> 11,235;
+  instructions +0.13%. The summary grows by one array word (stride budget
+  136 -> 144).
+- **FIXED (2026-11-11, soundness): import stubs numbered by a wrong stub
+  size were named after other imports.** Go's linker writes 6 as the size
+  (`__symbol_stub1` reserved2) of its 12-byte `adrp; ldr; br` stubs. swiftdc
+  divided the section by it and named stub n from the indirect symbol of
+  slot n at a 6-byte stride, as objdump's `symbol stub for:` does, so from
+  the eleventh stub on every call named another import: 45 of goProgram's
+  46 stub calls, checked against each stub's own GOT slot binding
+  (`llvm-objdump --bind`); `runtime.walltime_trampoline` read `fcntl(…)`
+  for `clock_gettime`. The stride now comes from the first stub's shape
+  (12, or 16 for arm64e), the header's only for an unrecognised one, and on
+  the objdump path a stub call whose comment names another C import than
+  the table takes the table's name. 0 of 46 mismatch now. Only goProgram
+  and its stripped copy change (380 structured lines); ld64-linked fixtures
+  and GoodLinks (10,849) are unchanged.
+- **FIXED (2026-11-11, completeness): a rebase of a probed chain dropped a
+  pushed constant.** d997846 rebases a deep allocation chain's sp to
+  `frame(base) - ?`; when the push of outgoing stack arguments was what took
+  sp to that depth, the rebase dropped the pushed constant, the matching
+  pop (32bfbfe) had no push to fold into, and the proof ended there. The
+  rebase now keeps a trailing pushed constant (`frame(base) - ? - c`).
+  Fixture reuseProbedRebasedP (three allocations, a push and pop around
+  calls, native 7, now `return 7`). Against 3d03dac only that fixture moves;
+  GoodLinks cfg.unresolved-indirect-call 10,882 -> 10,849.
+- **FIXED (2026-11-11, completeness): the summary did not recognise a
+  stack probe called through an import stub.** `stackProbeRecognizer`
+  decoded the stub through the code sections, and `__stubs` is none of
+  them, so a stub always decoded to nothing: `bl ___chkstk_darwin` through
+  a stub was an ordinary call to the summary, which forgot the size (the
+  tracer recognises it by name). The stub is now decoded from its own
+  bytes. Fixture reuseProbedStubbed (native 7, now `return 7`). Swift calls
+  the probe through the GOT, which was recognised already, so no Swift
+  render changes: against d674f17 only that fixture moves, and GoodLinks
+  cfg.unresolved-indirect-call stays 10,882.
+- **FIXED (2026-11-11, completeness): a chain of probed allocations lost
+  sp at its seventh link.** Each allocation nests sp one subtraction
+  deeper, and an operand at the arithmetic depth limit (8) made the next
+  value unknown: a synthesized Codable init makes one buffer per keyed
+  container, seven in GoodLinks 0x100858518, and every call after the
+  seventh forgot the frame (7 of the 19 sampled unknown-sp functions). A
+  proven allocation whose sp reaches depth 6 is rebased to `frame(base) -
+  ?`, which names no size and keeps the base the proof reads. Fixtures
+  reuseProbedChain (seven links, native 7, now `return 7`) and
+  probeChainStore (a store at the bottom of a rebased allocation may hit
+  the base word: still `return ?`). Against d1754ef: libStackLifetime and
+  the stripped libSwiftCompilerPluginMessageHandling, 476 structured lines;
+  158 unresolved indirect calls resolved there and none added (value
+  witnesses on `type metadata accessor for Swift.Optional(0, arg3)`), no
+  return changed from one concrete value to another. GoodLinks
+  cfg.unresolved-indirect-call 12,036 -> 11,273; instructions +0.24%.
+- **FIXED (2026-11-10, completeness): any escape ended the probe proof at
+  the spill of the new sp.** 326a7ee let a store to an exact frame slot keep
+  `___chkstk_darwin`'s proof only while no frame address had escaped at
+  all. GoodLinks 0x10085222c leaves `x29 - 0x20` in x8 before an unrelated
+  call, which escapes that local, then spills each of three allocations' sp
+  far below it; the tracer lost the proof, sp became unknown, and every
+  later call forgot the frame. The store now keeps the proof when no escaped
+  address can reach its slot (the reach `noteFrameMemoryWrite` already
+  consults). Fixtures reuseProbedSpilledEscaped (native 7, now `return 7`)
+  and probeSpillReaching (a size reloaded through a laundered pointer to the
+  stored slot: native 99, still `return ?`). ChkstkWitness's decode now
+  names each keyed container's destroy, true of the source (the Ping
+  table is spilled from cache 0x8010's metadata); the test that pinned the
+  old limitation is restated as that recovery. Against 5581ef5: 4 files,
+  362 structured lines, 72 unresolved indirect calls resolved and none
+  added; `self: ?` arguments that were dropped now show. No return changed
+  from one concrete value to another. GoodLinks
+  cfg.unresolved-indirect-call 12,204 -> 12,036; instructions -2.04%.
+- **FIXED (2026-11-10, completeness): the pop of outgoing stack arguments
+  lost a probed allocation's proof.** After a push below a probed
+  allocation, `add sp, sp, #0x10` moved sp from below the allocation's base
+  k to below k + 16, which no longer matched the base the probe recorded, so
+  the next call forgot every save (GoodLinks 0x1003bf44c). sp moved from
+  itself by the transfer (an immediate add or sub, a writeback through sp)
+  now carries the proof to its new bound; an sp taken from another
+  register's allocation still proves nothing. No fixture render changes.
+  GoodLinks cfg.unresolved-indirect-call 12,225 -> 12,204.
+- **FIXED (2026-11-10, completeness): a push below a dynamic allocation
+  lost sp.** A function that passes outgoing stack arguments while sp holds
+  a probed allocation pushes them (`stp x28, x0, [sp, #-0x10]!`). The
+  summary's writeback rule reset any base that was no exact frame address
+  before the store could place it inside the allocation, so sp became
+  unknown, the store forgot every save, and the callee read as clobbering
+  x19–x29 (GoodLinks 0x1003bf44c, the fifth of the sample's x29-clobbering
+  callees). A writeback through sp inside an allocation now moves it within
+  the allocation: a store through the dynamic path as before, and a load to
+  the allocation shifted by its writeback, so a pop may again reach the
+  frame above. Another register walking a buffer by writeback stays unknown,
+  since its bound would rise on every loop iteration (the first version
+  capped 24 goProgram summaries and cost it 10% more instructions). No
+  render changes alone: the pop that follows the push still lost the probe
+  proof (next entry).
+- **FIXED (2026-11-10, completeness): a byte loaded through the frame
+  pointer read as a frame address.** The preservation summary's fallback
+  transfer marked every register an unmodelled instruction writes as a
+  possible frame alias when it read one, and a narrow load (`ldrb`, `ldrh`,
+  `ldrsw` and kin) reads its base. GoodLinks copies a Bool stack argument
+  (`ldrb w15, [x29, #0x58]; strb w15, [sp, #0x130]`), which became an escape
+  of the whole frame and a callee summarised as clobbering x19–x29. A load of
+  fewer than eight bytes now gives its destination no alias; a writeback
+  base keeps it. An eight-byte `ldr` already gave none.
+  Against 4b30c61: 8 real dylibs, 1,208 structured lines (`?`-bearing lines
+  181 removed, 63 added); callee-saved frame bases and indirect results
+  survive calls (`&result`, `self: local_78`), so their stores become
+  frame-slot stores, which the renderer already hides. No return changed
+  from one concrete value to another. GoodLinks
+  cfg.unresolved-indirect-call 12,350 -> 12,225.
+- **FIXED (2026-11-10, completeness): a local in the save area's padding
+  reached the saves.** LLVM places small locals in the alignment holes of
+  the prologue's save area: GoodLinks passes `x29 - 0x48` (between x28's
+  save and the x27/x26 pair) as an inout x20, and stores a flag at
+  `x29 - 0x41` before passing its address on. 06da5b7 kept the whole save
+  area reachable from any address inside it, so those callees were
+  summarised as clobbering x29 and 47ceb26 escaped each caller's frame
+  (three of the five x29-clobbering callees behind the 40-site sample's
+  clobber-only group). Only a byte the prologue stored (before x29 holds the
+  frame address) now makes the save area; a pointer into such a word, at or
+  above the record, or before the record is proven still reaches the saves.
+  Against 2ec4e99: 7 real dylibs, 807 structured lines (`?`-bearing lines
+  123 removed, 37 added): indirect results now named `&result`, arguments
+  bound, ContiguousArray headers read as `(1, 2)`; no return changed from
+  one concrete value to another. GoodLinks cfg.unresolved-indirect-call
+  12,451 -> 12,350.
+- **DECIDED and FIXED (2026-11-10, completeness): an escaped local no
+  longer reaches the prologue's register saves.** GoodLinks' largest group
+  of unresolved calls (about 3,300) were value witnesses whose table was held
+  in a callee-saved register across a call to an in-image function that
+  passes a local's address on: that callee was summarised as not preserving
+  x19–x29, because an upward write through its local could reach its save
+  area, and 47ceb26 then escaped the caller's whole frame. The owner chose
+  the policy: like the frame record, the stores of entry x19–x28 made before
+  x29 is set from sp, in the function's own frame, are no local's object, so
+  an escape that cannot address the save area leaves them. A pointer into
+  the save area itself (its padding too, until the entry above), an escape before the record
+  is proven, a save at or above entry sp, and a body spill after the
+  prologue all stay reachable. Against e6231c8: 27 fixtures, 5,900
+  structured lines (`?`-bearing lines 1,058 removed, 845 added, the rest
+  renumbered bindings); no return changed from one concrete value to
+  another. GoodLinks cfg.unresolved-indirect-call 14,693 -> 14,182.
+- **FIXED (2026-11-10, completeness): a value witness on an existential's
+  dynamic type stayed unresolved.** An outlined copy, take, assign or destroy
+  helper reads the container's metadata (word 3, `ldr x2, [x0, #0x18]`), its
+  value-witness table before it, and calls a slot with that metadata last.
+  It is now named under the proof the argument-metadata case uses (the call
+  passes that metadata where the witness takes it), for where the metadata
+  was read, since the helper has no signature: `initializeBufferWithCopyOfBuffer
+  value witness for the metadata at arg0 + 0x18(arg1, arg0, ?)`. 30 fixtures,
+  252 lines; GoodLinks cfg.unresolved-indirect-call 14,810 -> 14,693.
+- **FIXED (2026-11-10, correctness): a protocol whose name sits at an odd
+  address had no requirement shapes.** `protocolRequirementShape` read every
+  relative field of the descriptor as indirectable and declined an odd
+  offset, but the name fields are direct pointers to C strings, which can
+  start anywhere; only the parent is indirectable.
+  ExistentialWitness.Shape's name offset is odd, and its requirements read
+  as nothing. No existing fixture or GoodLinks site changed: every
+  conformance site measured so far had an even one.
+- **MEASURED (2026-11-10): what the remaining unresolved calls are.** A
+  backward slice over the 24 instructions before each of GoodLinks' 15,350
+  sites (`llvm-objdump`, classified by how the target register was formed):
+  vtable-shaped `[[obj] + slot]` 1,559 (receivers: 587 in a callee-saved
+  register set earlier, 478 loaded from other memory, 92 self fields, 57 frame
+  slots); value witnesses through metadata the tracer has not placed 1,341;
+  tables loaded from the frame 2,636 or from other memory 2,444; tables and
+  slots of the async context 1,476; a table base set before the window 2,727.
+  Typed provenance, a static type for each receiver and table, is what the
+  first four groups need.
+- **OPEN (audited 2026-11-10): unresolved indirect call edges are disclosed,
+  not silent;** `--unreferenced` is no dead-code proof. GoodLinks has 15,504
+  at 9369b0e. The category survey (value witnesses 1,709, vtables 1,369, table
+  loads about 3,000) is of 13,509 sites at 67e6c33 and needs redoing.
+- **FIXED — a value witness through argument metadata stayed an
+  unresolved call.** A stripped generic function, or an outlined copy
+  helper, receives its type's metadata as a plain argument, so `[[arg - 8]
+  + k]; blr` rendered `indirect_call(?, …)`. The tracer now keeps the
+  word before an argument and one load through its eight function slots
+  (not the size at `+0x40`, which sizes a dynamic stack allocation), and
+  the call is named `<slot> value witness for argN` only when it passes
+  the same argument where the witness takes its metadata, its last
+  parameter (ValueWitness.def, checked against ~/swift GenOpaque.cpp).
+  GoodLinks `cfg.unresolved-indirect-call`: 13,508 -> 12,518; `xrefs`
+  unchanged (still counted as unresolved dispatch).
+- **FIXED — a protocol witness through a looked-up table stayed
+  unresolved.** A cast of an object to a class-bound protocol asks
+  `swift_conformsToProtocol(T, protocol descriptor)` for the table and
+  calls word k, its requirement k - 1. Named now when the call passes T
+  and the table last (a witness's trailing Self metadata and table):
+  `<Protocol>.<requirement> witness for T` where the image keeps the
+  requirement's method descriptor (library evolution only), else
+  `<Module.Protocol> requirement N (<kind>) witness for T` from the
+  descriptor, whose name and requirement kinds survive stripping.
+  GoodLinks: 48 named, the app's own protocols; its associated-conformance
+  tables (16 sites) stay unresolved.
+- **FIXED — an associated type's value witnesses were never named.**
+  Generic code over a `Collection` copies and destroys `C.Element` and
+  `C.Iterator` through metadata from `swift_getAssociatedTypeWitness(…, T,
+  base, associated type descriptor)`, and those calls stayed unresolved.
+  One is now named `<slot> value witness for T.Element` when the
+  descriptor is named and the call passes the metadata back as its last
+  argument (`A.Element` with a signature, `arg1.Element` stripped).
+  GoodLinks: 421 named, unresolved-call lines 17,763 -> 17,342; a site
+  whose descriptor is the app's own (stripped, unnamed) stays unresolved.
+- **FIXED — an enum's value witnesses were never named.** getEnumTag,
+  destructiveProjectEnumData and destructiveInjectEnumTag follow an enum
+  table's size, stride, flags and extra inhabitant count (`+0x58`); only
+  the first eight slots were named. Only an enum's table has them, so one
+  is named only when the call passes the metadata it was loaded through
+  as its last argument, for every metadata source. Fixture swift-syntax
+  and resilient-error libraries gain `destructiveInjectEnumTag value
+  witness for Swift.DecodingError`; GoodLinks has none through argument
+  metadata (12,518 unchanged).
+- **FIXED — a witness call counted as an import.** A call named for a
+  value or protocol witness of a type the binary does not fix (`destroy
+  value witness for A`) has no address, and the call graph counted every
+  named call without one as an import through its GOT slot, so `xrefs
+  --unreferenced` left it out of the indirect-dispatch disclosure. Such a
+  call now carries `isWitnessDispatch` and counts unresolved. GoodLinks:
+  17,622 -> 29,215 disclosed sites.
 - **FIXED — the completeness oracle itself over-counted.**
   `declaredFunctionCount` is what the empty-result rule compares against: an
   empty parse throws when it disagrees, and an unfiltered run warns below 50% of
@@ -2544,13 +4110,429 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   alignment padding between functions. Comparing a decoder against itself proves
   nothing; the numbers above use an external tool.
 
-- **OPEN — a send whose receiver is another send's result drops a known
-  argument.** `objc_factory_return.m` (-O2): `[r0 setLimit:?]` with `mov w2,
-  #4` right before the send, and `[r0 addObject:?]` with `x2 = @"y"`, where
-  r0 came from `initWithLimit:`/`initWithCapacity:`. The same argument
-  renders when the receiver comes from `objc_alloc_init` or `objc_opt_new`
-  (`setLimit:arg0`, `addObject:@"x"`). A decline, not a wrong value; the
-  mechanism is not yet found.
+- **FIXED (92e29b9) — a send whose receiver is another send's result dropped
+  a known argument.** `objc_factory_return.m` (-O2): `[r0 setLimit:?]` with
+  `mov w2, #4` right before the send, and `[r0 addObject:?]` with `x2 =
+  @"y"`, where r0 came from `initWithLimit:`/`initWithCapacity:`. The
+  untyped-float check walks back to the previous call and declines when
+  that call may have left a double in d0; a send of unknown signature may.
+  But the next send's receiver is that send's x0 result, so it returned in
+  x0, and a C or Objective-C return is in x registers or v registers,
+  never both. Now `[r0 setLimit:4]` and `[r0 addObject:@"y"]`. Only a send
+  counts: a Swift callee returns a `{object, Double}` struct in x0 and d0
+  at once, and `_putPairPart` (assembly in `objc_untyped_float.m`, since
+  compiled Swift retains between the call and the send) keeps
+  `[? put:? at:?]`; with any callee counting it read the integer layout,
+  `args(Mod.pair(), 7)`.
+
+- **FIXED (d09224d) — an in-image Objective-C class object rendered as its
+  address.** `objc_factory_return.m`: `[[0x8180 alloc] initWithLimit:3]`,
+  where `adrp; add x0, …, #0x180` before `objc_alloc` loads
+  `_OBJC_CLASS_$_SDFactory`. The class list's entries now name their class
+  objects when a value is one of them: `[[SDFactory alloc] …]`, and
+  `SDNonselfTarget`, `SDNonselfCaller` and `SDOutgoingProbe` in their
+  fixtures. An address two classes claim names neither. Swift classes are
+  excluded by the runtime's Swift bit: a Swift class's object is its type
+  metadata, and named it read `return _TtC14Reconstruction3Dog`, or
+  `return SDWidget` (an `@objc` name) in `type metadata accessor for
+  Sample.Widget`. Naming Swift metadata addresses is still OPEN
+  (reconstruction quality).
+
+- **FIXED (bbecdbe) — a call that only decided an empty branch vanished from
+  `--structured`.** A call whose result only feeds a branch is inlined into
+  the condition and left out of the statements before it. When both arms
+  render nothing (each only sets a result no signature proves), the `if`
+  was dropped and the call with it: `consumed_call.c`'s `probeLevel`
+  (`return sysctl(…) == 0 ? *p : -1`) rendered `{ return }`. The pseudo
+  view, which has no `if`, always kept it. The call now stands where the
+  `if` was. Blast radius: 18 files, 45 structured lines, every one a call
+  that ran: Go's `cpu.osInit` (six `sysctlbynameInt32`), three
+  `swift_initClassMetadata2` in metadata accessors, the casts of
+  `castToString` and `instanceOptional`, witness getters in swift-syntax,
+  and two nested `if`s whose inner call kept the outer one alive
+  (`os.(*file).close`, ClassParam's metadata instantiation).
+
+- **FIXED (71e5547) — a class with no stored property seeded no `self` in
+  its final members.** `retainregister.swift`'s `final class Node:
+  NSObject` has no field map and `join` no vtable slot, so neither source
+  of the self type saw it: `enroll(?)` and `objc_retain_x20  args(?)` for
+  `enroll(self)`. A Swift symbol whose demangled name has a signature and
+  names a type the class index proves a class (by its qualified name) now
+  takes self in x20. A name metadata gives a stripped body
+  (`SwiftSoup.Evaluator.IsEmpty.method`) has no signature and cannot say
+  `static`; taken first, it seeded self in place of the body-proven
+  arguments and GoodLinks lost 25 calls' targets (10,849 -> 10,868), so
+  it is declined. A destructor has no signature but is never static, so
+  `….deinit` and `….__deallocating_deinit` qualify (FIXED (a99e8d5)); the
+  parser had also read `deinit` as a property accessor, so
+  `LRUCache.(_Node in …).deinit` took its parent `LRUCache`'s field names
+  (`self.head`, a field `_Node` does not have) and now shows offsets.
+
+- **FIXED (a9633a5) — a field tested after it was overwritten was named by
+  the field.** `fieldstore.swift` (-O): `ldr x0, [x20, #0x10]; str xzr,
+  [x20, #0x10]; cbz x0` rendered `self.v = 0` then `if (self.v != 0)`,
+  never true, and every destructor that releases an Optional read
+  `self.next = 0; if (self.next != 0)` (exposed by the destructor self
+  seeding above). The structurer's text condition names a load by its
+  field only when no store and no call lies between the load and the
+  test; a release can run a deinit, so every call counts. Found by a
+  probe sweep. Blast radius: 34 structured lines in 5 files, each a field
+  name becoming its register (`if (x19 != 0)`), including swift-syntax's
+  LRUCache where `swift_unownedRetainStrong` sits between.
+
+- **FIXED (d3fff80) — an exit leaving two loops rendered as a `break` into
+  the outer loop.** `loopexit.swift` (-O): `for i { for j { if ext(i+j)
+  == 6 { return }; sink(j) }; sink(-i) }` rendered the exit as `break`,
+  which falls into `sink(-i)` and the outer loop's test; the code
+  returns. The inner loop's exit is where the structurer stops, so after
+  it the parent emits nothing and the text is the rest of the outer
+  loop. Such an exit is now spelled out: the tail it reaches (`return`)
+  or a goto to the code after both loops (`goto loc_734`, `sink(100)`).
+  Found by a probe sweep; 42 structured lines in 5 files, every one a
+  `break` becoming `return` or a goto with its label.
+- **FIXED (6e302f0) — inside a loop, an edge to the function's end fell
+  into the next block.** `for i { mid: for j { for k { if ext(i+j+k) == 6
+  { break mid }; sink(k) }; sink(-j) }; sink(-100 - i) }` (-O,
+  `loopexit.swift` threeDeep): the outer latch, emitted inside the middle
+  loop, read `if (x21 != x19) { goto loc_80c }` into `sink(-j)`, and the
+  render looped forever where the code returns. A loop body's own emission
+  that reaches its stop outside the body now spells the transfer (the
+  tail's `return`, or a goto), except at the loop's single exit and after
+  an if/else whose arms both leave, where nothing falls through. One
+  structured line moved in every fixture and toolchain library.
+
+- **FIXED (9bd88bb) — a direct Objective-C method read one register late.**
+  A method marked `objc_direct` is called by its symbol and takes no
+  `_cmd`, so its first keyword is in x1; read like an ordinary method,
+  `[box mix:5 with:9]` (`mov w1, #5; mov w2, #9; bl -[DMBox mix:with:]`)
+  rendered `[? mix:9 with:?]` and the body named b `arg0` (found by the
+  synthetic corpus, objc/direct.m). A call to, or the body of, a method of
+  a class this image defines whose IMP is in no method list is now read
+  from x1. Only the new fixture's renders moved. The whole-file listing
+  path still names a local symbol `sub_…`, so there it cannot tell.
+- **FIXED (a47f0f2) — x18 was taken to survive a call.** `mov x18, #7; bl
+  ext; mov x0, x18; ret` rendered `return 7`: the tracer cleared x1-x17 and
+  x30 at a call and kept x18 as "reserved". It is the platform register,
+  which Apple reserves and nothing promises across a call; a call now
+  clears it (`platformregister.s`; found by the synthetic corpus,
+  odd/scratch_regs.s). Only the new fixture moved.
+- **FIXED (d4ed36b) — malformed linkedit trapped, read past the file or
+  overflowed the stack.** The corpus's mutator (`Tools/synthcorpus/mutate.py`)
+  found 89 crashing runs of 3,540, eleven kinds: a bind special ordinal of
+  -4 (MachOKit `fatalError`); a rebase, bind or lazy stream size past the
+  end of the file (`try!`); function starts whose deltas wrap (unchecked
+  add); symbols with an empty string table (swiftdc's own stub scan); a
+  chained-fixup import count past its payload, an import name outside the
+  pool (unbounded reads); a multi-start page past the page-start array
+  (unchecked index); and a 100,000-node export trie (MachOKit's recursion).
+  The preflight declines each by its own cause before any reader reaches
+  it. All 3,540 runs now exit cleanly; no render moved.
+- **FIXED (58580ca) — `scvtf` on an unsigned operand read as unsigned.**
+  `Double(Int(bitPattern: x))` of a UInt is `scvtf d0, x0; ret` and
+  rendered `return Double(arg0)`, wrong for every value with the top bit
+  set. An operand typed unsigned now converts through its signed bit
+  pattern (`Double(Int(bitPattern: arg0))`; `signedfloat.swift`, found by
+  the ABI probe). Only the new fixture moved.
+- **FIXED (98d5b42) — an optional protocol property listed @required.**
+  ObjCDump leaves a protocol's optional properties empty, so `objc` put
+  every property under @required. A property whose getter is listed only
+  among the optional methods now renders under @optional
+  (`objcoptionalprop.m`, found by the ABI probe). `objc --image
+  Foundation` moves six lines, each @optional in the SDK headers.
+- **FIXED (7602e01) — the key path intrinsics took live registers as
+  arguments.** `swift_getAtKeyPath(local_30, arg1, arg1, arg2)` at -O: the
+  generic stdlib entry points are outside the generated runtime table. A
+  hand-checked table gives the getter two arguments plus its x8 result
+  buffer as an input and each setter three, each read from libswiftCore's
+  body (`keypathintrinsics.swift`, `.s`). Giving the getter its arity
+  alone kept a value stored in its result buffer across the call; passing
+  x8 is part of the fix.
+- **OPEN — the ABI gap probe (2026-11-13).** Twenty read-only agents, one
+  ABI area each, checked dev 6b3fd16 against the plain listing of their own
+  fixtures: [research/abi-probe-2026-11-13.md](research/abi-probe-2026-11-13.md).
+  Ranked: a callee without a usable signature taking stale registers as
+  arguments (eight areas: outlined vtable helpers, register tail branches,
+  subscript setters, forwarders, class-bound witnesses, cross-module
+  thunks); outlined fragments taken to produce x0 (-Osize stack
+  protector); no noreturn model at -O2/-Os; arm64e `aut*`/pre-index loads
+  losing every vtable and witness callee; receivers dropped (stale-valid
+  x20, metatypes, by-value enums, protocol-extension methods); value
+  renders (typed array literals as raw bits, `scvtf` on UInt, `__int128`
+  low half, `argN` numbering without a signature); unresolved non-fragile
+  ObjC ivars; a merged throw before its cleanup.
+- **FIXED (87ac62f) — a struct mixing register banks was not read as self.**
+  `Gauge { level: Int, scale: Double, limit: Int32 }.scaled()` (Ghidra
+  issue #9741) rendered `return ?`: only all-Int and all-float structs were
+  seeded. Each field now takes the next register of its own bank after the
+  formals (`mixedself.swift`); shared 8-byte units and five-field structs
+  still decline, and a class never qualifies. 48 structured lines in 11
+  fixtures moved, each a `return ?` becoming a checked field read.
+- **FIXED (36ba8db) — a signatureless function's return read as void.**
+  A C function no signature or caller describes rendered a bare `return`
+  (`konst` returning 42), the largest single cause of swiftdc's wrong rows
+  in the Ghidra comparison. The return now carries `// x0 = …` as a
+  comment, never as a returned value, except for Swift symbols, functions
+  the image has result evidence about, an untouched first argument, and
+  values built from a call's result (`unprovenresult.c`). 140 fixture
+  files moved; libFlagWidthProbes costs 12-17% more instructions
+  (Perf-cost), +0.01% in total.
+- **FIXED (275a60b) — signed comparisons on UInt read as unsigned.** A
+  signed `lt`/`gt` on UInt operands rendered a plain `<`/`>`, so a signed
+  max read as `max(a, b)` and `signedLowerBound(_: UInt64)` read `arg0 <
+  -11` (the "UInt against a negative constant" item); a UInt against an
+  Int read as Swift's mathematical mixed compare. They now render `<ˢ` or
+  `<ᵁ` (`signedcompare.swift`); the differential oracle agrees natively.
+- **FIXED (466b14a) — tail branches to getters, C entry points and from
+  generic callers had no `return`.** `countLit() { "hello".count }`
+  (`b String.count.getter`) and `dynType<T>` (`b swift_getDynamicType`)
+  rendered a bare call. Getters of the caller's result type, C entry
+  points returning one integer register, and generic callers now qualify
+  (`tailforward.swift`); 112 lines in 38 fixtures gained `return`.
+  (`AnyObject.Type` results since 9997a59.)
+- **FIXED (9997a59) — `AnyObject.Type` laid out as several registers.**
+  Its existential metatype is the metadata pointer alone (no witness
+  tables), so functions returning one declined and parameters after one
+  lost their registers; now one integer register (`anyobjectmeta.swift`).
+- **FIXED (d55b351) — struct parameters passed as fields were never seeded.**
+  `borrowFD(_ fd: FileDesc)` rendered `return ?` for `add w0, w0, #7`. A
+  struct of up to four scalars now seeds each register as `arg<n>.field`
+  (`mixedself.swift` withGauge); 47 lines in 15 fixtures, sample apps
+  included, moved from `?` to fields.
+- **FIXED (7b5d6a5) — a struct passed by address was not its parameter.**
+  `callWide(_ value: Wide, …)` passed `value` on as `self` and rendered
+  `Wide.sum(arg1)`; the address register is now `arg<n>`. OPEN: field
+  reads through it (`big.c` from `[x0, #0x10]`) still decline, since the
+  tracer does not model loads through an argument pointer.
+- **FIXED (89920f9) — constant strings read as C strings.** `@"héllo"`
+  rendered `@"h"` and `@"a\0b"` `@"a"`: a `__cfstring` entry's flags and
+  length now decide (bytes or strict UTF-16), and an entry whose length
+  disagrees with its bytes declines (`cfstrings.m`, `cfstrings_short.s`).
+- **FIXED (a1200f7) — autorelease pools and block copies hidden as noise.**
+  The noise list's `objc_autorelease`/`objc_retain` prefixes matched
+  `objc_autoreleasePoolPush`/`Pop` and `objc_retainBlock`; those three are
+  now always shown (`runtimestatements.m`).
+- **FIXED (3cb21d9) — a tail branch to an in-image twin returned the
+  library's result.** `b strlen` to a vendored `void strlen` rendered
+  `return strlen(arg0)`: the C prototype now counts only for a branch that
+  leaves the image (`tailprototype.swift`, a four-case eligibility matrix).
+- **FIXED (8347f86) — `objc_opt_new` rendered as alloc/init.** It is a
+  `+new` send: `[C new]` (`optnew.m`).
+- **FIXED (5f012f8) — a signatureless return built from a call stayed bare.**
+  `return use(a) + b` in C rendered only `use(…)`. Its calls are now bound
+  (`let r0 = use(…)`) and the return carries `// x0 = (r0 + arg1)`; the
+  last call's result alone still shows nothing (`unprovenresult.c`). 260
+  lines in 29 fixtures. Not re-scored against Ghidra yet.
+- **MEASURED — the comparison re-scored at 5f012f8 (2026-11-13b).** Same
+  pinned corpus, swiftdc's columns only: body correct 26% to 33%, body
+  wrong 23% to 18%, interface wrong 14% to 10% (Ghidra 54%, 30%, 10%).
+  OPEN from it: 137 frames and 22 globals bodies still lack a return value
+  (x0 is the last call's result, the result is in d0, or it is loaded);
+  collections did not move (Array loads through a pointer, traps folded
+  in loops); switch still has 60 wrong bodies (undecoded C jump tables,
+  empty loop-switch arms).
+- **FIXED (1c7033a) — a register call to an in-image function took stale
+  arguments.** `blr x8` to a one-argument function rendered `one_arg(3,
+  7)`: call targets were collected before the trace. A resolved register
+  target now gets the callee's body-read bound (`registercall.s`).
+- **FIXED (0f1f69b) — default-argument generators seeded with their function's
+  parameters.** `default argument 1 of print(…)` takes nothing; swiftdc
+  seeds x0 from the name (19 entries, found by
+  `Tools/ghidra-compare/interface_oracle.py`, the compiler-lowering check).
+- **OPEN — the Ghidra comparison's defects (2026-11-13).** swiftdc and
+  Ghidra 12.2 scored on 2,601 function builds
+  ([research/ghidra-comparison-2026-11-13.md](research/ghidra-comparison-2026-11-13.md)).
+  swiftdc's wrong rows, by cause: a value-returning C function rendered with
+  a bare `return`, which reads as void (317 of 349 wrong interfaces, 277 of
+  594 wrong bodies; now `// x0 = …`, 36ba8db and 5f012f8; the re-score
+  is pending); a checked `+` and a wrapping `&+` rendered alike, the
+  overflow trap folded away (`addTrap` and `addWrap` both `return (arg0 +
+  arg1)`); tail calls without `return` and -Osize outlined return helpers
+  dropping the result; void runtime hooks and register-target calls taking
+  leftover registers; the first segment of an -O interpolation dropped.
+  Its declines: leaves whose parameters are not seeded (`return ?` for `add
+  w0, w0, #7`), clang's `adr`/`ldrb` C jump tables.
+- **OPEN — the second ABI gap probe (2026-11-13).** Twelve more agents,
+  twelve new areas (noncopyable types through instrumented builds), against
+  58580ca: [research/abi-probe-2-2026-11-13.md](research/abi-probe-2-2026-11-13.md).
+  Ranked: calls taking arguments the binary bounds away (every `Task {}`
+  site's `TaskPriority.rawValue.getter(arg0)`, zero-formal Array members,
+  value-type deinits, `blr` to an in-image function, the stack probe read
+  as writing every argument register); signed compares on UInt operands;
+  code dropped (a bounds trap folded as an overflow guard, C stores with an
+  extended index, autorelease pools and `objc_retainBlock` hidden by
+  prefix, an interpolation's first segment, `yield`s); wrong values and
+  names (UTF-16 CFStrings truncated, `objc_opt_new` as alloc/init, a GOT
+  data import as its value, an `stp` split out of order, -O0 jump tables
+  rendered as functions); interface spelling; unseeded entries.
+- **OPEN — the synthetic corpus's findings.** `Tools/synthcorpus` (sources
+  with hand-checked EXPECT/FORBID directives, `check.py`, `mutate.py`) found,
+  against dev 17e6f4c, each listed with its source in its README. Soundness:
+  a `let r0 = OUTLINED_FUNCTION_2()` for a
+  helper that writes no x0 (async resume, -Osize); a loop entered at its
+  body losing its exit test (an invented infinite loop); a UInt compare
+  against `0xfffffffffffffffa` as `arg0 > -6`; `if (cond !=)` for reused
+  flags. Completeness: x20 receivers dropped at -Onone, forwarders' tail
+  calls without `return`, outlined epilogues losing a return value, await
+  in a loop without `await`, unnamed 32-bit and call-seeded counters, the
+  plain listing's dropped stack arguments and fabricated `_cmd`, an orphan
+  block merged into a function, a literal pool decoded as code, noreturn
+  calls joined to `return` at -O0. The robustness findings are FIXED
+  below. Baseline at b45a1c9: 226 products, 53 failing, all on directives;
+  52 after the x18 fix.
+- **FIXED (b45a1c9) — a compare whose operand is rewritten before the branch
+  read one step late.** `cmp w21, w19; add w21, w21, #3; b.lt` rendered
+  `w21 < w19`, three off, and `cmp w19, #2; lsr w19, w19, #1; b.lo` a test
+  of the shifted value (found by the synthetic corpus, loops and control
+  areas). 9bb1427 handled only a compare that writes its own operand. A
+  condition whose rendered operands read a register any instruction
+  between the flag setter and the branch writes now declines. 116
+  structured lines in 10 files, each such a condition becoming `?`.
+- **FIXED (688ed4c) — a value receiver with a float word, or a payload
+  enum, vanished from its call.** `Point(x: 3.5, y: 4.25).length()` is
+  `fmov d0, #3.5; fmov d1, #4.25; b length` and read `Point.length()`;
+  `Shape.pair(301, 302).tag(303)` read `Shape.tag(303)`: no receiver at
+  all (`valueselfwords.swift`; found by a probe). An all-float struct's
+  self is now read from the v registers after the float formals, where the
+  in-image callee provably reads them (`length(self: (3.5, 4.25))`); a
+  receiver whose words are not known here, a payload enum or a struct
+  mixing banks, is `self: ?`. 216 structured lines in 29 files, 90 of them
+  `self: ?` on value-type methods whose layout the image does not give.
+- **FIXED (b744493) — a callee with a frame read its stack arguments
+  unseen.** 7cf3711 ended a call in `…` when its callee loads from at or
+  above its entry sp, but read only sp, on the straight line to the first
+  call or branch, into x0-x18: a non-leaf callee with more than eight
+  arguments reads them through x29 after its prologue (`ldr x8, [x29,
+  #0x10]`), after a call or a test, or into a register it saved, and
+  `framed(arg0, 1, 2, 3, 4, 5, 6, 7)` read as complete at -O0. Three
+  summary rebuilds also reset the flag, so a callee whose reads were
+  widened through its own calls lost it. The scan now follows x29, runs
+  past calls and conditional branches, counts any register once the
+  function stores below its entry sp, and skips a reload of bytes it
+  stored itself (Go's argument spills); the rebuilds carry the flag.
+  Found by a probe (C at every level; Swift unaffected).
+- **FIXED (b4c7467) — the loop-exit check took a call for an exit.**
+  `endsInTransfer` (6e302f0) decided an arm leaves when its last line
+  began with `return` or `throw`, so a call named `returnValue()` or
+  `throwIfNeeded()` read as an exit, and an if/else whose other arm left
+  would have dropped the transfer a loop body needs. Found by reading the
+  code, not reproduced in a render; the words are now whole (`return`,
+  `return …`, `throw`, `throw …`). No render moved.
+- **FIXED (9bb1427) — a compare that writes its own operand read one step
+  off.** `subs w19, w19, #2; b.hi` compares the value before the
+  subtraction, but the text path named the register, which at the branch
+  holds the value after it: `if (w19 >ᵁ 2)` where the test is `w19 >ᵁ 0`
+  afterwards, and `subs x9, x9, #1; b.ne` read `while (x9 != 1)`, a loop
+  testing a register it never visibly changes (`writtenflags.c`; found by
+  a probe of 32-bit loops, 64-bit too). When the result register is read
+  in an operand's rendering, equality reads as the result against 0 (the Z
+  flag, exact), and an order declines. 2,748 structured lines, most
+  `!= 1` becoming `!= 0`; some old renders also named the wrong register
+  (`x21 != 1` for `subs x22, x22, #1`).
+- **FIXED (9bfb66a) — a malformed rebase or bind opcode stream trapped,
+  hung or ran away with memory.** Found by a probe patching
+  `libOpcodeFixups.dylib`'s LC_DYLD_INFO streams. A rebase segment offset
+  of 2^63 trapped converting to `Int` in `ChainedRebases.opcodeTargets`
+  (SIGTRAP on `disasm`, `objc --methods`, `xrefs`, `analyze`);
+  `DO_REBASE_ULEB_TIMES 2^28` passed 3 GB in MachOKit's unbounded
+  `rebases` array; `DO_BIND_ULEB_TIMES_SKIPPING_ULEB` with a count of 2^40
+  passed 3 GB, and one whose skip wrapped the cursor in place never ended
+  (`externalBindSlots`). The rebase opcodes are now interpreted in place,
+  with offsets compared before any conversion and a work bound of one per
+  pointer slot of the segments, past which the stream claims nothing; a
+  bind repetition past that bound binds nothing. All 18 patched inputs exit
+  0 on all 11 entry points; no fixture render moved.
+- **FIXED (b7500e0) — an image that rebases by opcode lost every selector
+  and CFString.** A deployment target below macOS 12 or iOS 15 links with
+  `LC_DYLD_INFO`: a rebased slot holds its target's unslid address, and
+  only the slots the rebase opcodes list are pointers. The selector table
+  and the CFString reader resolved rebases only through chained fixups,
+  so `opcodefixups.m` built for macOS 11 rendered `NSLog(0x4000)` and
+  each send as an unresolved call, where the macOS 13 build reads
+  `NSLog(@"n=%ld", arg1)` and `[arg0 removeAllObjects]`. Opcode rebases
+  now feed both (`ChainedRebases.opcodeTargets`), and the two builds
+  render the same. Found by a probe sweep. Blast radius: the fixture and
+  goProgram (opcode-linked), whose six calls through `__go_func`
+  function values in `__DATA_CONST` are now named (`main.main()`).
+
+- **FIXED (5366c55) — an SDK send returning an integer struct rendered as
+  its first word.** `objc_range_return.m`: `return [s
+  rangeOfString:@"x"].location` read `return [arg0 rangeOfString:@"x"]`,
+  an NSNotFound test read `([arg0 rangeOfString:@"q"] !=
+  0x7fffffffffffffff)`, and `_u = [view selectedRange].location` stored
+  the whole send. The SDK selector table recorded only v-register
+  returns; it now marks `a` for every selector some public declaration
+  returns as an integer struct (in x0 and x1, or through x8), 476 of
+  them, and that is an aggregate veto: x0 is one word, and a float claim
+  is declined (`currentTime` is a CMTime on AVPlayer). Found by a probe
+  sweep; only the fixture changed in the corpus.
+
+- **FIXED (48b229b) — a variadic SDK selector outside the name suffixes
+  dropped its variadic part.** `isVariadicSelector` knew only
+  `…WithFormat:`, `appendFormat:`, `…WithObjects:` and
+  `…WithObjectsAndKeys:`, so `[s stringByAppendingFormat:@"+%ld", n]`
+  read `[arg0 stringByAppendingFormat:@"+%ld"]` and `raise:format:`
+  showed its format alone, with no `…`. A type encoding does not say a
+  method is variadic; the SDK headers do. The prototype generator now
+  collects every variadic method declaration (44 selectors,
+  `SDKVariadicSelectors`), and the check consults it: `[arg0
+  stringByAppendingFormat:@"+%ld", arg1]`, `raise:format:@"bad %ld", …`.
+  Found by a probe sweep; only the fixture changed in the corpus.
+
+- **FIXED (0cb1c6e) — `interface` on an image with no Swift printed a
+  plausible empty module.** A C or Objective-C dylib read `import Swift`,
+  `import _Concurrency`, … and nothing said why, where `dump` says no
+  Swift metadata was found. When the interface is nothing but imports and
+  the image has no `__swift5_*` section, the result is empty and the CLI
+  prints `// No Swift metadata found.`. A section-only rule was tried
+  first and would have emptied 91 fixtures: a module of free functions
+  has no Swift section, but its functions print from symbols. Across the
+  fixtures, 121 C and ObjC images change and none loses content.
+
+- **FIXED (529ed95) — a direct call to an unnamed address rendered as an
+  indirect one.** In a stripped executable with no LC_FUNCTION_STARTS,
+  functions merge into one body and each `bl` lands inside it
+  (`mergedcalls.c`). With no name for the target, the call printed
+  `/* unresolved call */ indirect_call(?, …)`, a claim that the target was
+  unknown, though the `bl` names it. It now reads `sub_100000348(
+  recovered_args: […])`. Found by a probe sweep; the fixture and
+  libInputShapeNoStarts.stripped changed.
+
+- **FIXED (a565aad) — a protocol witness's tail call lost its `return`.** A
+  witness that ends `ldr x0, [x20]; b V.count` forwards the member's result,
+  but the tail-return rule read only an ordinary `Module.Type.member`
+  caller name, and a witness is `protocol witness for M.P.f() -> Swift.Int
+  in conformance …`: `V.count(self: ?)` with no `return`
+  (`witnesstail.swift`). A witness is now read by its requirement's
+  signature. Found by a probe sweep; the fixture and one swift-syntax
+  witness (`KeyedContainer.contains`) changed.
+
+- **FIXED (139a624) — a damaged LC_FUNCTION_STARTS silenced the boundary
+  warning.** A stripped executable whose table holds one entry far past the
+  image decoded as one function with nothing on stderr, because the warning
+  fired only for an empty table. It now fires when no listed start lies in
+  the code, as `warning: LC_FUNCTION_STARTS lists no address inside the
+  code, …`. Found by a probe sweep; no render changed.
+
+- **FIXED (adcead8) — plain `disasm` blamed its parser for damaged input.**
+  A dylib whose symbol values all lie outside it makes llvm-objdump print
+  `section data ends, _add lies outside valid range` and no instruction,
+  and swiftdc said "This is a parser defect, not an empty binary". The
+  error now carries llvm-objdump's own complaint when it makes one and
+  says the input looks damaged (pointing at `--structured`/`--pseudo`,
+  which decode without llvm-objdump); with no complaint it is still
+  reported as swiftdc's parse failure. Found by a probe sweep.
+
+- **FIXED (43d53f3) — `interface` dropped undecodable types silently.** With
+  its `__swift5_typeref` words damaged, an image's interface printed `func
+  top(_: S.Point)` alone, and Point, Box and Shape vanished; `dump` names
+  each. A type the image records in `__swift5_types` that the interface
+  neither declares nor extends is now listed in a closing note, which
+  states only that it is missing. A first draft claimed "metadata could
+  not be read" and fired falsely on four images (C-imported types,
+  unrecorded types, a private struct printed only as an extension); the
+  final rule fires on no intact fixture or toolchain library.
+  Blast radius: 18 files, 84 structured lines, `x20`/`x19`/`?` becoming
+  `self`, plus `self.run(arg0)` style vtable calls in such classes.
 
 ## 3. Robustness — what breaks it?
 
@@ -3047,26 +5029,22 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   (binary, mutants, seed), covers all eight metadata-reading subcommands, and
   exits nonzero when any mutant kills the CLI — so it can become a gate the
   moment the class above is contained. It is not yet wired into CI.
-- **OPEN — fuzzing is bounded and manual; metadata parsers are unprobed.** The
-  prediction that the `try!`-in-a-dependency pattern would recur in load-command
-  payloads was tested and **held** — 12 crashes across four subcommands, now
-  fixed. A 120-mutant fuzz over the load-command region has since been run
-  (2.5% crash yield, all in the uncontainable class). `__swift5_*` and
-  `__objc_*` **metadata** parsing has since been probed and is crashing — see the
-  metadata entry above (6.1% yield, three sections, one of which kills every
-  subcommand). **Fat slice thin headers** — flagged here as unprobed — were then
-  probed and **crashed**: a slice whose *extent* is in-bounds but whose thin
-  Mach-O header lies (`sizeofcmds` claiming load commands past the slice) passed
-  preflight and trapped in `MachOKit/MachOFile.swift:61` when `fat.machOFiles()`
-  parsed it. Confirmed by corrupting a real fat binary (`/bin/ls`). **Now
-  fixed**: `MachOPreflight` validates each slice's thin header against the
-  *slice* size, with the same two consistency checks `validateThin` applies to a
-  top-level header (`FatSlicePreflightTests`; both directions proven — the crash
-  test observed "killed by signal 5" without the fix, the over-rejection test
-  observed a valid `/bin/ls` slice being refused when the check was made
-  over-eager). Still unprobed: anything beyond the 1 MiB preflight read prefix
-  that is not a fat slice or a validated relative-pointer table. Nothing runs in
-  CI.
+- **OPEN (audited 2026-11-10): fuzzing is manual and bounded, and nothing runs
+  in CI.** `swift Tools/fuzz.swift container|metadata` covers load commands,
+  `__swift5_*`, `__objc_*`, `__const` and fat slices; the Python harnesses
+  named in older entries are gone. Unprobed: data beyond the 1 MiB preflight
+  prefix that no validator reads, and type encodings deeper than a mutation
+  reaches (see the nested-encoding entry). Since 2026-11-10 both modes also
+  run `disasm --pseudo`, `disasm --structured`, the plain listing and `xrefs
+  --unreferenced`, the streamed Capstone and call-graph paths no mutant had
+  reached. At 9369b0e: metadata mode, 150 mutants each (seed 20261110) of
+  libSample, libImportedReceiver.opt, libABISource.resilient and
+  libProtocolWitness.resilient, 6,000 runs; container mode, 150 each (seed
+  20261111) of libSample and libImportedReceiver.opt, 2,700 runs. No crash
+  and no timeout. At 8acb347 (2026-11-11), both modes, 40 mutants each (seed
+  20261111) of libStackLifetime, libChkstkWitness and libExistentialWitness:
+  1,880 runs, no crash and no timeout (libStackLifetime has no Swift
+  metadata to mutate).
 - **MITIGATED — behavior across optimization levels.** The differential oracle
   now runs at both `-Onone` and `-O` (318 comparisons each), executing the
   recovered expression against the real compiled function at each level. This is
@@ -3156,6 +5134,111 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
 
 ## 5. Performance and memory on large frameworks
 
+- **FIXED (memory) — every summary's construction state lived through
+  pass 2.** Analysis reads a dozen facts of a callee's summary, but each
+  kept its call edges, pending reads, preservation work and result reads
+  for the whole run. Once every closure is done, `CalleeRegisterFacts.finish`
+  takes the caller-proven results (which need the result reads) and then
+  projects the summaries to the facts analysis reads, emptying the table.
+  Ported from Codex's 502be0e. GoodLinks `xrefs` peak, one quiet run each:
+  123 MB -> 95 MB, heap at the peak 118.5 MB -> 45.5 MB; output identical.
+
+- **FIXED (memory) — a register summary was 128 bytes, a third of it
+  padding.** Bools between references padded `CalleeRegisterSummary`; one
+  is held per function in a table of 131,072 slots on GoodLinks. The
+  references now come first, and `RegisterSet` is two bytes: 96 bytes. The
+  table at the GoodLinks `xrefs` peak: 17.86 MB -> 13.66 MB. Footprint
+  pairs (148, 156 -> 161, 157 MB) are within the run-to-run spread.
+
+- **FIXED (memory) — the code sections were copied into the heap for the
+  whole run.** `textSection(in:)` read each code section with
+  `readElements` into an array and then into `Data`: 20 MB on GoodLinks,
+  the largest block at its `xrefs` peak, with a second 20 MB while it was
+  made. A standalone file's sections are now slices of the file mapped
+  once (`mappedSlice`); a dyld-cache image reads as before. GoodLinks
+  `xrefs` peak, two alternating rounds: 175, 170 MB -> 148, 142 MB;
+  instructions 2,152G -> 2,134G. libSwiftParser `disasm --structured` and
+  `xrefs`, three quiet rounds: unchanged. Output identical.
+
+- **FIXED (memory) — the name-only function records lived through pass 1.**
+  The streaming path built a `DisassembledFunction` per boundary for the
+  name index and held them until after pass 1 for one `swiftTargets` line
+  (20 MB on GoodLinks). They are now scoped to the index. libSwiftSyntax
+  `xrefs --unreferenced`, three alternating rounds: 188, 186, 186 MB ->
+  177, 176, 175 MB. GoodLinks does not move (174, 174 -> 170, 180 MB):
+  its peak is now the end of pass 2.
+
+- **FIXED (memory) — every short function's body was held as a possible
+  outlined fragment.** Pass 1 stored an `OutlinedFragment` for each body
+  of at most 12 instructions, though a call inlines only one named
+  `OUTLINED_FUNCTION_n` or an unnamed one that breaks the calling
+  convention. Only those are now kept: at insertion when no dyld cache can
+  rename anything, else once names are final (`inlinableFragments`).
+  GoodLinks `xrefs` heap at the peak: the fragment table 6.57 MB -> 28 KB,
+  its instruction arrays about 9 MB -> 0.18 MB; peak footprint on a quiet
+  host 197, 191 MB -> 170, 172 MB. Output identical.
+
+- **FIXED (memory) — every summary kept a call list only stack-only
+  bodies need.** `outgoingCalls`, one entry per call site, is read only by
+  `closeOverFieldWrites` and only for a body that stores only to its stack,
+  per distinct call. It is now kept for such bodies alone, each call once.
+  GoodLinks `xrefs` heap at the peak: 58,276 arrays (12.7 MB) -> 34,090
+  (2.5 MB). Footprint pairs ran under load (237, 241 -> 192, 224 MB), so
+  the heap figure is the measure. Output identical.
+
+- **FIXED (memory) — a register summary's register sets were heap
+  objects.** Each summary held its argument reads as `Set<Int>`: 77,765
+  heap sets (8.4 MB) through a GoodLinks `xrefs`, for numbers 0-7. They
+  are now a one-word `RegisterSet` that walks in ascending order. GoodLinks
+  `xrefs` peak, two alternating rounds: 208, 215 MB -> 191, 205 MB, output
+  identical.
+
+- **FIXED (memory) — a streamed call graph kept a whole function per
+  function.** `FunctionCallSites` held the `DisassembledFunction` (312
+  bytes; 21 MB of a GoodLinks `xrefs` heap) for its name and folded
+  symbols alone. It now keeps the start, the display name and the folded
+  candidates. GoodLinks `xrefs` peak, two rounds: 249, 228 MB -> 239, 208
+  MB (a concurrent build ran during the second pair), output identical.
+
+- **FIXED (memory) — a streamed call graph held each site as an
+  instruction.** With its notes gone, a GoodLinks `xrefs` heap still held
+  68,641 `Instruction` arrays (139 MB): one per function, an `Instruction`
+  (176 bytes) per call site. `xrefs` now streams `CallGraph.callSites(of:)`:
+  the function without its instructions, its last address, and a 40-byte
+  `GraphSite` per site; `CallGraph(functions:)` builds through the same
+  path. GoodLinks `xrefs --arch arm64 --unreferenced` peak, two alternating
+  rounds: 317, 322 MB -> 213, 221 MB, output identical; `xrefs --function`
+  text and JSON identical on libSwiftParser.
+
+- **FIXED (memory) — every file read stayed alive for the whole run.**
+  `FileHandle.read(upToCount:)` returns its bytes autoreleased, and a Swift
+  Concurrency thread drains no autorelease pool until its task ends. A
+  GoodLinks `xrefs` heap held 148,225 `NSConcreteData` from preflight's
+  conformance-descriptor reads (22 MB) and 295 pool pages; dyld-cache byte
+  reads and the probe scorer's 64 KB chunks had the same shape. Every such
+  read now goes through `FileHandle.readDrained(upToCount:)`, and a test
+  fails on a raw `read(upToCount:)` in the sources. GoodLinks `xrefs` peak,
+  two alternating rounds: 359, 373 MB -> 335, 327 MB; swift-syntax perf
+  runs -6% to -11%. Output identical.
+
+- **FIXED (memory) — a streamed call graph kept every site's notes.**
+  `xrefs` keeps each function's call and branch sites for the whole image
+  (`CallGraph.sites(of:)`), and each kept its annotation and fact box. The
+  graph reads only the typed callee, the target, `isSelfDispatch` and
+  `inlinedFragment`; the footprint climbed from 52 MB to 471 MB over a
+  GoodLinks run. A site now keeps no annotation and only those two facts.
+  GoodLinks `xrefs --arch arm64 --unreferenced` peak footprint, two
+  alternating rounds: 431, 407 MB -> 361, 358 MB, output identical (`cmp`).
+
+- **FIXED (memory) — a decoded operand took 96 bytes.** `PhysReg` stored
+  its number and width as two `Int`s (24 bytes), and a memory operand holds
+  two of them beside the register case, so `StructuredOperandInfo` was 96
+  bytes; a GoodLinks `xrefs` heap held 51k operand arrays (11.4 MB). The
+  register now stores a `UInt16` number and a `UInt8` width (6 bytes) and
+  a lane index an `Int8`, behind the same `Int` accessors: an operand is
+  48 bytes. `disasm libSwiftParser --json` peak footprint, median of three
+  alternating runs: 503 MB -> 475 MB. Every fixture render byte-identical.
+
 - **FIXED — one C++ function in WebKit took the value tracer past 3 GB.**
   The full structured/pseudo sweep of the 1,913 Swift cache images (3,826
   runs, `Tools/corpus.swift run … --commands structured,pseudo --swift-only
@@ -3176,41 +5259,43 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   Fixture `--structured` and `--pseudo` byte-identical. OPEN: states that
   share structure across blocks would let such a function keep its facts.
 
-- **OPEN — Fiery Feeds whole-binary `xrefs` is 1.17× origin/master.**
-  Current (streaming, entry below): 179.6 s, 580 MB. Before that: 204.9 s,
-  7.04 GB, output byte-identical, after
-  three more profiled fixes, each measured alone (release, guarded):
-  Objective-C bindings indexed by selector (`50625b3`, 272.6 s to 254.0 s),
-  jump-table ranges built once (`bf5782b`, to 235.8 s), and chained-fixup
-  rebases from the same table as binds (to 204.9 s; back-to-back with the
-  previous binary at 235.1 s). At `5e8cb53` (after the bind table below): 275.3 s,
-  peak footprint 11.81 GB, output byte-identical to `74b7b06`'s (`cmp`).
-  Origin/master: 153.5 s. The footprint came from the decode: `heap` at
-  6.4 GB found 1,114,404 Capstone `cs_detail` blocks (2.8 GB) held by one
-  `cs_disasm(…, count: 0)` call, then a `[DecodedInstruction]`, an
-  address-keyed dictionary of it, and the `[Instruction]` built from it all
-  alive at once, plus the objdump text. Decoding in 4,096-instruction batches
-  without Capstone's text, attaching to objdump's stream in place by binary
-  search, and freeing objdump's text first: 272.6 s, **7.04 GB**, output
-  byte-identical. A footprint sampler polling every second saw only 5.5 GB:
-  the decode spike is shorter than that, so a guard must kill well below
-  the ceiling. Remaining: the 1.8× time, and the decode still holds the
-  image about twice over. Earlier record: At `74b7b06`, release build, `/usr/bin/time -l swiftdc
-  xrefs "/Applications/Fiery Feeds.app/Contents/MacOS/Fiery Feeds" --arch arm64
-  --unreferenced`: 953 s, max RSS 5.47 GB, **peak footprint 11.05 GB**, 126,173
-  output lines, exit 0. origin/master took 153.5 s (below). The symbolizer fix
-  (`c00e5a7`) removed about 35 s of it. `sample` at 60 s and 200 s then put
-  7,903 of 13,878 analysis samples under `ReferenceResolver.loadedName(at:)`:
-  MachOKit's `resolveBind(at:)` walks every chained pointer of the image on
-  each lookup. A bind table built once (`BoundSymbolTable`) took a filtered
-  `disasm --pseudo -f Article` from 222.2 s / 224.5 s to 57.0 s / 57.2 s
-  (alternating runs, footprint +35 MB, output byte-identical), Clarc `disasm
-  --pseudo` 35.5 s to 28.6 s, Macs Fan Control and UTM unchanged (few bound
-  loads), all six outputs `cmp`-identical. The RSS
-  watcher used for this run sampled `ps -o rss` every 5 s, saw at most 4.0 GB,
-  and never tripped its 8 GB kill: compressed pages leave RSS but count in the
-  footprint. A memory guard on this host must read the footprint
-  (`footprint <pid>` or `/usr/bin/time -l`), not RSS.
+- **OPEN — Fiery Feeds whole-binary `xrefs` is 1.17× origin/master.** Current
+  (streaming, entry below): 179.6 s, 580 MB. Before that: 204.9 s, 7.04 GB,
+  output byte-identical, after three more profiled fixes, each measured alone
+  (release, guarded): Objective-C bindings indexed by selector (`50625b3`,
+  272.6 s to 254.0 s), jump-table ranges built once (`bf5782b`, to 235.8 s),
+  and chained-fixup rebases from the same table as binds (to 204.9 s;
+  back-to-back with the previous binary at 235.1 s). At `5e8cb53` (after the
+  bind table below): 275.3 s, peak footprint 11.81 GB, output byte-identical
+  to `74b7b06`'s (`cmp`). Origin/master: 153.5 s. The footprint came from the
+  decode: `heap` at 6.4 GB found 1,114,404 Capstone `cs_detail` blocks (2.8
+  GB) held by one `cs_disasm(…, count: 0)` call, then a
+  `[DecodedInstruction]`, an address-keyed dictionary of it, and the
+  `[Instruction]` built from it all alive at once, plus the objdump text.
+  Decoding in 4,096-instruction batches without Capstone's text, attaching to
+  objdump's stream in place by binary search, and freeing objdump's text
+  first: 272.6 s, **7.04 GB**, output byte-identical. A footprint sampler
+  polling every second saw only 5.5 GB: the decode spike is shorter than that,
+  so a guard must kill well below the ceiling. Remaining: the 1.8× time, and
+  the decode still holds the image about twice over. Earlier record: At
+  `74b7b06`, release build, `/usr/bin/time -l swiftdc xrefs
+  "/Applications/Fiery Feeds.app/Contents/MacOS/Fiery Feeds" --arch arm64
+  --unreferenced`: 953 s, max RSS 5.47 GB, **peak footprint 11.05 GB**,
+  126,173 output lines, exit 0. origin/master took 153.5 s (below). The
+  symbolizer fix (`c00e5a7`) removed about 35 s of it. `sample` at 60 s and
+  200 s then put 7,903 of 13,878 analysis samples under
+  `ReferenceResolver.loadedName(at:)`: MachOKit's `resolveBind(at:)` walks
+  every chained pointer of the image on each lookup. A bind table built once
+  (`ChainedFixupTable`) took a filtered `disasm --pseudo -f Article` from
+  222.2 s / 224.5 s to 57.0 s / 57.2 s (alternating runs, footprint +35 MB,
+  output byte-identical), Clarc `disasm --pseudo` 35.5 s to 28.6 s, Macs Fan
+  Control and UTM unchanged (few bound loads), all six outputs
+  `cmp`-identical. The RSS watcher used for this run sampled `ps -o rss` every
+  5 s, saw at most 4.0 GB, and never tripped its 8 GB kill: compressed pages
+  leave RSS but count in the footprint. A memory guard on this host must read
+  the footprint (`footprint <pid>` or `/usr/bin/time -l`), not RSS. These
+  numbers are from 6110ec9 (2026-10-12) and predate the 2026-11 memory work;
+  re-measure (audited 2026-11-10).
 - **FIXED — whole-image `xrefs` held every instruction of the image.** On
   Swiftcord (49.7 MB of `__text`, about 12.4M instructions) a footprint guard
   killed `xrefs --unreferenced` at 7.5 GB after 69 s, still climbing about
@@ -3314,27 +5399,13 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   plus malloc/free. Whether Capstone 6 decodes slower than the Homebrew
   Capstone 5 it replaced is **UNKNOWN**: the migration measured byte-identical
   output, not speed.
-- **OPEN — the MachOSwiftSection 0.22.0 pin makes `dump`/`interface`/`objc`
-  on standalone ObjC-heavy apps 7x to 40x slower, upstream.** Measured with
-  the same binary set before and after the pin (times under build load, so
-  indicative; the `sample` attributions are not): Keynote `dump` 1.35s to
-  20.2s, `interface` 1.36s to 24.4s, `objc` 60s to 2,424s; GoodLinks `dump`
-  7.4s to 54.5s, `objc` 10.4s to 106s; peak RSS roughly doubled. Two causes,
-  both in the dependencies: (a) 0.22's class dumper resolves each class's ObjC
-  ancestor chain inside the system dyld cache, and MachOKit's
-  `DyldCache.locateValue` re-reads `headerOptimizationRO64` / `mappingInfos`
-  on every call (3,235 of 5,225 samples under
-  `ObjCClassMethodIndex.ancestors` on Keynote `dump`); (b) MachOObjCSection
-  0.8.110's `info(in:)` resolves referenced protocol infos recursively, each
-  method slot through a fixup lookup (2,448 of 5,560 samples under
-  `referencedProtocolInfos` on Keynote `objc`). The dropped MachOKit fork
-  memoisation was estimated here at about 2.5% of a `dump`; on Prime Video it
-  was 71.5%, and it is restored (see the FIXED entry above). Cache images are faster
-  (SwiftUICore `dump` 228s to 160s, `interface` 260s to 163s, `objc` 70s to
-  35s, same load caveat). Candidate fixes: memoise the `DyldCache` header
-  parsing in MachOKit; pass `ObjCInfoOptions.headerDump` from swiftdc's own
-  `objc` path if its output stays byte-identical. Profiles:
-  `sample <pid> 8` on `dump --arch arm64 Keynote` and `objc --arch arm64 Keynote`.
+- **OPEN (needs re-measure) (audited 2026-11-10): standalone ObjC-heavy
+  `dump`/`interface` may still be slower than before the 0.22 pin.** The
+  0.22.0 pin is gone (forks of MachOSwiftSection 0.24.0, MachOObjCSection
+  0.8.205 and MachOKit 0.55.100 since d27d804), and Keynote `objc` measures
+  24-33 s, not 2,424 s (accessor-memory tables). Settle it with `sample` on
+  release `dump --arch arm64` of Keynote and GoodLinks against the 1.35 s /
+  7.4 s pre-0.22 baselines, and close it if the gap is gone.
 - **OPEN — whole-image decoding does not scale to the largest frameworks.**
   Measured after the resync fix: `disasm --image UserNotifications` recovers
   1,391 functions / 52,103 instructions in **19s**, with no coverage warning.
@@ -3402,6 +5473,38 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   listing and `--cfg` (objdump's instruction text), `--json` and `analyze`
   still materialise every function; a streaming JSON writer, or chunking the
   array modes, is the remaining scale work.
+- **FIXED (speed, 2026-11-10) — streamed pass 2 ran on one core.** The
+  per-function analysis of `disassembleStreaming` (the streamed `disasm
+  --pseudo`/`--structured` views and `xrefs`) is about 85% of a whole-image
+  run (`sample` of libSwiftParser `--structured`: `analyzeFunction` 9,048
+  and rendering 2,049 of 12,034 samples on the working thread). Functions
+  now analyse across the cores in batches of 256, chunks of 8 with a
+  decoder each, and reach `transform` in input order, so the output is the
+  serial loop's. Not while a probe records (its events keep their order),
+  not for a dyld-cache image (`CacheSymbolResolver` and `CacheReader` keep
+  unlocked memos), and not with `SWIFTDC_SERIAL` set. Release, three rounds
+  each, alternated: libSwiftParser `--structured` 17.3 s -> 9.6 s,
+  libSwiftSyntax 46.5 s -> 25.8 s; peak footprint +6 to +30 MB (`xrefs`
+  libSwiftParser 45 -> 75 MB). Every fixture view and the swift-syntax dylibs
+  are byte-identical to the serial build; ThreadSanitizer reports no race over
+  16 whole-image runs (fixtures and libSwiftOperators), once MachOKit,
+  swift-binary-parse-support and swift-fileio's aligned `load(as:)` reads of
+  Data bytes were made unaligned in the sanitizer build's own checkout: under
+  ThreadSanitizer those loads trap (`load from misaligned raw pointer`), serial
+  or parallel, a latent dependency defect recorded below.
+- **FIXED (robustness, 2026-11-10) — aligned loads of file bytes in
+  dependencies.** MachOKit, MachOSwiftSection, MachOObjCSection,
+  swift-binary-parse-support, swift-fileio and swift-fileio-extra read
+  integers from Data or file bytes with `load(as:)`, which requires
+  alignment the bytes do not have (42 sites). A ThreadSanitizer build trapped
+  on the first such read of any input; release builds skip the check, so no
+  run failed. Every site now uses `loadUnaligned(as:)`: the three Mach-O
+  forks on new `swiftdc-interim/*-unaligned-loads` branches, and new forks of
+  the three p-x9 packages (`swiftdc-interim/unaligned-loads`) declared in
+  Package.swift so those identities resolve to them. A ThreadSanitizer build
+  from the pins runs `disasm --structured`, `objc`, `dump`, `xrefs`,
+  `interface` and `layout` on seven inputs (42 runs) with no trap and no
+  race; release output is byte-identical on every fixture view.
 - **MITIGATED (memory) — a whole-image memory regression guard now exists**
   (`MemoryRegressionTests`). The memory limit above is now FIXED by
   streaming, but nothing stopped it regressing meanwhile, and it still guards the
@@ -3448,10 +5551,11 @@ correct empty answer. See the empty-result rule in `CLAUDE.md`.
   under the 261 MB a hold-every-function regression reaches. Proven both
   directions: the injection trips it (262 MB), the clean path clears it (123 MB).
   Host-gated on CoreLocation; ~60 s, skips cleanly without the cache.
-- **UNKNOWN — no wall-time regression guard.** The memory guard above covers
-  allocation; nothing guards decode *time*, which is deliberately left to a
-  measured OPEN rather than a test — wall time is too machine- and load-dependent
-  to assert as a stable bound without flaking.
+- **FIXED (bd4af01) (audited 2026-11-10): decode cost is guarded by
+  instructions retired, not wall time.** `Tools/blast-radius.sh --perf` fails
+  the integration gate (exit 3) at +10% instructions on any large input or +3%
+  in total, and at +50% / +10% footprint, unless the commit carries
+  `Perf-cost:`. Wall time stays unasserted because it depends on load.
 
 - **FIXED — `analyze` reported a failed disassembly as an empty one.**
   `try?` turned an llvm-objdump failure into `(no functions recovered)` with
@@ -3519,9 +5623,11 @@ Real, but last. Everything above must hold first.
   return a+b` renders `((arg0 + 1) + ((arg0 + 1) * 2))` — value-correct, but
   subexpressions are recomputed and no named locals exist. Ghidra promotes stack
   slots to `HighVariable`s. A design gap, not a bug.
-- **OPEN — S1: struct-parameter decomposition is method-only.** Small integer
-  structs decompose in getters (`e1a3b6a`, `73eaf73`); free-function HFA params
-  (`dot(p: Point, q: Point)`) still decline.
+- **OPEN, S1 (audited 2026-11-10): struct-parameter decomposition is
+  method-only.** Small integer structs decompose in methods (`e1a3b6a`,
+  `73eaf73`). Free functions decline, integer structs included: libEncryptable
+  `area(_ p: Point)` renders `return ?`, and so would an HFA parameter
+  (`dot(p:q:)`, no fixture yet).
 - **OPEN — closures, existentials, generic witnesses, `throws`** render as
   low-level runtime calls rather than reconstructed control flow. Honest
   declines; large surface. A generic or existential *result* in particular
@@ -4191,36 +6297,19 @@ if a test was observed to fail without the fix.
   retains its seed. Both decoding paths and both text renderers decline the
   five incorrect caller results.
 
-- **OPEN — precise call memory footprints are required to regain legitimate
-  preservation coverage.** This protection intentionally loses some correct
-  `-Onone` output. `Indirect.makeWide` and `otherWide` pass a temporary at
-  entrySP[-56,-16) to a six-instruction initializer writing exactly 40 bytes,
-  then memcpy; the saved frame pointer is at [-16,0). The present summary
-  cannot carry that disjoint footprint through calls. Both return buffers
-  still reconstruct inside their producers, but consumers lose x29-relative
-  fields. The Onone tests now require an explicit decline and a single visible
-  producer call; optimized result-field recovery remains required. This is a
-  measured completeness cost, not a correction to those formerly valid values.
-  Reproduce: `disasm Fixtures/Sample/libIndirect.dylib -f makeWide`.
-  Across 178 source views, 16 change: the new escape reduction declines five
-  wrong returns; ABISource loses an unused optional-result binding; Indirect
-  loses the two frame-derived results above; Reconstruction ordinary/resilient
-  countMatches loses iterator self and an assertion's frame-spilled literal;
-  RetainRegister.join declines its frame-preserved scalar; sample.debug loses
-  frame-derived iterator/Stack arguments; sample.release loses frame-spilled
-  metadata-helper arguments. Both views change for each of these eight images.
-  No call/store ordering or CFG changes are introduced.
+- **OPEN (audited 2026-11-10): precise call memory footprints are needed to
+  regain preservation coverage.** `-Onone` consumers of an x8 result whose
+  callee receives a frame buffer decline: libIndirect `wideSum` and
+  `modifiedWide`. 1b3c471 recovered them, 9369b0e with 47ceb26 declined them
+  again, and the frame-record rule (2026-11-10, below) recovers both.
+  Reproduce with `-f wideSum` / `-f modifiedWide`, not `-f makeWide`, whose
+  producer reconstructs.
 
-- **OPEN (independently reproduced) — preservation is not yet a complete
-  interprocedural or alias proof.** Nested outlined-call and tail-call clobbers
-  do not propagate; x29-only custom callees can mutate save memory; incoming
-  pointers can reach caller-owned saves at nonnegative entry-SP offsets.
-  Authored native reductions return a replacement while output claims arg0.
-  The local-escape correction does not resolve these cases. Ordinary ABI
-  stack ownership remains an assumption for unescaped negative save slots.
-  Restored, freshly rebuilt intermediate enforcing suite: 620 tests in eleven
-  suites pass. This is scoped escape coverage; no complete alias proof or
-  performance improvement is claimed.
+- **OPEN (assumption) (audited 2026-11-10): ordinary ABI stack ownership is
+  assumed for unescaped negative save slots.** The other three counterexamples
+  are fixed: nested and tail clobbers (dbd9f6b, preserve_calls.s), x29-only
+  callees (41ba453, 47ceb26, frame_may.s), and incoming pointers into
+  caller-owned saves (078f898, abi_frame_ownership.s).
 
 - **FIXED (caller-owned save ranges) — incoming pointers could mutate a
   save without a local escape.** `abi_frame_ownership.s` stores x19 at positive
@@ -4414,12 +6503,25 @@ if a test was observed to fail without the fix.
   the opaque-branch declines and the async x20 proof (caught by
   `asyncThrowsRenderAsThrows`). Enforcing suite: 688 tests in 11 suites.
 
-- **OPEN — the -Onone `try` exit declines.** `Reconstruction.typedForward`
-  at -Onone (and resilient) spills the callee's x21, tests it with `cbz`,
-  and on the zero edge reloads x21 from the spill. Proving the reload zero
-  needs "this slot holds the value that was tested", which no analysis can
-  say. It renders `machine_return()` where the source returns `r0 + 1`.
-  Needs value identity with edge refinement ([IR.md](IR.md) step 5).
+- **FIXED (2026-11-11, completeness) — the -Onone `try` exit declined.**
+  `Reconstruction.typedForward` at -Onone (and resilient) spills the
+  callee's x21, tests it with `cbz`, and on the zero edge reloads x21 from
+  the spill; it rendered `machine_return()` where the source returns
+  `r0 + 1`. The tracer now proves "this slot holds the tested word" inside
+  the block that ends in the branch: replaying it, a plain 64-bit store of a
+  register to an exact frame slot records a spill, and a write of the
+  register, a store that may overlap the slot, a store of unknown extent or
+  a call ends it. On the zero edge of a closing 64-bit `cbz`/`cbnz` on a
+  spilled register, both the register and its slot are zero, in the
+  fixpoint's meet, the select pass's meet and the per-predecessor exit
+  replay alike. typedForward now renders `return (r0 + 1)`. Fixtures
+  `_stack_lifetime_edge_*` (one positive case and six controls). Against
+  d49207f: 6 files, 34 structured lines; TypedThrowsNever's throwing
+  specializations and wrappers now return on success (`y &+ 1`, `r0`) and
+  keep their error branch, and a Go `runtime.systemstack` call lists an x2
+  the zero edge proves 0. No return changed from one concrete value to
+  another; GoodLinks cfg.unresolved-indirect-call stays 10,849.
+  Instructions +1.41%.
 
 - **FIXED (the commit after 6cca3c4) — `throws(Never)` specializations
   declined.** Two generic specializations of `withUTF8CodeUnits` in
@@ -4487,11 +6589,13 @@ if a test was observed to fail without the fix.
   extent, the whole-frame marker, and read-only loads. Enforcing suite:
   692 tests in 11 suites.
 
-- **OPEN — dynamic allocations sized from runtime metadata forget the
-  fixed frame.** `frame(k) - unknown` collapses to an unknown value, so
-  the block's address loses its provenance and escapes the whole frame
-  (142 Clarc functions). Keeping frame provenance alongside an unknown
-  value is the shared memory model's job ([IR.md](IR.md) step 4).
+- **OPEN (completeness) (audited 2026-11-10): an unprobed dynamic allocation
+  forgets the fixed frame at the next unproved call.** `frame - unknown` keeps
+  its provenance since a40967c, but 8a8152f must forget every frame fact when
+  sp is unknown, since a negative size moves sp up over live slots. Only a
+  `___chkstk_darwin`-probed allocation keeps the frame (d9bbf74).
+  libUnknownAlloca `keptLocal` renders `return ?` against native 5. The Clarc
+  count (142) is stale.
 
 - **MITIGATED — empty argument lists read as "no arguments".** When every
   positional value of a signatureless callee becomes unknown, the trimmed
@@ -4601,8 +6705,10 @@ if a test was observed to fail without the fix.
   now also covers the async, frame-escape and compiled stack fixtures.
   Enforcing suite: 696 tests in 11 suites.
 
-- **OPEN (assumption) — a caller does not pass pointers into the callee's
-  own context.** `incomingLeaf` (an incoming argument aliasing slot 16)
+- **ASSUMED (2026-11-10, see "Assumptions the output depends on") — a
+  caller does not pass pointers into the callee's own context.** No sound
+  rule short of forgetting every context slot at every unknown call covers
+  it: the caller allocated the context and could keep a pointer anywhere. `incomingLeaf` (an incoming argument aliasing slot 16)
   still renders `observe(7)` against native 11; compiled Swift does not
   pass one. The second half of this entry, a sync callee that reads x22,
   is fixed (b9c1b02): `implicitLeaf` (a C helper writing through x22)
@@ -5304,15 +7410,17 @@ if a test was observed to fail without the fix.
   `corruptIvarTypeEncodingsDeclineTheirFieldIfPresent`, which builds the
   corrupt copies from the fixture's bytes). Blast radius: every fixture's
   structured, pseudo, listing and JSON views are byte-identical.
-- **OPEN (robustness): a deeply nested type encoding still overflows the
-  stack in `objc`.** The same `^` and `[1` payloads kill `objc` (SIGBUS,
-  exit 138) inside ObjCDump's own `ObjCTypeDecoder._decode` /
-  `_decodePointer` recursion, which renders the header text and is not
-  ours. A fix either bounds the nesting before handing an encoding to
-  ObjCDump (and prints it undecoded) or patches the dependency.
-
-## 2026-10-23: 64-bit segment fields past Int.max
-
+- **FIXED (robustness, 2026-11-10): a deeply nested type encoding
+  overflowed the stack in `objc`.** 4,000 or 12,000 `^`, or 3,000 or 4,000
+  nested `[1`, in an ivar's type killed `objc` and `objc --metadata-only`
+  (SIGBUS, exit 138) inside ObjCDump's unbounded `ObjCTypeDecoder._decode`.
+  `ObjCMetadataSnapshot.boundingTypeNesting` now replaces any ivar, method
+  or property encoding whose nesting bound passes 512 (prefixes plus bracket
+  depth, names excluded; real encodings nest at most 11) with the unknown
+  type `?`, keeping a method's labels and a property's attributes. All four
+  copies exit 0 from every subcommand and print `unknown _target;`. Tests:
+  `headersOfCorruptlyNestedIvarTypesStillPrintIfPresent`,
+  `onlyEncodingsPastTheNestingBoundAreReplaced`.
 - **FIXED (robustness, below): a segment `vmaddr` or `vmsize` at or above
   2^63 trapped.** MachOKit's `SegmentCommand64.virtualMemoryAddress` and
   `virtualMemorySize` convert the raw `UInt64` with a trapping
@@ -5512,16 +7620,11 @@ if a test was observed to fail without the fix.
   Not changed, because nothing shows an effect: the enrichment gate and the
   tail-call caller test still read the text. Switching either between the
   text and the new fact moves no test and no fixture view.
-- **OPEN — a specialization's generic result type is read from the
-  unspecialized signature.** `withUTF8CodeUnits`'s closure now renders
-  `return ?` for a result `A` its specialization binds to `()`, and
-  `swiftReturnRegister` reads the text `A`, not its substitution: a
-  specialization returning a parameter bound to `Double` would look in an
-  integer register. The substitution list that settles the thrown type
-  settles this too. Non-throwing specializations have had the same reading
-  all along. Its arguments are laid out from the substituted signature
-  since 2026-10-24 ("a specialization's arguments", below); the result
-  register still reads the printed type.
+- **PARTLY FIXED (92af2f7) (audited 2026-11-10): a proven specialization reads
+  its result type from its substituted signature (`layoutName`).**
+  `genericResult<Double>` returns d0 (`return arg1`). Closures and clauses the
+  proof declines still read the printed `A`: `withUTF8CodeUnits`'s `<(),
+  Never>` closure renders `return ?`.
 - **OPEN — a callee's `throws(Never)` specialization still reads as
   throwing.** `provablyDoesNotThrow` and the tail-call callee test work
   from the callee's printed name. Carrying the fact on the callee, as
@@ -5782,16 +7885,12 @@ if a test was observed to fail without the fix.
   Clarc changes 4 lines and GoodLinks 20, each a body-bounded call padded
   now that a reloaded high word makes its snapshot non-empty, or a String
   result passed by name (`Swift.Substring.init(r#)` for `(?)`).
-- **OPEN (completeness): a String that is a call's result renders `?`.**
-  After a call, x1 is untracked, so `takeTwo(makeString(n), 7)` reads
-  `makeString(arg0)` then `takeTwo(?, 7)`, and the -Onone
-  `Dog(name: "Rex", breed: "Lab")` reads `"Rex"`, `"Lab"`, then
-  `Dog.__allocating_init(?, ?)`. Proving x1 as the second word of a callee
-  whose demangled result is `Swift.String` lets the slot render the
-  call. That same proof is what laying out a value type's instance
-  method (`Swift.String.append`) needs first, or the correct
-  `append(f())` renders (1,274 on Clarc and GoodLinks, counted by the
-  2026-10-22 audit) read `append(?)`.
+- **FIXED (4bd39f1; value-method layout c4ced80) (audited 2026-11-10): a
+  String that is a call's result is passed as that call.**
+  `takeTwo(makeString(n), 7)` renders. The `-Onone` `Dog(name:breed:)` example
+  has read `(?, String.init("Lab", ?, ?))` since 47ceb26: spills reloaded
+  across the `String.init` stub are declined as possibly escaped, a separate
+  completeness cost of that rule.
 - **FIXED (completeness): some String literals the layout could prove
   rendered `?`.** The empty string, `(0, 0xe000000000000000)` (13 on
   Clarc), a small string with a control character (`"\n"` is
@@ -5989,7 +8088,7 @@ if a test was observed to fail without the fix.
   - an SDK-only selector that takes a struct, laid out by colon position:
     Terminal's `[? setNeedsDisplayInRect:arg0]`, whose rect is in d0-d3
     (fixed since, by the SDK selector table below).
-  The accessor is fixed since too (`NonGenericMetadataAccessors`, below).
+  The accessor is fixed since too (`SDKMetadataAccessors` (59cb961 replaced the non-generic set), below).
   Measured again on `8720eb2`: Chess unchanged, and most of Terminal's 304
   normalised lines, TextEdit's 8, Clarc's 12 and GoodLinks' 18 are right
   names (`[self cellSizeForProfile:arg1 controller:arg2 kern:0]`,
@@ -6274,9 +8373,10 @@ if a test was observed to fail without the fix.
   Terminal's `cursorPosition`, `displayCursorPosition` and `scrollRange`
   read as they did before 2c92b57. Those three lines and that fixture
   line are the whole blast radius.
-- **OPEN (completeness): an Objective-C two-word struct return from two
-  ivars renders only x0.** `rangeHead`, whose words come from two ivars,
-  reads `return self->_range[0..<8]`.
+- **OPEN (completeness) (audited 2026-11-10): an Objective-C two-word struct
+  return built from two ivars renders `return ?`.** f25743d stopped the wrong
+  `self->_range[0..<8]`; rendering both words, `{_range.location, _other}`, is
+  still missing.
 - **FIXED (completeness): a Swift two-word struct returned from one field
   printed `return ?`.** The return path proved only a single-register
   result. `swiftTwoWordFieldReturn`: a function returning a struct of 9
@@ -6368,6 +8468,11 @@ if a test was observed to fail without the fix.
   binding inlined at its one remaining use. Six GoodLinks functions lose a
   call from the pseudo view whose only remaining use is generic plumbing
   that view strips; the listing keeps it.
+The following historical layouts are superseded by the 2026-11-16
+proved-input bound (`92e1007`): MAY-only inputs now produce an unknown tail,
+and a value is shown only in a proved slot. In particular, `accessorLike()`
+now reads `accessorLike(…)`.
+
 - **FIXED (completeness): a body-reads call with untracked arguments
   rendered `()`.** A call to an in-image function no signature describes
   passes what its body may read, trimmed of trailing unknowns, so a call
@@ -6878,11 +8983,11 @@ if a test was observed to fail without the fix.
   `* 3.141592653589793`. Release `disasm --pseudo`: TextEdit 1 line, Chess
   2 (`* 4.0`, `+ 180.0`), GoodLinks 2 (`* 0.85`, `* 0.65`), Terminal and
   Clarc none.
-- **OPEN (completeness): a float constant passed as an Optional's
-  payload renders as its bit pattern.** GoodLinks passes `14.0` to
-  `SwiftUI._FrameLayout.init`'s `CGFloat?` height as
-  `0x402c000000000000, 0`: the typed-constant rendering knows `Double`,
-  `Float` and `CGFloat`, not an Optional of them.
+- **FIXED (audited 2026-11-10): a `CGFloat?` constant renders as its
+  payload.** `.frame(height: 14.0)` reads
+  `_FrameLayout.init(width:height:alignment:)(nil, 14.0, ?)`:
+  `optionalScalarArgument`, with the struct-argument layout (008f46b) placing
+  the parameters after it. GoodLinks was not re-run.
 
 ## 2026-10-24: what decoding costs
 
@@ -7210,23 +9315,25 @@ if a test was observed to fail without the fix.
   decode, it keeps the name `_go:buildid`, and it renders as no code,
   whole and filtered. Tests `theGoBuildIDIsDataNotCodeIfPresent`,
   `aBuildIDSpanNeedsItsNameAndItsBytes`.
+  The [streaming follow-up](#2026-11-22-local-go-build-id-streaming-fix)
+  records the remaining route defect and its later local qualification.
 
 ## 2026-10-31: boundaries the corpus measures but nothing supplies
 
-- **OPEN (completeness): an image with neither function starts nor
-  symbols is a handful of functions.** Chromium's `app_mode_loader` (in
-  Brave and in ChatGPT's Codex framework) has 152,073 instructions, no
-  `LC_FUNCTION_STARTS` and 2 function symbols: `xrefs` lists 2 functions.
-  libRosettaRuntime lists 1 for 80,317. `app_mode_loader` has an
-  `__unwind_info` with 410 entries, and every compact-unwind entry is a
-  function start in 1,141,960 of 1,142,197 entries sampled across 591
-  corpus images (the 237 others begin code regions after a `ret` with
-  their own unwind record, real code no start names). But the linker
-  merges consecutive functions with the same encoding into one entry (5
-  functions, 2 entries in a reduction), so an entry is not a function's
-  extent; used as one, it would render several functions as one. A
-  boundary source would need the merged runs split, for example at direct
-  call targets.
+- **OPEN (completeness): an image with neither function starts nor symbols is
+  a handful of functions.** Chromium's `app_mode_loader` (in Brave and in
+  ChatGPT's Codex framework) has 152,073 instructions, no `LC_FUNCTION_STARTS`
+  and 2 function symbols: `xrefs` lists 2 functions. libRosettaRuntime lists 1
+  for 80,317. `app_mode_loader` has an `__unwind_info` with 410 entries, and
+  every compact-unwind entry is a function start in 1,141,960 of 1,142,197
+  entries sampled across 591 corpus images (the 237 others begin code regions
+  after a `ret` with their own unwind record, real code no start names). But
+  the linker merges consecutive functions with the same encoding into one
+  entry (5 functions, 2 entries in a reduction), so an entry is not a
+  function's extent; used as one, it would render several functions as one. A
+  boundary source would need the merged runs split, for example at direct call
+  targets. Since f6b9ff8 the run warns that functions may be merged (audited
+  2026-11-10); the boundaries are still missing.
 - **Explained: AppleMediaServicesKit lists 55 fewer functions than its
   starts.** 47 of the 55 starts swiftdc does not list follow a `br`: they
   are the jump tables after it (`e4f9ffff 5cfeffff …`, offsets), which
@@ -7769,10 +9876,11 @@ Findings:
   signature was never bounded by its body's reads. A specialization whose
   clause changes the layout now counts as having no signature of its own,
   so its body bounds the call: `helperI(arg1)`.
-- **OPEN — a stdlib value type's initializer takes a `self`.** 12
-  `Swift.Dictionary.init(self: _swiftEmptyArrayStorage, …)` calls in the
-  swift-syntax dylibs: `receivesThinMetatype` knows only the image's own
-  value types.
+- **FIXED (372b260) (audited 2026-11-10): x20 is `self` for a stdlib struct
+  method only when it holds an address.** The 12 `Dictionary.init(self:
+  _swiftEmptyArrayStorage, …)` calls now read
+  `Dictionary.init(dictionaryLiteral:)(…)`; none remain across the four gate
+  dylibs.
 
 ## 2026-11-02: parameters after a fixed-footprint parameter
 
@@ -7796,14 +9904,17 @@ Findings:
 
 - **OPEN — fourteen ABI areas reviewed.** The ranked findings, each with a
   reproduction checked against the compiler, are in
-  [ABI-REVIEW-2026-11-02.md](ABI-REVIEW-2026-11-02.md): 14 soundness
-  classes (multi-register call results spelled as the whole call, a
-  parked x20 taken as `self`, signed 32-bit comparisons rendered at 64
-  bits, ObjC returns read from x0 whatever the encoding, the throw path's
-  x0 in a return select, `swift_dynamicCast`'s Bool as the cast value,
-  async calls laid out positionally, among others) and the completeness
-  gaps. The earlier entry that says the `swift_willThrow` select "no
-  longer reproduces" is stale: `plainThrow` at -O still renders it.
+  [ABI-REVIEW-2026-11-02.md](ABI-REVIEW-2026-11-02.md): 14 soundness classes
+  (multi-register call results spelled as the whole call, a parked x20 taken
+  as `self`, signed 32-bit comparisons rendered at 64 bits, ObjC returns read
+  from x0 whatever the encoding, the throw path's x0 in a return select,
+  `swift_dynamicCast`'s Bool as the cast value, async calls laid out
+  positionally, among others) and the completeness gaps. The earlier entry
+  that says the `swift_willThrow` select "no longer reproduces" is stale:
+  `plainThrow` at -O still renders it. Audited 2026-11-10: items 1 and 3-8 are
+  fixed (4 except x8 tail forwarding), 2 is mitigated and 11 partly fixed; 9,
+  10 and 14 are open, and 12-13 partly fixed (008f46b, 2ce7c02). The
+  swift_willThrow select no longer reproduces (e2ecce1).
 - **FIXED — one register of a multi-register call result read as the
   whole call** (ABI review item 1). The tracer now writes a Swift call's
   result only to the register its printed result type proves holds all
@@ -8121,12 +10232,12 @@ outcomes, 513 void, 440 no-signature, 248 `unknown`, 179
 from each event's function in a plain listing (a type-and-shape
 heuristic, so the bins are approximate):
 
-- **FIXED (4e3efb9) — a String return was never read from its two
+- **FIXED (4e3efb9, completeness) — a String return was never read from its two
   words.** 37 of the 248 `unknown`. A literal, a String call's whole
   result or a String field of self is now the return. After: unknown
   248 -> 241, recovered 39 -> 46; over all four swift-syntax dylibs,
   unknown 972 -> 933, recovered 100 -> 139. Fixture `stringreturns.swift`.
-- **FIXED (6f7d865) — two selects on one condition were never
+- **FIXED (6f7d865, completeness) — two selects on one condition were never
   paired into one String.** A String whose x0 and x1 are selects on the
   same condition is now the ternary of the two Strings each side's words
   spell, nested for a chain: `return (arg0 ? "yes" : "no")`. Selects on
@@ -8153,19 +10264,36 @@ heuristic, so the bins are approximate):
   `makeMissing(self: sub_85a0(?), …)`. Self is the parameter after the
   formals, so an `Arg[n]` at or past their count now declines the label.
   Fixtures `tfself.swift`, `tf_self.s`.
-- **OPEN — a resilient value type's self is not seeded through x20.** The
-  30 String returns left in the plugin library are CodingKey
-  `stringValue` and enum `rawValue` getters of types in a
-  library-evolution module. Their self is passed indirectly, `ldrb w8,
-  [x20]` reads the case tag, and the tracer does not know x20 there, so
-  the compares, their `csel` chains and the branch conditions are all
-  unknown (`b.le` with no `cond:` note). The pairing above applies once
-  that tag is known. One-register scalars that join at a block (23,
-  `mov w0, #0` / `mov w0, #1` before a shared `ret`) are a separate
-  cause: a join of more than two predecessors, which the tracer's
-  diamond merge does not model.
-- **FIXED ("Forward a throwing call's outcome as return try", the commit
-  after 6f7d865) — a `ret` straight after a throwing call was an
+- **FIXED (completeness) — a no-payload enum held by address had no self.**
+  A resilient enum's members and an enum's witnesses take self through
+  x20 (`ldrb w8, [x20]`), which was unseeded, so the tag and the compares
+  and `csel`s on it were unknown. x20 is now self where the name is an
+  instance member or instance witness of a no-payload enum the image
+  lists, and the body loads through x20 before writing it; a frozen
+  enum's self in x0 stays as it was. The tag renders `self` and compares
+  by case: `return ((self == Mode.alpha) ? "first" : …)`. Checked at
+  -Onone, -O and -Osize: all three compare, and -O and -Osize's `csel`
+  pairs are a String pick. Plugin library: unknown 241 -> 237, recovered
+  46 -> 50; four dylibs: 933 -> 926, 139 -> 146. Fixtures
+  `resilientself.swift`, `resilient_self.s`.
+- **OPEN — what the enum seed does not reach.**
+  - A private enum (`CodingKeys`, most of the 26 String returns left in
+    the plugin library) has an anonymous parent context, so
+    `FieldMapBuilder.qualifiedName` gives it no key and `EnumCaseIndex`
+    cannot prove it has no payload. An anonymous context carries a mangled
+    name, which is the place to start.
+  - -Onone's `label` stays `return ?`: a branch per case, the literal
+    joined in a frame slot, and `cbz w8` left to the text path, which
+    prints `w8`.
+  - A word-sized use of the tag still shows its mask, `(self &
+    0xffffffff)`, and a signed compare its sign extension, `(((self &
+    0xffffffff) << 32) >>ˢ 32) > 7`. A String's two words passed or stored
+    as selects render as raw words, not through the pick.
+  - One-register scalars that join at a block (23, `mov w0, #0` / `mov
+    w0, #1` before a shared `ret`) are a separate cause: a join of more
+    than two predecessors, which the tracer's diamond merge does not
+    model.
+- **FIXED (completeness) — a `ret` straight after a throwing call was an
   unresolved exit.** `unsupported-layout-or-value` is all throwing
   functions whose normal exit is not proven (179 of 179 in the plugin
   library), and 119 of them `ret` straight after a throwing call, mostly
@@ -8177,23 +10305,21 @@ heuristic, so the bins are approximate):
   own probe status, `forwarded`. Plugin library: 179 -> 134, 45
   forwarded; four dylibs: 273 -> 219, 54 forwarded. Fixtures
   `throwforward.swift`, `throw_forward.s`.
-- **OPEN — forwards the above does not read.** 74 such `ret`s remain in the
-  plugin library. Most return through x8 or as a multi-word value (`A`,
-  `Optional<Int>`, `UInt128`, existentials); a forward through the
-  caller's x8 buffer needs a fixture before it is claimed, and -O's
-  concrete witnesses copy through a temporary and test x21 instead. A
-  function that saves its entry x21 across an earlier call and restores
-  it (`mov x19, x21` ... `mov x21, x19`, `Reader.combined()`) also stays
-  unresolved: the zero proof does not follow the copy. 60 further exits
-  in the plugin library are unproven for other reasons.
-- **OPEN — generic results** (102): `A`, `Optional<A>`, `A.Index`,
+- **OPEN (audited 2026-11-10): throwing functions whose normal exit is not
+  proven.** 144 `unsupported-layout-or-value` in the plugin library at 9369b0e
+  (was 134; 45 forwarded). Most return through x8 or as a multi-word value;
+  the rise is unexplained. A forward through the caller's x8 buffer needs a
+  fixture.
+- **OPEN (audited 2026-11-10): generic results** (about 105 at 9369b0e, a
+  heuristic bin over unknown and unsupported): `A`, `Optional<A>`, `A.Index`,
   returned through x8 with a layout only the caller's metadata fixes.
-- **OPEN — Optional results** (38): a payload's tag or extra inhabitant
-  is not modelled (SwiftLowering's `.direct`/`.unknown`).
-- **OPEN — nominal structs, enums and existentials** (37) with no
-  complete layout in the image, and **tuples** (11, such as
-  `(bucket: _HashTable.Bucket, found: Bool)` in x0 and x1), which no
-  direct path assembles.
+- **OPEN (audited 2026-11-10): Optional results:** a payload's tag or extra
+  inhabitant is not modelled. About 71 `unknown` and 46 `unsupported` concrete
+  Optionals in the plugin library at 9369b0e (heuristic bin).
+- **OPEN (audited 2026-11-10): nominal structs, enums and existentials with no
+  complete layout** (about 61 unknown at 9369b0e, heuristic) and tuples (8,
+  all `(bucket: _HashTable.Bucket, found: Bool)` in x0/x1), which no direct
+  path assembles.
 
 ## 2026-11-03: a cost budget in the gate
 
@@ -8307,1216 +10433,9 @@ per-accessor prefix (`10712d8`) bounds one body, not the sum.
   GoodLinks, Keynote, Electron Framework, AppKit or UIKitCore has such an
   accessor, so nothing else moves. Off arm64 the classifier does not run
   and accessors still drop, as class-dump's do.
-- **OPEN (speed): `ObjCMetadataIndex.outgoingSignature` dominates
-  `objc` on many classes.** `sample` of the 1,600-class run puts 3,066
-  of 4,244 main-thread samples in it (2,081 in
-  `ObjCArgumentABI.parameterTypes`), under `enrichCallArguments`: every
-  `-description` send looks up a signature across every class that
-  implements the selector. Wall time grows faster than the accessor
-  count (5,600 to 22,400 accessors: 3.9 s to 17 to 29 s).
-- **FIXED (`19e5be5`, rechecked 2026-11-08) (soundness): a branchless custom setter reads as
-  synthesized.** A store through self must now store an unchanged
-  argument; `accessorshapes.m`'s `setClamped:` is this shape and keeps its
-  line. The entry as first written:
-  UTM's crypto.1.1 lists 7,511 functions against 7,424 starts and zoom's
-  libcrypto 10,638 against 10,495. Symbol labels are boundaries too, and
-  OpenSSL's assembly keeps local labels inside functions; a label that is
-  no function start may be cutting one function in two. Unmeasured.
-
-## 2026-10-30: 4-aligned relative method lists
-
-- **FIXED (robustness): the preflight refused two valid images as
-  malformed.** The corpus sweep found every command failing on Brave's
-  `ksadmin` and Grok Bot's `chrome_crashpad_handler` with "Objective-C
-  method list at 0x100215b78 points at 0x1001f0d60, not into
-  __objc_const or __objc_data or __objc_methlist or __objc_methname". The
-  fixup targets 0x1001f0d64, the first byte of `__objc_methlist`
-  (`dyld_info -fixups` agrees). `class_ro_t.baseMethods` is objc4's
-  `PointerUnion`: bit 0 tags a list of lists, and a relative method list
-  (12-byte entries) is only 4-aligned. The check masked three bits and
-  required 8-byte alignment, which held in the 1,058 binaries it was
-  measured on only because their `__objc_methlist` happened to start on
-  an 8-byte boundary. It now masks bit 0 and requires 4. Both images load:
-  `objc` prints 291 and 32 lines of headers. The metadata fuzzer accepts
-  and rejects the same mutants as before (`libObjCAggregateArgs.dylib
-  100 4242`: 504/296, 0 crashes; `sample.release 100 4242`: 384/409, 7
-  crashes, the same 7 in both builds, next entry).
-- **FIXED (robustness): a corrupt `__swift5_typeref` trapped seven
-  commands.** `swift Tools/fuzz.swift metadata Fixtures/Sample/sample.release
-  100 4242`, mutant 4 (offsets 15813, 15827, 15873, 15921): `interface`,
-  `objc`, `objc --methods`, `layout`, `disasm`, `xrefs` and `analyze` died
-  by SIGTRAP. The mutation moved a direct context reference (`\x01`) onto
-  bytes that are no descriptor but still inside the image, so the
-  preflight's "lands in a mapped segment" passed; MachOSwiftSection read
-  a "module" there whose name pointer resolved to offset -121290283. The
-  preflight now walks the descriptor a `\x01` reference names and its
-  parents: a kind the ABI defines, a name the file holds, a mapped parent,
-  no loop, at most 64 deep. The fuzz set: 7 crashes → 0 (383 accepted,
-  417 rejected of 800). No real image changes outcome: `swift-version`
-  over all 6,127 corpus images, with and without the check, 0 outcome
-  changes.
-
-## 2026-10-31: objdump's file line
-
-- **FIXED (soundness): the listing named a function after the file.**
-  `llvm-objdump --macho -d` opens with `<path>:`, the shape of a label,
-  and `parseObjdump` took it as the next instruction's symbol. When the
-  first function has no symbol (a stripped executable), the unfiltered
-  listing and `analyze` titled it with the path: `disasm /usr/bin/true
-  --arch arm64e` printed `/usr/bin/true:` over its only function, and a
-  call to it was annotated `→ /usr/bin/true`. With the original HEAD's
-  release build, 1,029 of the 3,201 corpus images with at most 64 KB of
-  `__text` did this. Labels now count only after a `(…) section` line.
-  The fixture blast radius is 23 fixtures' listing and analyze, each
-  only its first function's title or symbol comment (an Objective-C
-  method's comment regains "[recovered from Objective-C metadata]"); the
-  filtered, pseudo and structured views read no objdump labels and are
-  unchanged.
-
-## 2026-10-31: Go function tables
-
-- **FIXED (completeness, memory): a stripped Go image was one function.**
-  Go's internal linker writes no `LC_FUNCTION_STARTS`, and `-ldflags=-s`
-  removes the symbol table: 20 of the 41 Go images on this host (Docker's
-  CLI plugins, github-mcp-server, claude-ssh-askpass) had no boundary at
-  all, so all of `__text` was analysed as a single function. `xrefs`
-  reported "1 of 1 functions" and peaked at 2.68 to 2.85 GB on the 7 MB
-  plugins (the corpus sweep's 7 memory kills at 1.8 GB). The Go runtime's
-  own table, `__gopclntab` (what it reads to print a stack trace), lists
-  every function's entry and name. `GoFunctionTable` reads it (Go 1.18
-  and later), declining the whole table on any inconsistency, and its
-  entries join the function starts and name otherwise unnamed functions
-  as an unstripped image's symbols do (`_main.scale`). On the fixture the
-  table equals the unstripped twin's symbol table: 1,683 addresses, every
-  name equal once the symbol table's `.abi0` suffix is dropped. Release
-  `xrefs`, before → after: github-mcp-server 1 → 24,783 functions,
-  2,850 → 142 MB, 90.7 → 112.6 s; docker-ai 1 → 21,419, 2,678 → 158 MB,
-  60.7 → 105.8 s; com.docker.socket 1 → 1,952, 188 → 33 MB, 5.5 →
-  10.8 s. The time grows because each function is now analysed as one.
-- **FIXED (soundness): a branch to the function's own entry rendered as a
-  loop and a call.** The CFG makes `b <own entry>` a loop's edge, and its
-  callee made the same branch a call: Go's stack-growth prologue (`cmp sp,
-  x16; b.ls` to `bl runtime.morestack_noctxt; b main.main`) rendered
-  `while (sp <=ᵁ x16) { runtime.morestack_noctxt(); main.main() }`, and
-  `error_exit_controls.s`'s `entryBackEdge`, whose entry is a loop target,
-  rendered `ExitProof.entryBackEdge(arg0)` inside its own loop. Such a
-  branch keeps its target and loses its callee. Fixture blast radius:
-  only `entryBackEdge` (listing loses `args(arg0)`, pseudo and structured
-  lose the call), across 169 fixtures × listing, pseudo, structured,
-  xrefs.
-- **FIXED 2026-11-08 (soundness): `go:buildid` is data at the start of `__text`.** The
-  table lists it as a function at `runtime.text`; its bytes are the build
-  ID string, decoded as instructions (`umlal2 v31.4s, …`), and the
-  unstripped image called its two symbols an identical-code fold. When the
-  table's name and the bytes agree (`\xff Go build ID: "`), the span is
-  data (`GoFunctionTable.dataSpans`): its bytes are dropped from the
-  decode, it keeps the name `_go:buildid`, and it renders as no code,
-  whole and filtered. Tests `theGoBuildIDIsDataNotCodeIfPresent`,
-  `aBuildIDSpanNeedsItsNameAndItsBytes`.
-
-## 2026-10-31: boundaries the corpus measures but nothing supplies
-
-- **OPEN (completeness): an image with neither function starts nor
-  symbols is a handful of functions.** Chromium's `app_mode_loader` (in
-  Brave and in ChatGPT's Codex framework) has 152,073 instructions, no
-  `LC_FUNCTION_STARTS` and 2 function symbols: `xrefs` lists 2 functions.
-  libRosettaRuntime lists 1 for 80,317. `app_mode_loader` has an
-  `__unwind_info` with 410 entries, and every compact-unwind entry is a
-  function start in 1,141,960 of 1,142,197 entries sampled across 591
-  corpus images (the 237 others begin code regions after a `ret` with
-  their own unwind record, real code no start names). But the linker
-  merges consecutive functions with the same encoding into one entry (5
-  functions, 2 entries in a reduction), so an entry is not a function's
-  extent; used as one, it would render several functions as one. A
-  boundary source would need the merged runs split, for example at direct
-  call targets.
-- **Explained: AppleMediaServicesKit lists 55 fewer functions than its
-  starts.** 47 of the 55 starts swiftdc does not list follow a `br`: they
-  are the jump tables after it (`e4f9ffff 5cfeffff …`, offsets), which
-  `LC_FUNCTION_STARTS` marks and swiftdc does not render as functions.
-  The other 8 follow a `bl` and are not yet classified.
-
-## 2026-10-31: accessor classification in images without function starts
-
-- **FIXED (memory, soundness): `objc` decoded accessors up to the next
-  IMP.** The large-image tier (148 images over 8 MB of `__text`) found
-  `objc` killed at 3 GB on nine Chromium and Electron frameworks;
-  Discord's Electron Framework passed 6 GB at 118 s. `objc` classifies
-  property accessors by decoding each IMP to the next boundary, and
-  `disassembleFunctions` took boundaries from function starts and IMPs
-  only. Electron Framework has no `LC_FUNCTION_STARTS`, so each extent ran
-  to the next IMP, megabytes away, and the async funclet grouping then
-  decoded every boundary of the image. Symbols are boundaries there now,
-  the classification decodes a 4 KB prefix of each extent and skips async
-  grouping. The overlong
-  extent was also wrong: a synthesized setter decoded together with the
-  6 KB function after it read as custom and stayed in the header
-  (`accessorextent.m`). Release `objc`, all nine now exit 0: 1,814 to
-  3,610 MB, 12.2 to 24.3 s (Discord's 1,974 MB, 13.6 s). Fixture blast
-  radius: only the new fixture's `objc` and `objc --methods` (171
-  fixtures).
-- **FIXED (soundness): an accessor was judged by its whole extent.** The
-  first form of the entry above left an extent past 4 KB unclassified,
-  which the rewriter treats as synthesized: a custom getter that is the
-  last IMP before a long unnamed function (`accessorextentcustom.m`,
-  `return [_inner value]`) was dropped from the header. Judging the whole
-  extent was wrong the other way (the synthesized setter above). The
-  accessor is now the block its entry starts, over the prefix: one block
-  ending in a return or a tail call, with only property-storage helpers,
-  is synthesized; a branch inside it is custom; a block that runs off a
-  decode the prefix cut is unknown, and one that runs into the next
-  function (after a call that does not return) is custom. Release `objc`
-  on the nine frameworks: 1,791 to 3,438 MB, 11.9 to 21.3 s, all exit 0.
-  On 150 sampled Objective-C images the headers equal the upstream
-  build's. Fixture blast radius: only the new fixture (171 fixtures ×
-  `objc`, `objc --methods`).
-- **FIXED (soundness): a getter that returns a constant read as
-  synthesized.** `- (int)period { return -1; }` (`mov w0, #-1; ret`) is
-  one block with no call, so `objc` dropped its line, in the upstream
-  build as well. Brave's `BraveSoftwareUpdateAgent` has four
-  (`CRUManagedPreferenceGlobalPolicySettings`' `lastCheckPeriodMinutes`
-  returns -1, `proxyMode`, `proxyServer` and `proxyPacURL` return nil).
-  A synthesized accessor now must touch the ivar: a load or store
-  addressed from `self` or from a copy of it (a `mov`, an `add` for a
-  non-fragile ivar offset, a reload of the stack slot `-O0` spills it to,
-  a callee-saved copy across a call), or a property-storage helper. On
-  150 sampled Objective-C images it keeps 291 accessor lines in 34
-  images and drops none; of 12 read by hand, 8 are custom (constants, a
-  category getter backed by a global, message sends) and 4 tail-call an
-  outlined or shared helper. Fixture blast radius: only
-  `constantgetter.m`.
-
-## 2026-10-31: whole-binary corpus measurements
-
-`Tools/corpus.swift` (see [Tools/audit/README.md](../Tools/audit/README.md))
-over every arm64 Mach-O image on the audit host: 6,127 unique images
-(by SHA-256) from 9,079 candidates, 7.2 GB of `__text`, 1,615 with Swift
-metadata, 2,459 with Objective-C classes; Xcode's frameworks and plugins
-(1,782), `/usr/libexec` (583), `/usr/bin` (487), `/System/Library`
-(411), and third-party apps (SDRangel, VLC, KiCad, Docker, Electron and
-Chromium apps, Go tools). The harness's header reader agrees with `otool
--l` on all 6,091 images both read. Release builds throughout; the
-"before" build is the session's starting point, `10e5c9e`.
-
-**Reliability**, the 5,979 images with at most 8 MB of `__text`, `dump`,
-`interface`, `layout`, `objc`, `swift-version` and `xrefs --unreferenced`,
-4 jobs, 1.8 GB and 900 s limits, 35,874 runs each:
-
-| | crash | memory kill | timeout | error |
-|---|---|---|---|---|
-| before (`10e5c9e`) | 17 | 7 | 0 | 72 (12 per command) |
-| after (`0b3f7db`) | 0 | 0 | 0 | 84 (14 per command, all FairPlay declines) |
-
-The 12 errors per command before were 10 encrypted images misreported as
-malformed and 2 valid Chromium helpers refused; after, the 14 encrypted
-images decline by their cause and the helpers load. The 148 images over
-8 MB (4.8 GB of `__text`; metadata commands, 3 GB limit): 0 crashes, 0
-errors, 0 timeouts; `objc` exceeded 3 GB on 9 before the accessor fixes
-and finishes on all 148 after (1.8 to 3.6 GB on the Electron and Chromium
-frameworks).
-
-**Completeness against independent evidence** (`xrefs` function counts
-against `dyld_info -function_starts`, same 5,979 images): images listing
-fewer functions than their starts, 17 → 7, every remaining one explained
-(jump tables after a `br`, which swiftdc declines as functions, in
-AppleMediaServicesKit ×3; data in `__text` in DumpPanic ×2; one start each
-in CryptexKitHost and MobileDevice, unexamined). Images averaging over
-20,000 instructions per function: 7 → 3 (Chromium's `app_mode_loader`
-×2 and libRosettaRuntime, no starts and no Go table, OPEN above).
-
-**Consistency across processes**: 400 sampled images × 7 commands
-(`disasm --structured` included) × 3 separate processes, 8,400 runs: 0
-output differences, 0 failures.
-
-**Performance**, the A/B the working agreement asks for: 40 images
-stratified by size (64 KB to 8 MB, Swift and not), `dump`, `interface`,
-`objc`, `xrefs`, `--jobs 1`, nothing else running, the upstream build
-(`175a563`) and this one (`0b3f7db`) alternated three rounds, medians per
-image. Spread between rounds of one build: 1.5% median, 4.3% p90.
-
-| command | median wall ratio | median peak ratio | total wall, s |
-|---|---|---|---|
-| dump | 1.000 | 1.003 | 28.6 → 28.5 |
-| interface | 1.002 | 1.001 | 30.5 → 30.7 |
-| objc | 0.517 | 1.004 | 40.1 → 10.1 |
-| xrefs | 1.005 | 1.001 | 494.4 → 497.3 |
-
-Output differs on 7 images' `objc` (accessor classification) and 1
-`xrefs` (Zoom's libavcodec loses 81 functions named by `N_INDR` symbols),
-and one `xrefs` crash is gone (CoreGraphics). Against `10e5c9e` in the
-4-job sweep, `xrefs`' peak footprint is up about 3 MB median in every
-size band (8.9 → 12.2 MB for images under 64 KB of `__text`); the A/B
-puts none of it in this session's commits, so it predates `175a563`.
-
-**Go images**, all 41 on the host (550 MB of `__text`; `xrefs
---unreferenced`, `--jobs 1`, 3.5 GB and 1,200 s limits; the 30 Docker
-images on `1f6dd3e`, the other 11 on the Go-table build): 40 finish, 0
-crash, 0 memory kills, none lists fewer functions than its starts, 1.48
-million functions in all, 1.47 GB peak at most (docker-scout, 72 MB of
-`__text`, 1,146 s).
-
-- **NOT A TARGET (speed): `xrefs` on a large Go image runs at half the
-  corpus's rate.** Median 16,300 instructions/s across the Go images
-  over 4 MB, against 35,800 for the 142 corpus images over 4 MB; at that
-  rate `com.docker.backend` (81 MB of `__text`, 188,961 starts) needs
-  over 20 minutes and hit the 1,200 s limit at 1.8 GB. A 30 s `sample`
-  of that run, main thread: decoding 28% (Capstone's text printer and
-  alias matching 15%), `CalleeRegisterSummary.of` 20%
-  (`Preservation.exitValues` 7%, `indirectResultUse` 7%), the rest
-  spread across CFG building, hashing and retain/release. No single
-  hotspot; not yet compared against a non-Go image of the same size.
-  swiftdc targets Swift and Objective-C, so this is recorded, not pursued;
-  Go images stay in the sweeps for crashes and fabricated output only.
-
-Commits from the corpus: FairPlay declines (`7ed8c6d`), every `__TEXT`
-code section (`0eec0b5`), section-defined symbols only (`ffa5e26`), no
-scalar model of SVE registers (`5a68ec2`), 4-aligned method lists
-(`7ed62b4`), the objdump file line (`6cdb88d`), direct context
-references (`949f90d`), Go function tables (`b01115d`), the own-entry
-branch (`9f92b71`), accessor decoding and classification (`10712d8`,
-`bb3d206`, `0b3f7db`); the harness itself (`a28c827`, `f423c7f`,
-`7b47780`).
-
-## 2026-10-31: the dyld shared cache
-
-- **FIXED (soundness): `--image <name>` took the first cache image with
-  that name.** 260 names on the macOS 27 host cache belong to more than
-  one of its 4,115 images, and for 22 the first is a Mac Catalyst copy
-  under `/System/iOSSupport` or an accessibility bundle: `--image
-  libswiftMetalKit` read the Catalyst overlay, not `/usr/lib/swift`'s,
-  and printed it as the answer. `--image SwiftUI` read macOS SwiftUI only
-  because the cache lists it first. An ambiguous name now declines and
-  lists every matching install path; `--image-path` picks one.
-- **FIXED (correctness): `layout` printed a symbolic field type as raw
-  bytes.** A field whose type is in the same module records a symbolic
-  reference (a byte from 0x01 to 0x1F and a relative offset), and
-  `layout` printed the mangled name as is: `center: ^A` plus the
-  offset's bytes, control characters in the text and in JSON's `type`.
-  On SwiftUI that was 2,165 of 3,536 fields (61%); on the fixtures, 42
-  fields in 10 of 177. Such a field now prints the name the reference
-  resolves to (`center: sample.Point`) or `?`, and a plain mangling
-  (`Si`) prints as before. SwiftUI: 0 control bytes, 0 `?`.
-- **FIXED (completeness, e82eedc): `dump` skipped a declaration it failed
-  to render.** A type, protocol, conformance or associated-type entry
-  whose rendering threw was left out, which reads as a binary without
-  it. GenerativeAgents exports `OpenAICompatibleModel` and
-  `InMemorySessionService`, and `dump` and `interface` never mentioned
-  them. Each now prints `// struct GenerativeAgents.OpenAICompatibleModel:
-  not rendered: unexpected(at: 4)` in its place. The error itself is
-  OPEN below.
-- **FIXED (correctness, 12f3d24): a constrained existential field printed
-  `symbolic existential type (non-unique) 0x0 <Swift.String>`.** The
-  shape's existential type was demangled but never printed. `dump` and
-  `layout` now substitute the field's arguments into it:
-  `Optional<any Source<Self.Source.Element == Swift.String>>`, the type
-  swift-demangle gives the field's accessor symbols. On SwiftUI 3 fields
-  change and on Foundation 2 (its predicate expressions).
-- **FIXED (soundness, 302f9ec): a function-local type printed as a member
-  of the enclosing type.** The renderer skipped the unnamed anonymous
-  context, so LLDB's `PrecedenceGroupBody`, local to
-  `ASTGenVisitor.generate(precedenceGroupDecl:)`, printed as
-  `ASTGenVisitor.PrecedenceGroupBody`. The oracle counted 468 such types.
-  The type's descriptor symbol now names it (`Local #1 in
-  M.Outer.make() -> Any`). Without one, the dropped context is marked as
-  the Swift runtime marks it: `M.Outer.(unknown context at $1514).Local`.
-- **FIXED (completeness, 7e0d714): a type no type metadata record lists
-  was missing from `dump`.** IRGen records a type only when it emits the
-  type's metadata, which an optimized build does lazily. LLDB's
-  `ASTGenVisitor.DeclAttributesResult` has a descriptor and field
-  metadata but no record. The field descriptors in `__swift5_fieldmd` now
-  add such types. Declared types: LLDB 872 → 876, SwiftUI 6,308 → 6,316,
-  Foundation 1,180 → 1,183.
-- **FIXED (correctness): a private type IRGen did not wrap in an
-  anonymous context printed without its discriminator.** IRGen nests a
-  private type in an anonymous context unless the type is usable from
-  inline (`getAddrOfParentContextDescriptor`). Swift's own SIL and
-  Optimizer modules (in `swift-frontend`, `sourcekitdInProc` and
-  `lib_InternalSwiftScan`) have private types whose descriptor's parent
-  is the module itself, so `dump` printed `struct SIL.AccessPathWalker`,
-  the same as a second file's private `AccessPathWalker` would print.
-  When a file's descriptor symbol names the type with discriminators
-  added and nothing else changed, `dump` now prints the symbol's name,
-  `SIL.(AccessPathWalker in _FFCB…)`. Type oracle on those three binaries:
-  7 missing each → 0. Fixture `dump` output byte-identical. A reduced
-  fixture did not reproduce the shape: `-cross-module-optimization`,
-  `-enable-cmo-everything`, C++ interop and private imports all keep the
-  anonymous context, so the test reads Xcode's binary (`IfAvailable`).
-- **Type oracle rerun** (release 4d39b01 plus the private-type fix) on the
-  84 binaries the full run flagged with misses: 0 missing types. Xcode had
-  updated since the full run, which cleared most. The oracle now strips
-  C++ `ns::` qualifiers from identities (libusd_ms's 31 "missing"
-  `CodingKeys` were declared under the imported record's C++ name), and
-  reports a binary `dump` declines (2 FairPlay-encrypted ChatGPT
-  extensions) as `dump-failed` rather than as missing types.
-- **OPEN (completeness): a cross-image indirect reference in a dyld cache
-  image resolves to the wrong place.** GenerativeAgents'
-  `OpenAICompatibleModel.source` is a constrained existential whose
-  argument is a type from IntelligencePlatformLibrary (an indirect 0x02
-  reference). MachOSwiftSection reads the pointer cell as an "opaque type"
-  at offset 0, with ASCII text for flags, so the demangle fails and the
-  type is not rendered. 4 types in that image are affected.
-- **FIXED (completeness): `layout` and the metadata indices read
-  unrecorded types too.** Every index that walked the records (field maps,
-  enum cases, payload cases, class names, self types, vtables, the
-  metadata symbolizer, descriptor names) now walks `UnrecordedTypes.all`.
-  `layout` types: SwiftUI 5,769 → 5,771, Foundation 1,100 → 1,102, LLDB
-  581 → 587. The fixtures' structured and pseudo renders do not change.
-- **OPEN (completeness, dependency): a field whose type has no record
-  stops its type's layout.** MachOSwiftSection's layout calculator finds a
-  field's type by name in an index seeded from the records only, so
-  `Holder { inner: Inner }` stops at `inner`
-  (`typeDescriptorNotFound("UnrecordedType.Inner")`) even though `Inner`
-  is laid out. That index is private, and fixing it needs a change in the
-  dependency.
-
-## 2026-10-31: the dyld shared cache in the corpus, and a type-identity oracle
-
-The corpus harness reads dyld shared cache images (`cache-manifest`,
-02cc7bd). On the macOS 27 host cache: 4,115 images, 1,913 with Swift
-metadata (2.55 GB of `__text`), 3,130 with Objective-C classes. Release
-build 9aabf0f, the 3,215 Swift or Objective-C images with at most 8 MB of
-`__text`, `dump`, `interface`, `layout`, `objc`, `swift-version` and
-`xrefs --unreferenced`, 4 jobs, 1.8 GB and 900 s limits: 19,290 runs, 0
-crashes, 0 memory kills, 0 timeouts, 0 errors. No output holds a control
-byte (f57b103). `xrefs` reports 10,586,556 functions against 10,586,566
-starts. The 10 missing starts sit in data inside `__text`
-(libMobileGestalt and 6 more, 1 to 3 each), the open data-in-`__text`
-item above.
-
-**Type identity** (`Tools/audit/typeid.py`): every nominal type descriptor
-symbol (`$s…Mn`) an image defines, demangled by swift-demangle, must be a
-type `dump` declares, compared by module and nesting path. A file's
-symbols come from `nm -U`; a cache image's from its exports. Across 3,528
-Swift images (1,913 cache, 1,615 files), 266,460 type symbols, 889 (0.33%)
-in 209 images were not declared on 9aabf0f. The oracle was seen to fail
-on a `dump` with one type renamed. On those 209 images, after the fixes
-above, missing went 847 → 205 of 69,778, and 4 are not-rendered stubs.
-What is left: 26 C-imported `__C` types, local types in private functions
-whose names the oracle keys differently, and a tail not yet read.
-- **FIXED (completeness, 5edd9af): an unrecorded type its field descriptor
-  names indirectly.** Swift Testing's noncopyable `FileHandle` names itself
-  through a pointer cell (0x02), and the walk read direct references only.
-  Testing (iPhoneOS) declares 274 → 275 types.
-- **FIXED (correctness, f742f6e): a local type in a private function kept
-  its unknown context although its symbol names the function.**
-  InstrumentsKit headers that name their function: 1 → 3; LLDB: 7 → 9.
-
-## 2026-10-31: names in a stripped binary
-
-`Tools/audit/stripnames.py` strips a binary that has its local symbols
-(`strip -x`), runs `disasm` on the copy, and checks each function name
-recovered from metadata against the original symbol at that address,
-demangled by swift-demangle (rules in Tools/audit/README.md). Corpus:
-the 472 Swift files on the host with at least 50 local Swift function
-symbols and at most 1.5 MB of `__text`.
-
-- **Before (ebcee3b):** 172,467 names recovered: 118,257 exact, 26,696
-  compatible, 15,550 Objective-C names of `@objc` thunks, and 11,814
-  Objective-C methods under a category the linker merged into another
-  (the runtime name). 67 conflicts in 26 binaries, all local classes
-  named as members of the enclosing type.
-- **FIXED (soundness, d0b24a9): a stripped local class's methods were
-  named under the enclosing type.** The symbolizer marks the dropped
-  context as `dump` does. After: 0 conflicts on all 472 binaries, with no
-  name lost (1,576 names on the 26 affected binaries, before and after).
-- **Not a defect: a merged Objective-C category.** The linker merges a
-  class's categories and keeps the first name (FileMerge's
-  `NSTextView(diffSpecials)` holds `extras`'s 9 methods; only the method
-  list's symbol, `NSTextView(diffSpecials|extras)`, says so). The runtime
-  reports the first name, and so does swiftdc.
-- **FIXED (correctness): a class member named from metadata read as an
-  instance one.** `OpenEmuKit.OESystemPlugin.getter` is a `static`
-  getter. Vtable entries and witnesses now say `static` when their
-  descriptor's flags do (an initializer never does). Stripped-name oracle,
-  472 binaries, counting static-ness: 3,917 conflicts → 0, none lost
-  (172,466 names).
-
-## 2026-11-01: MachOSwiftSection 0.24 and the dependency refresh
-
-An upgrade experiment on `exp/machoswiftsection-0.24`, from dev at
-`ba6d9d6`: MachOSwiftSection 0.22.0 → 0.24.0, MachOObjCSection 0.8.110 →
-0.8.205, MachOKit 0.54.101 → 0.55.100 (with the `cache` memo rebased onto
-it), swift-capstone 6.0.1 → 7.0.0 (C Capstone 6.0.100 → 6.0.101),
-swift-demangling 0.7.2, MachOKitExtensions 1.3.0, swift-semantic-string
-0.6.0. Not merged into dev.
-
-Measured on the same inputs as dev: 192 fixtures in eight views, 413
-dyld-cache images in six commands (`Tools/corpus.swift`), the 472-binary
-stripped-name oracle, and the 40-binary perf set, three alternating rounds
-at `--jobs 1`.
-
-- **Suite:** 926 tests pass with fixtures required.
-- **Robustness:** 2,478 of 2,478 corpus runs exit 0 on both builds, with
-  no crash, timeout or memory kill. `xrefs` reports 2,113,414 of 2,113,414
-  function starts on both. The three crashing fuzz mutants of seed 9001
-  (libSample.stripped m122, libReconstruction m53, libGaugeKit m75)
-  reproduce identically on both; fixed afterwards in preflight (see
-  Robustness: witness table pattern, conformance record extent).
-- **Stripped-name oracle:** 235,241 names recovered, 165,432 exact,
-  0 conflicts, identical per binary to dev.
-- **Determinism:** 160 outputs of the perf set × 3 processes, per build:
-  0 differ.
-- **Speed and memory:** dev against the upgrade, medians of three rounds,
-  sums over the perf set: `dump` 29 s / 28 s, `interface` 29 s / 27 s,
-  `objc` 13 s / 13 s, `xrefs` 933 s / 942 s. Peak footprint is within 3 MB
-  on each command. No single binary moved more than 1.5 s except
-  RealityFoundation `interface`, 6.2 s → 4.7 s.
-  SwiftUI, SwiftUICore and iOSSupport SwiftUI, same method, dev against
-  the upgrade: `dump` 50.3 / 15.5 s, 60.9 / 10.9 s and 43.6 / 13.7 s;
-  `interface` 55.5 / 19.5 s, 61.8 / 10.8 s and 47.0 / 15.9 s, with
-  interface peak footprint up 7 to 32 MB; `layout` and `xrefs` unchanged
-  (within 1 s). 0 of 108 runs failed, and no output differs between
-  processes.
-
-Findings:
-
-- **FIXED (soundness, by the upgrade): a protocol requirement's generic
-  right-hand side was replaced by its argument.** For
-  `Readiness.Element == Event<Payload>` and `Pending == [Payload]`, dev
-  printed `Self.Readiness.Element == Self.Payload` and `Self.Pending ==
-  Self.Payload`, requirements the protocol does not have (upstream
-  6b758d0e). On the cache, CloudKitDaemon
-  printed one. `aProtocolRequirementsGenericRightHandSideIsPrintedIfPresent`
-  on the new `libProtocolRHS.dylib` is red on dev.
-- **FIXED (soundness, by the upgrade): local types that share a name
-  shared their fields.** SwiftUI's `TableDataSource` declares six local
-  `Visitor` structs, one per drop and delete method. Dev printed all six
-  as members of `TableDataSource` with the same field, `var result:
-  SwiftUI.DeleteInteraction?`. The upgrade names each by its function
-  (`Visitor #1 in SwiftUI.TableDataSource.performDropOn(index:dropInfo:)`)
-  with its own fields (`dropInfo`, `strategy` and `items`,
-  `itemProvider`). A protocol requirement printed an unbound generic
-  parameter: `Self.Host == SwiftUI.AppKitPlatformViewHost<A>`, now
-  `<Self>`.
-- **FIXED (soundness, by the upgrade): bare-colon Objective-C selectors
-  lost their arguments.** Dev printed one-colon selectors that do not
-  exist. The ObjC runtime confirms `enumerateRangesIn::`, `decimal::`,
-  `formatDate::` and `createStyledButtons:buttonFont:isCompact::`.
-- **FIXED (completeness, by the upgrade): Objective-C properties and
-  protocol lists on cache images.** 32 of 413 `objc` outputs change. All
-  1,930 method lines that disappear return as properties. `CMOdometer` and
-  `CKAsset` attribute strings match the runtime's exactly.
-- **FIXED (correctness, by the upgrade): a local class's superclass was
-  misplaced.** libLocalTypes printed `LocalDouble: LocalTypes.Outer.LocalCounter`,
-  a type that does not exist. Local `bump()` methods are now named, and
-  deinit members are listed.
-- **FIXED (completeness, by the upgrade): Swift 6.4 `borrow` and `mutate`
-  accessors.** Dev omitted such a property from `dump` entirely.
-- **FIXED (correctness, by the upgrade): `layout` sizes for builtin
-  types.** `ExecutorJob`, `Job` and `LocalAllocator` now report 8 bytes,
-  which matches stdlib's `Builtin.Job`. The type itself still prints as
-  the raw mangling `Bj`.
-- **FIXED (correctness, on the branch): 0.23's position-named local
-  types defeated the placement cross-check.** 0.23 spells an unnamed local
-  type `Outer.(Local in $1dbc)`, where the discriminator is the address of
-  its innermost anonymous context. `withoutPositionName` unwraps it only
-  when that address is the context swiftdc already proved, and declines
-  otherwise. Before the fix the stripped fixture lost 13 names, and
-  SwiftUITap lost 7 for a nested `(WorkItem in $3990c).State`.
-- **FIXED (completeness, on the branch): a local type the binary names by
-  its function.** With `-enable-anonymous-context-mangled-names`, or a
-  `_symbolic` symbol on the cache, 0.23 names `Local #1 in M.T.f()`.
-  Accessor names now use that name when the mangling places the type on
-  each anonymous context swiftdc proved
-  (`namesEveryAnonymousContext`). Without this the upgrade lost 46 accessor
-  names on cache images to `sub_`. libLocalTypesNamed: 14 → 24 names
-  recovered, 12 → 22 exact, 0 conflicts. Class-method labels decline such
-  an owner, because `T.method` would read as a member of the function's
-  return type: allowing it produced 2 oracle conflicts.
-- **FIXED (soundness, on the branch): a stripped copy read its original's
-  names in the same process.** MachOKitExtensions keys
-  `SymbolIndexStore` and `SymbolicDemangler` caches by install name plus
-  UUID, and a stripped copy keeps both. `BinaryLoader` now evicts the
-  loaded file's entries. The guard only evicts Swift images, because
-  eviction reaches `MachOFile.cache`, and MachOKit's `DyldCache.init`
-  traps with `try!` on a file shorter than a cache header.
-  `aStrippedCopyLoadedAfterItsOriginalReadsOnlyItselfIfPresent` passes on
-  dev, so the contamination is new in the upgrade. OPEN: two same-key
-  files read at once in one process still share upstream's caches. No
-  CLI command does that (each loads one file), but the parallel suite
-  did: aStrippedLocalTypeKeepsItsUnknownContextIfPresent failed once in
-  six runs while another test read the original, so the stripped
-  fixture now has its own install name. The fix belongs upstream: key a
-  file by its path on disk, not its install name.
-- **MachOKit fork: the `cache` memo still matters; fat64 does not.** The
-  fat64 cherry-pick is upstream (p-x9 #340), identical, and its test
-  passes on 0.55.100. The negative `cache` memo is upstream nowhere.
-  Without it (upstream 0.55.100) the perf set takes `dump` 53 s,
-  `interface` 61 s, `objc` 48 s and `xrefs` 1,166 s, against 28 / 27 / 13 /
-  942 s with it, byte-identical output. SourceEditor `objc` goes 4.9 s →
-  21.3 s.
-- **Capstone: no decoding change.** swift-capstone 7 rewrites the Swift
-  wrapper; swiftdc calls the C API, so the wrapper is irrelevant. C
-  Capstone 6.0.101 changes `cs_disasm_iter` flag resets, `CS_OPT_OFF`,
-  custom mnemonic aliases and x86/Alpha tables, none of which swiftdc
-  uses, and no AArch64 table. All 192 fixture listings are byte-identical.
-- **Not integrated: CrossReferenceAnalysis.** It reads only an in-process
-  `MachOImage`, so it cannot read a file on disk, an iOS binary or a
-  foreign cache without loading untrusted code. On AppIntents, SwiftData
-  and Charts it decodes the same function table. Its site set contains
-  all of swiftdc's, with 0 target disagreements over about 172,000 sites.
-  Its extra sites are swiftdc's unresolved calls plus indirect `br`, none
-  resolved. swiftdc resolves 12,472 GOT and slot calls that it leaves as
-  bare indirect. It classifies no call as a vtable or witness dispatch;
-  the discriminator-to-declaration map is not in 0.24. It is much faster
-  (0.3–1.3 s against 9–37 s) because it does no value tracking, so the
-  times are not comparable. One thing it has that swiftdc lacks: selectors
-  on `objc_msgSendSuper2` (39 sites). Tool: `Sources/xrefcompare`.
-- **Not wired in:** 0.23's GenericSpecializer, module selectors,
-  private source-file recovery, `marksNestedDefinitions` and
-  `protocolRequirementPlacement` are opt-in. Each needs its own
-  measured change.
-
-## 2026-11-02: runtime calls that return through x8
-
-- **FIXED — a result buffer survived a runtime call that overwrites it.**
-  `isKnownDirectReturnCallee` took every `swift_`/`objc_` callee to return
-  in registers, so a caller's x8 buffer forwarded to `swift_getAtKeyPath`
-  (the stdlib's generic `_getAtKeyPath<Root, Value>`, whose `Value` is
-  indirect) kept the stores made before the call:
-  `return ResultBuffer.Big(a: 7, b: 7, c: 7, d: 7, e: 7)` for a function
-  whose result is whatever the key path read (`resultbuffer.s`). Six
-  runtime functions return through x8 (`swiftResultBufferRuntimeNames`,
-  from the runtime-signature table on the audit branch); their calls now
-  leave the convention unknown, which poisons the buffer, and the render
-  is `return ?`. The four swift-syntax dylibs' three `swift_getAtKeyPath`
-  sites write a frame slot already forgotten as escaped, so their renders
-  are byte-identical.
-
-## 2026-11-02: async methods and yielding accessors named from metadata
-
-- **FIXED (soundness): an async method's name landed on its async function
-  pointer, and the entry stayed `sub_`.** For an async method,
-  `MethodDescriptorFlags::isAsync()` (0x40) makes the descriptor's
-  implementation a relative pointer to an async function pointer record
-  (`{ i32 relative Function; u32 ExpectedContextSize }`, in `__TEXT,__const`),
-  not to code (`TargetMethodDescriptor::getImpl`, Metadata.h). An override
-  takes its base method's flags, and an async requirement's witness table
-  slot holds the witness's record (`ProtocolRequirementFlags` 0x20). A
-  callee-allocated coroutine (`yielding borrow` / `yielding mutate`, 0x40 on
-  a coroutine kind) is the same shape with a coroutine function pointer.
-  `classMethodClaims`, `witnessClaims`, `SelfTypeIndex` and `VTableIndex` read
-  every field as code. On `libAsyncMethods.opt.stripped.dylib`
-  (asyncmethods.swift, -O, `strip -x`) `Animal.fetch` stayed `sub_c64`,
-  `Animal.rest` `sub_d1c`, `Dog.fetch` `sub_e28` and the `Box: Fetcher.pull`
-  witness `sub_1054`, while `layout --self-index` bound `self` at the data
-  addresses 0x1718 and 0x1720 and a data reference to the witness's record
-  (`add x8, x8, #0x760`) rendered `→ Box: Fetcher.method`. The yielding
-  accessors of `libCoroAccessors.opt.stripped.dylib` (coroaccessors.swift,
-  -O, CoroutineAccessors) went the same way: five entries unnamed, three
-  `self` bindings on records. `MethodImplementation` now follows a record's
-  first field when the flags say the field is data, and names the result
-  only if it lies in a code section; a field read as code must lie in code
-  too, which also covers an override whose base descriptor is in another
-  image. A `VTableIndex` slot holding a record is left out: a `blr` straight
-  to the slot's value calls nothing it can name. Measured against the
-  pre-fix debug build: 200 of 204 fixtures byte-identical in all four
-  `disasm` views. AsyncMethods stripped: 4 entries named, 9 resume funclets
-  retitled `resume #n of …` after their entry, the false name on the
-  record reference gone. CoroAccessors: 5 entries named; the `self`
-  bindings move to code, so `x20 + 0x10` reads `&self.stored` and the
-  `blr` in `Box.value.yielding_borrow` resolves to `Box.stored.getter`
-  (unresolved indirect sites 11 → 10). One loss: a bound method seeds only
-  signature-proven arguments, so the yielding mutate's buffer in x0 renders
-  `x0`, not `arg0`, and `sub_a30(arg0)` becomes `sub_a30()` (the open
-  "calls with nothing tracked render `()`" item). `xrefs`, `analyze` and
-  `layout --self-index` change the same way; `dump` and `interface` do not
-  change. Tests: `AsyncMethodDescriptorTests` (unstripped symbol table as
-  the oracle).
-
-## 2026-11-02: runtime arities from the signature table
-
-- **FIXED — nine runtime functions had no arity, and the helpers that call
-  them took fabricated arguments.** The runtime-signature table (audit
-  branch) found `knownCArity` covering 44 of the 57 runtime stubs the
-  swift-syntax dylibs call. Nine, each checked against its declaration in
-  the Swift checkout, are now in it: `swift_allocBox`,
-  `swift_unownedRetain`, `swift_unownedRelease`,
-  `swift_getMetatypeMetadata` (1), `swift_allocateGenericClassMetadata`,
-  `swift_lookUpClassMethod` (3), `swift_allocateGenericValueMetadata`,
-  `swift_getTypeByMangledNameInContext2` (4) and
-  `swift_getTypeByMangledNameInContextInMetadataState2` (5). The pre-V2
-  mangled-name helpers set x0-x3 (x0-x4) for their runtime call, so with
-  its arity unknown their bodies read as taking x0-x5:
-  `__swift_instantiateConcreteTypeFromMangledName(arg4, ?, ?, ?, arg4,
-  arg5)` is now `(arg4)`. Stripped swift-syntax `--structured`: 113
-  changed lines, every one a fabricated argument dropped or a `()` call
-  given its true count; three specialized callers checked against their
-  symbols (`Dictionary.init(dictionaryLiteral:)`, a closure-specialized
-  `map`, `ActiveSyntaxRewriter.init`) now take the arguments their bodies
-  read. Still out: `swift_setAtWritableKeyPath` and `swift_getAtKeyPath`,
-  whose lowering the table only infers.
-
-## 2026-11-02: specializations seeded from their original's signature
-
-- **FIXED — a dead-argument specialization credited a value to the
-  parameter it dropped.** A function signature specialization prints its
-  original's signature, but `Arg[n] = Dead` (and every other kind except
-  an ownership change) changes the registers. `<Arg[0] = Dead> of
-  helperI(Swift.Int, Swift.Int)` takes `b` in x0, and seeded from the
-  printed signature its `b &* 23` read `return (arg0 * 23)`
-  (`deadargs.swift`). `signatureSpecializationKeepsLayout` now seeds a
-  specialization only when every entry is `Owned To Guaranteed` or
-  `Guaranteed To Owned`; it renders `return ?`. Fixtures and the four
-  swift-syntax dylibs: no other render changes.
-- **FIXED — a free function's specialization took a `self`.** The test
-  for a free function (`Module.name(…)`, no `self` in x20) read the whole
-  name, so a specialization's `function signature specialization <…> of`
-  clause defeated it, and `callI`'s second call read `helperI(self: r0,
-  arg0)` for the result its caller kept in x20. The clauses are stripped
-  first (`withoutSpecializationClauses`). Fixtures: only libDeadArgs
-  changes (2 lines); swift-syntax dylibs byte-identical.
-- **FIXED — the same specializations' arity.** `callI` rendered
-  `helperI(arg1, arg1)` for the one-argument specialization: x1 still
-  held `arg1` at the first call, and a callee with a printed Swift
-  signature was never bounded by its body's reads. A specialization whose
-  clause changes the layout now counts as having no signature of its own,
-  so its body bounds the call: `helperI(arg1)`.
-- **OPEN — a stdlib value type's initializer takes a `self`.** 12
-  `Swift.Dictionary.init(self: _swiftEmptyArrayStorage, …)` calls in the
-  swift-syntax dylibs: `receivesThinMetatype` knows only the image's own
-  value types.
-
-## 2026-11-02: parameters after a fixed-footprint parameter
-
-- **FIXED — one multi-word parameter left every parameter unseeded.** A
-  String, `Int?`, StaticString or `inout` parameter is not one scalar
-  register, and `swiftScalarArgumentRegisters` seeded nothing for the
-  whole signature, so `afterString(_: String, _ i: Int)` read `return ?`
-  for `i &* 3`. Such a parameter is now skipped by the word count the ABI
-  fixes (`integerRegisterFootprint`), and an `inout` one, which is its
-  address in one register, is seeded: `return (arg1 + (arg1 << 1))`, and
-  `mix(_ h: inout Hasher, …)` reads `Hasher._combine(self: arg0, arg1)`.
-  Two layouts that read seeded registers as arguments are bounded with
-  it: after a value method's formals, a trailing run of registers still
-  holding their own entry value is dropped (`W.k(arg1, arg0, arg2)` ->
-  `k(arg1, arg0)`), and a String's property getter takes exactly its two
-  words (`String.utf8.getter(?, ?, arg1)` -> `(?, ?)`). Fixtures: 156
-  lines in 27 files, mostly `hash(into:)` and `_combine` naming their
-  `inout` Hasher. swift-syntax `--structured`: 52 lines.
-
-## 2026-11-02: ABI review
-
-- **OPEN — fourteen ABI areas reviewed.** The ranked findings, each with a
-  reproduction checked against the compiler, are in
-  [ABI-REVIEW-2026-11-02.md](ABI-REVIEW-2026-11-02.md): 14 soundness
-  classes (multi-register call results spelled as the whole call, a
-  parked x20 taken as `self`, signed 32-bit comparisons rendered at 64
-  bits, ObjC returns read from x0 whatever the encoding, the throw path's
-  x0 in a return select, `swift_dynamicCast`'s Bool as the cast value,
-  async calls laid out positionally, among others) and the completeness
-  gaps. The earlier entry that says the `swift_willThrow` select "no
-  longer reproduces" is stale: `plainThrow` at -O still renders it.
-- **FIXED — one register of a multi-register call result read as the
-  whole call** (ABI review item 1). The tracer now writes a Swift call's
-  result only to the register its printed result type proves holds all
-  of it (`callResultBank`): x0 for a scalar, class, `any Error`, Builtin
-  scalar or one-word collection, v0 for a float. For any other type x0
-  and x1 are the call's words, as a String's are: passed on together they
-  are the value (`UTF8View.count.getter(String.utf8.getter(?, ?))`), and
-  x0 alone renders `?` while the call keeps its statement. `mkPair(x).a +
-  2` read `(mkPair(x) + 2)`; it reads `mkPair(x)` then `return (? + 2)`
-  (`multiresult.swift`). A call handed a frame buffer in x8, a generic
-  result and an unreadable result type claim nothing. Cost: in the
-  swift-syntax dylibs about 130 enum-tag tests that named the raw
-  register (`w9 >=ᵁ 4`) now read `? & 255`.
-- **FIXED — a one-case enum counted as one register** (ABI review item 8).
-  `isNoPayloadEnum`, the one-register gate for seeding, call layout and
-  return registers, now needs two or more cases; a one-case enum is
-  zero-sized, and the entry skips it. `oneMid(_ a: Int, _ o: One, _ b:
-  Int)` read `return ((7 * arg0) - arg1)` with `arg1` the enum; it reads
-  `- arg2`, and its caller `oneMid(arg0, arg1)` instead of `(arg0, arg1,
-  ?)` (`onecase.swift`). Three `(? == ?)` on one-case enums now read
-  `__derived_enum_equals()`, which takes no registers. swift-syntax
-  dylibs: byte-identical.
-- **FIXED — `swift_dynamicCast`'s Bool rendered as the cast value** (ABI
-  review item 6). The conditional cast renders `((src as? T) != nil)`, its
-  success, and the call is in `resultFitsInWord`; the value itself goes to
-  the dest buffer. `isInt<T>(_ a: T) -> Bool { a is Int }` read `return (?
-  as? Swift.Int)`, a Bool function returning an Optional
-  (`dynamiccast.swift`). The unconditional form, which traps on failure,
-  keeps `(src as! T)`. Fixtures: 6 lines (the new fixture and the
-  Reconstruction `castToString` statements); swift-syntax byte-identical.
-- **FIXED (soundness) — a metatype cast read as a cast of an object.**
-  `swift_dynamicCastMetatype` and its `Unconditional` form take two
-  metadata pointers and return the first, and the target metadata names the
-  instance type. `swiftCastIdiom` shared the class helpers' spelling, so `x
-  as? C.Type` rendered `(x as? C)`, `x as! C.Type` `(? as! C)` and `a is
-  C.Type` `((? as? C) != 0)`. Both helpers now print `.Type`
-  (`dynamiccast.swift`, `aMetatypeCastIsSpelledAsOneIfPresent`). Still
-  raw, which is sound: `swift_dynamicCastObjCClassMetatype`,
-  `swift_dynamicCastForeignClassMetatype` and a target behind a merged
-  accessor, which no rendered metadata names. Renders: those three lines of
-  `libDynamicCast` and nothing else, the swift-syntax dylibs included.
-- **FIXED — a throw's x0 joined the return** (ABI review item 5, first
-  half). `swift_willThrow` (Error.h:71), `swift_willThrowTypedImpl`
-  (:116) and `swift_job_run` (Concurrency.h:1137) return nothing
-  (`voidRuntimeCalls`), so x0 after one is no value. `plainThrow`
-  (`throwselect.swift`, -O), whose throw shares the normal `ret`, read
-  `return ((arg0 < 0) ? r1 : (arg0 + (arg0 << 1)))` with `r1 =
-  swift_willThrow(r0)`; it reads `return ?`. The earlier entry that says
-  this select "no longer reproduces at HEAD" was stale.
-- **FIXED — a `ret` a throw shares returned `?`** (ABI review item 5,
-  second half). The tracer now records x0 and v0 per incoming path at a
-  shared `ret`, as it did x21, and an exit whose throwing paths
-  `mergedThrowEnds` proves returns the value its normal paths agree on.
-  `plainThrow` reads `return (arg0 + (arg0 << 1))`; `typedPick` (four
-  builds) `return arg0`; the generic `transform` `return (… + 1)`.
-  swift-syntax byte-identical.
-- **MITIGATED — a parked x20 taken as `self`** (ABI review item 2). A
-  callee's register summary now records whether its body may read the x20
-  it is handed (`readsSelfRegister`: a read before any write, other than
-  a prologue's save to the stack; an in-image call that does; or a call
-  with no C arity, which may take it as `self`). An in-image callee that
-  does not takes no `self`: `freshEnum` read `Mode.weight(self: r0, r0)`
-  for a by-value enum method and reads `Mode.weight(r0)`
-  (`parkedself.swift`). swift-syntax: 30 lines, each a `self:` dropped
-  from a callee that never reads x20 (`sub_35e8(self:
-  swift_allocObject(…), …)`, `Descriptor.init(self: …stringValue.getter())`
-  for `init(rawValue: Int)`). Still OPEN: an out-of-image value method
-  (`String._bridgeToObjectiveC(self: arg0)`) is decided by name.
-- **FIXED — signed 32-bit comparisons rendered at 64 bits** (ABI review
-  item 3). A w register reads as its zero-extended bits, so a signed order
-  over two of them compared the wrong numbers: `cmp w9, w8; b.lt` with w8
-  = -100000 read `… < 0xfffe7960`, the branch inverted for every
-  non-negative sum, and `tbnz w0, #31` read `arg0 < 0`, the sign of an
-  undefined high half (`signed32.c`). A signed order (LT/GE/GT/LE) at
-  width 32 now goes through the exact `subtractionCondition`, MI/PL (the
-  difference's sign) at every width, and a w sign-bit test sign-extends
-  the low half; a value whose bit 31 is provably clear (a small mask, a
-  small constant, a choice of them) is not extended, and a signed order
-  prints a negative constant in decimal. Fixtures: 140 lines, 67 of them
-  value-witness and Int32 sign tests `arg1 < 0` -> `((arg1 << 32) >>ˢ 32)
-  < 0` (getEnumTagSinglePayload's count is `unsigned`); swift-syntax 218
-  lines, the same shapes. The z3 condition harness covers only the text
-  path; these tracer facts are checked by the fixture test alone.
-- **FIXED — an Objective-C method's return read from x0 whatever its
-  encoding** (ABI review item 4). The return is now read where the method
-  encoding puts it: x0 for an integer, pointer or object, v0 for a lone
-  `float`/`double` (a constant printed as its value), and nothing for a
-  struct of floats, a 9-16-byte composite whose two ivars differ, or an
-  x8 return. A tail call forwards a one-register result, or a float struct
-  from a C function declared to return a struct (`return
-  CGRectInset(…)`). `-(double)scaled:` read `return self` and reads
-  `return (arg0 * self->_scale)`; `-(S5)big` and `-(CGRect)rect:` read
-  `return ?` (`objcreturns.m`). Fixtures: 17 `return self` replaced by
-  the true value (`return 2.5`, `(arg0 + arg0)`) or `?`; `rangeHead` and
-  `rangeShifted`, one word of a two-word NSRange result, now `return ?`.
-  swift-syntax byte-identical. OPEN: a tail branch in an x8-returning
-  method still reads `return h(…)` when x8 is not proven forwarded.
-- **FIXED — the x8 convention called a closure tuple or a nested
-  collection type direct** (ABI review a3 #4). `isKnownDirectReturnType`
-  kept its own type list, which took any type spelling ` -> ` as a closure
-  and any `Swift.Dictionary<` prefix as the one-pointer collection, so
-  `((Int) -> Int, (Int) -> Int, (Int) -> Int)` (six words) and
-  `Dictionary<Int, Int>.Iterator` (40 bytes) were taken as returned in
-  registers. It now asks `SwiftLowering`, the classification
-  `swiftReturnRegister` uses (a93b674). Latent in the fixtures and the
-  swift-syntax dylibs (byte-identical): the frame-slot escape rule masked
-  it, and a forwarded result pointer exposed it (reported, a3).
-- **FIXED — a collection, `any Error` or `AnyObject` parameter stopped
-  seeding and call layout.** `scalarParameterClass` kept its own scalar
-  list; it now asks `SwiftLowering` (a93b674), so a one-pointer
-  collection, `any Error`, `AnyObject` and the Builtin scalars are one
-  integer register, as a result of those types already was.
-  `afterArray(_ xs: [Int], _ i: Int)` read `return ?` and reads `return
-  (arg1 * 11)`; `firstCount<[Int]>()` reads `(arg0)`. swift-syntax: 160
-  lines, calls laid out by their signatures: `nodesDescriptionAndCommon
-  Parent<A>(_: [A], format: Bool)` lost a fabricated third argument
-  (`(local, ?, 0)` -> `(local, ?)`), `_findStringSwitchCase(cases:
-  string:)` gained its String as `?`, raw `x0 == x1` became `arg0 ==
-  arg1`.
-- **FIXED — async calls laid out by position** (ABI review item 7). An
-  async callee's context is its `swiftasync` parameter (x22) and its
-  formals take the ordinary registers (`define swifttailcc void @dbl(ptr
-  swiftasync %0, double %1)`), unless an indirect result's buffer comes
-  first (`@bigRes(ptr %0, ptr swiftasync %1, i64 %2)`). A callee whose
-  result `SwiftLowering` proves direct is laid out as a synchronous one;
-  any other shows its declared parameters, each `?`; a resume funclet,
-  which takes only the context, is left as it was. `bumpG(?)` (x0 the
-  callee context) reads `bumpG()`, `dbl(?)` reads `dbl(arg0)` from d0,
-  `bigRes(?, arg0)` reads `bigRes(?)` (`asynccalls.swift`). Fixtures: 74
-  lines, 20 `Task.yield(?)` -> `yield()` and hand-written leaves
-  matching their declared parameters; swift-syntax byte-identical.
-- **FIXED — inside an async function with an indirect result, `arg0`
-  named the buffer** (a7 #2). Such a function takes the result's buffer
-  in x0 before its formals, so an async function whose result
-  `SwiftLowering` does not prove direct is not seeded: `bigRes(_ x: Int)
-  async -> Big5` read `mem64[arg0] = x1` and reads `mem64[x0] = x1`.
-  Fixtures: 6 lines, that function; swift-syntax byte-identical.
-- **FIXED — unspecialized generic calls laid out by position** (ABI
-  review item 11, first part). A generic function takes a generic value
-  by address, one register, and its metadata and witness tables after the
-  formals, so it is now laid out from its declared parameters and the
-  metadata is not shown; a tuple result with a generic element takes its
-  buffer first, from x0 (GenCall.cpp: `CanUseSRet = false` for a direct
-  result beside an indirect one, or two indirect ones), so such a call
-  shows its declared parameters as `?`. `identity<A>(local_20, 0x4010)`
-  reads `identity<A>(local_20)`; `split<A>(local_18, local_20, ?,
-  0x4010)` reads `split<A>(?, ?)` (`genericcalls.swift`). Fixtures: 30
-  lines, `_hashValue<A>(local, 0x…)` -> `(local)`; swift-syntax 132 lines,
-  `_print_unlocked<A, B>(…, 0x…)` without the metadata, Bool arguments
-  typed (`rewrite<A>(…, 1)` -> `true`), `appendInterpolation<A>()` ->
-  `(?)`.
-- **FIXED — a `Tt` specialization read against its unspecialized
-  parameters** (ABI review a8 #2). A generic specialization that drops
-  the arguments its substitution made trivial prints like the declaration
-  (the demangler's printer skips `DroppedArgument`), and
-  `specializedSignature` declined on the dropped-argument node, so the
-  call fell to position: `tt<Double>(Double.self, d, k)` read
-  `tt<…>(arg0)`, `k` as the metatype and `d` gone. The substituted
-  signature now drops those arguments: `tt<…>(arg1, arg0)`, d from d0 and
-  k from x0 (`droppedmeta.swift`). Fixtures: that line; swift-syntax
-  byte-identical.
-- **FIXED — a vector lane move modelled as a whole move** (ABI review
-  a12 #1, item 10). `ins`/`umov` canonicalize to `mov` with a lane
-  operand, and the structured operand did not carry the lane, so `mov
-  v0.d[1], x2` read as `v0 = x2`. Compiled code does this: the
-  `storeEnumTagSinglePayload` value witnesses build a 16-byte payload
-  with `mov v0.d[0], x11; mov v0.d[1], x10; str q0, [x9]` and read
-  `mem128[arg0] = 0`, the last lane as the whole store. The operand now
-  carries Capstone's `vector_index`, and a lane move is not modelled (the
-  register is clobbered): `mem128[arg0] = q0`. Fixtures: 20 lines, six
-  value witnesses in five fixtures and `vectorlanes.s`; swift-syntax
-  byte-identical.
-- **FIXED — `fmov` immediates read at the wrong precision or shape**
-  (ABI review a2 #1, #3). A vector `fmov.2d v0, #3.0` fills every lane and
-  was stored as one Double (lane 1 reading 0: `mem128[x0 + 0x10] =
-  0x3ff0000000000000` in a compiled initializer); a Float vector read as
-  a Double pattern; `fmov h1, #3.0` carried a Double's pattern, whose low
-  16 bits rendered `0.0`. A 128-bit destination or a lane operand is now
-  not modelled, an `h` destination takes the Float16 pattern, and a
-  Float16 constant renders as its value: `half(_ h: Float16)` reads
-  `return ((arg0 * 3.0) + 0.5)` and its caller `half(1.5)`
-  (`fpimmediates.swift`). swift-syntax byte-identical.
-- **FIXED — integer-to-float conversions lost their signedness and
-  width** (ABI review a2 #4). `ucvtf` and `scvtf` were both `Double(x)`:
-  `ucvtf d0, x0` read as a signed conversion (`Double(UInt(bitPattern:
-  k))` rendered `Double(arg0)`, wrong for every negative k), and `scvtf
-  d0, w0` converted a word's zero-extended bits (Int32 -1 as
-  4294967295.0). `ucvtf` is now `unsignedToFloat`, rendered `Double(x)`
-  only when x is a UInt or provably non-negative, else `Double(UInt(
-  bitPattern: x))`; `scvtf` from a w register sign-extends
-  (`intconvert.swift`). Fixtures: 7 lines, the -O typedScale `Double(arg1)`
-  -> `Double(UInt(bitPattern: arg1))`, exact (the compiler chose `ucvtf`
-  after proving n >= 0 on that path; a path-aware simplification is
-  future work). swift-syntax byte-identical.
-
-## 2026-11-03: whole-image runs on swift-syntax
-
-Measured with release builds (`.build-release`, each binary copied out),
-`/usr/bin/time -l` under `Tools/audit/guard.sh`, on the toolchain's
-`lib/swift/host/libSwiftSyntax.dylib` and `libSwiftParser.dylib`. The host
-was shared with other agents, so the figure is instructions retired (three
-repeats spread 0.15%), not wall time. Baseline: origin/dev `20dcc5d`.
-
-- **FIXED (speed): every method of a type rebuilt that type's accessor
-  map.** `enrichCallArguments` built `selfAccessors` for each function
-  whose `self` type is known by calling `ReferenceResolver.name(at:ownedBy:)`
-  on every vtable method of the type, and that call demangles and splits
-  every symbol folded onto the address. libSwiftSyntax's `SyntaxVisitor`
-  has 880 `visit` methods whose default bodies fold up to 871 symbols onto
-  one address, so the cost was methods x slots x folded symbols: a sample
-  put 99% of the main thread in that initializer. `SelfMemberCache` on
-  `PerFunctionContext` (one per image) now memoizes the map per type name
-  and `name(at:ownedBy:)` per (address, type name); both are pure
-  functions of the context's resolver and vtable index, and the cache is
-  only looked up, never iterated. Instructions retired, before and after:
-
-  | run | before | after | peak footprint |
-  |---|---|---|---|
-  | libSwiftSyntax `disasm --structured` | 4,199.6G | 642.4G (-84.7%) | 208 MB to 248 MB |
-  | libSwiftSyntax `xrefs --unreferenced` | 4,109.4G | 565.5G (-86.2%) | 207 MB to 199 MB |
-  | libSwiftParser `disasm --structured` | 241.9G | 241.9G | 70 MB to 71 MB |
-  | libSwiftParser `xrefs --unreferenced` | 211.5G | 211.7G | 73 MB to 72 MB |
-
-  Wall time on libSwiftSyntax `--structured` went from 254 s to 47 s.
-  Every output is byte-identical (`cmp`), and `Tools/blast-radius.sh` over
-  the 243 fixture inputs changed 0 lines in all four views.
-
-- **FIXED (speed): `callResultBank` re-derived per call and re-parsed a
-  regex each time.** The tracer asks where a callee's result is at every
-  call on every fixpoint iteration, and `Disassembler.callResultBank`
-  re-parsed the demangled name each time and evaluated the regex literal
-  `#/(^|[^A-Za-z0-9_.])[A-Z][0-9]*($|[^A-Za-z0-9_])/#`, which Swift
-  parses again on every evaluation: 20% of a libSwiftParser
-  `--structured` sample, `Regex.init` alone 9.6%. `CallResultBankCache`
-  on `PerFunctionContext` keeps the answer per callee name for the image
-  (lookups only), and `containsGenericParameterToken` scans for the token
-  by hand over `Character`s. A `Regex` is not `Sendable`, so it cannot be
-  a static. `genericParameterTokenScanMatchesTheRegex` checks the scan
-  against the regex on printed types and 3,000 short strings over the
-  characters that decide it. Instructions retired, after the change above
-  and after this one:
-
-  | run | before | after | peak footprint |
-  |---|---|---|---|
-  | libSwiftParser `disasm --structured` | 241.9G | 191.3G (-20.9%) | 71 MB to 72 MB |
-  | libSwiftParser `xrefs --unreferenced` | 211.7G | 161.1G (-23.9%) | 72 MB to 73 MB |
-  | libSwiftSyntax `disasm --structured` | 642.4G | 587.5G (-8.5%) | 248 MB to 221 MB |
-  | libSwiftSyntax `xrefs --unreferenced` | 565.5G | 510.9G (-9.7%) | 199 MB to 198 MB |
-
-  Every output is byte-identical (`cmp`), and the fixture blast radius
-  changed 0 lines in all four views.
-
-- **FIXED (speed): every mangled-name pair walked the image's chains.**
-  `MangledNamePair.referencesAreSound` (from `dba6e5e`) built a fresh
-  `ChainedFixupTable` per lookup, and the first indirect (`\x02`) reference
-  in a name walked every chain of the image. `renderValue` reaches it at
-  each `__swift_instantiateConcreteTypeFromMangledName` call. On GoodLinks
-  `xrefs --arch arm64 --unreferenced`, a sample put 3,534 of 3,960
-  main-thread samples (89%) in `ChainedFixupTable.build`. The resolver's
-  `chainedFixups`, built once and shared by every copy, now goes to
-  `typeName(at:in:fixups:)` and `referencesAreSound` from all three
-  callers. A caller with no resolver (the tests) still gets a fresh table.
-  Instructions retired, against the change above:
-
-  | run | before | after | peak footprint |
-  |---|---|---|---|
-  | GoodLinks `xrefs --unreferenced` | 14,989.4G | 1,473.9G (-90.2%) | 449 MB to 480 MB |
-  | libSwiftParser `disasm --structured` | 191.3G | 191.7G | 72 MB to 72 MB |
-  | libSwiftParser `xrefs --unreferenced` | 161.1G | 161.5G | 73 MB to 64 MB |
-  | libSwiftSyntax `disasm --structured` | 587.5G | 586.9G | 221 MB to 210 MB |
-  | libSwiftSyntax `xrefs --unreferenced` | 510.9G | 509.6G | 198 MB to 201 MB |
-
-  GoodLinks wall time went from 1,605 s to 168 s. The swift-syntax dylibs
-  hardly reach the check. Every output is byte-identical (`cmp`, GoodLinks
-  included), and the fixture blast radius changed 0 lines in all four
-  views. `EnumCaseIndex` and `MetadataSymbolizer` each still build their
-  own table, at most two more walks per image. They are not hot: a 25 s
-  sample of the start of the fixed GoodLinks run, which covers both index
-  builds, has no `ChainedFixupTable` frame. Left as is.
-
-- **FIXED (speed): the async funclet scan named every instruction.** In an
-  image without the async hint sections (libSwiftSyntax and
-  libSwiftParser have none), `AsyncFuncletIndex.build` scans every
-  function, and for each instruction on each path it computed
-  `branchTarget.flatMap(nameOf) ?? calleeName(of:)`. For a non-call,
-  `calleeName` fell through to `parsedCalleeName`, which splits the
-  instruction's text. The name is read only for a `.call`, so it is now
-  computed only there. That was 13.6% of a libSwiftParser sample.
-  Instructions retired, against the change above:
-
-  | run | before | after | peak footprint |
-  |---|---|---|---|
-  | libSwiftParser `disasm --structured` | 191.7G | 176.5G (-7.9%) | 72 MB to 64 MB |
-  | libSwiftParser `xrefs --unreferenced` | 161.5G | 146.1G (-9.5%) | 64 MB to 64 MB |
-  | libSwiftSyntax `disasm --structured` | 586.9G | 557.6G (-5.0%) | 210 MB to 217 MB |
-  | libSwiftSyntax `xrefs --unreferenced` | 509.6G | 479.5G (-5.9%) | 201 MB to 238 MB |
-
-  Every output is byte-identical (`cmp`), and the fixture blast radius
-  changed 0 lines in all four views. OPEN: the same scan still builds
-  54 string keys per call (`pages["x\(n)"]` for n in 0...17), and it
-  decodes each function a third time. Folding it into pass 1 would remove
-  a whole-image decode and CFG build.
-
-  Over the four changes, libSwiftSyntax `--structured` went from 4,199.6G
-  to 557.6G instructions (-86.7%), its `xrefs` from 4,109.4G to 479.5G
-  (-88.3%), libSwiftParser `--structured` from 241.9G to 176.5G (-27.0%)
-  and its `xrefs` from 211.5G to 146.1G (-30.9%).
-## 2026-11-03: typed returns that render `return ?`
-
-Measured on the toolchain's `libSwiftCompilerPluginMessageHandling.dylib`
-(`swiftdc disasm <lib> --structured --probe <file>`, the
-`render.return-outcome` event's `status`), at 20dcc5d: of 1,425 return
-outcomes, 513 void, 440 no-signature, 248 `unknown`, 179
-`unsupported-layout-or-value`, 39 `recovered`, 5 `partial`. Causes, read
-from each event's function in a plain listing (a type-and-shape
-heuristic, so the bins are approximate):
-
-- **FIXED (4e3efb9) — a String return was never read from its two
-  words.** 37 of the 248 `unknown`. A literal, a String call's whole
-  result or a String field of self is now the return. After: unknown
-  248 -> 241, recovered 39 -> 46; over all four swift-syntax dylibs,
-  unknown 972 -> 933, recovered 100 -> 139. Fixture `stringreturns.swift`.
-- **FIXED (6f7d865) — two selects on one condition were never
-  paired into one String.** A String whose x0 and x1 are selects on the
-  same condition is now the ternary of the two Strings each side's words
-  spell, nested for a chain: `return (arg0 ? "yes" : "no")`. Selects on
-  two conditions (two flag setters, or `ne` and `eq` of one) stay `return
-  ?`. Fixtures `stringselects.swift`, `string_selects.s`. It moved no
-  swift-syntax return (unknown 933 before and after over the four
-  dylibs): see the next entry.
-- **FIXED (soundness) — equal conditions on one load were taken for one
-  condition across a store.** `AbstractValue` names what was read, not
-  when, so `self.flag != 0` compared on both sides of a store through an
-  argument that may be self spelled the same, and x0 and x1 paired into
-  one String though they can come from different arms. A condition that
-  reads memory now pairs only in a body with no store outside its frame.
-  The tracer already forgets a loaded value across a call, and a store
-  to the field itself replaced the value; both are tested. A condition on
-  an argument still pairs across a store. Fixtures `selectstore.swift`,
-  `select_store.s`.
-- **FIXED (soundness) — a specialization that rewrote self's parameter
-  took a parked x20 as its `self:`.** Changing self (`Dead`, `Exploded`,
-  `Owned To Guaranteed`) makes the specialization thin
-  (`shouldModifySelfArgument` in FunctionSignatureOpts.cpp), so x20 at a
-  call to it is whatever the caller left there.
-  `<Arg[2] = Dead> of static FixIt.MultiNodeChange.makeMissing(_:_:)` read
-  `makeMissing(self: sub_85a0(?), …)`. Self is the parameter after the
-  formals, so an `Arg[n]` at or past their count now declines the label.
-  Fixtures `tfself.swift`, `tf_self.s`.
-- **OPEN — a resilient value type's self is not seeded through x20.** The
-  30 String returns left in the plugin library are CodingKey
-  `stringValue` and enum `rawValue` getters of types in a
-  library-evolution module. Their self is passed indirectly, `ldrb w8,
-  [x20]` reads the case tag, and the tracer does not know x20 there, so
-  the compares, their `csel` chains and the branch conditions are all
-  unknown (`b.le` with no `cond:` note). The pairing above applies once
-  that tag is known. One-register scalars that join at a block (23,
-  `mov w0, #0` / `mov w0, #1` before a shared `ret`) are a separate
-  cause: a join of more than two predecessors, which the tracer's
-  diamond merge does not model.
-- **FIXED ("Forward a throwing call's outcome as return try", the commit
-  after 6f7d865) — a `ret` straight after a throwing call was an
-  unresolved exit.** `unsupported-layout-or-value` is all throwing
-  functions whose normal exit is not proven (179 of 179 in the plugin
-  library), and 119 of them `ret` straight after a throwing call, mostly
-  protocol witnesses forwarding a `decode`. The exit is the callee's
-  outcome, neither a return nor a throw: where x21 is proven zero into the
-  call and nothing after it writes x21, and the caller's result register
-  is built from the call's result (or a String's two words are it), it
-  now reads `return try callee(…)`, a new `Exit.forwarded` fact with its
-  own probe status, `forwarded`. Plugin library: 179 -> 134, 45
-  forwarded; four dylibs: 273 -> 219, 54 forwarded. Fixtures
-  `throwforward.swift`, `throw_forward.s`.
-- **OPEN — forwards the above does not read.** 74 such `ret`s remain in the
-  plugin library. Most return through x8 or as a multi-word value (`A`,
-  `Optional<Int>`, `UInt128`, existentials); a forward through the
-  caller's x8 buffer needs a fixture before it is claimed, and -O's
-  concrete witnesses copy through a temporary and test x21 instead. A
-  function that saves its entry x21 across an earlier call and restores
-  it (`mov x19, x21` ... `mov x21, x19`, `Reader.combined()`) also stays
-  unresolved: the zero proof does not follow the copy. 60 further exits
-  in the plugin library are unproven for other reasons.
-- **OPEN — generic results** (102): `A`, `Optional<A>`, `A.Index`,
-  returned through x8 with a layout only the caller's metadata fixes.
-- **OPEN — Optional results** (38): a payload's tag or extra inhabitant
-  is not modelled (SwiftLowering's `.direct`/`.unknown`).
-- **OPEN — nominal structs, enums and existentials** (37) with no
-  complete layout in the image, and **tuples** (11, such as
-  `(bucket: _HashTable.Bucket, found: Bool)` in x0 and x1), which no
-  direct path assembles.
-
-## 2026-11-03: a cost budget in the gate
-
-- **FIXED (tests): no load-independent speed guard** (`6dabd5f`). Three
-  superlinear costs reached dev through the gate: libSwiftSyntax
-  `--structured` at 4,200G instructions retired, its `xrefs` at 4,110G,
-  and GoodLinks `xrefs` at 15,000G (all fixed above). The outputs were
-  right, so the blast radius was silent, and wall time on this host
-  moves 8% or more between identical runs. `Tools/blast-radius.sh` now
-  records instructions retired and peak footprint for every render, and
-  `--perf` adds libSwiftSyntax and libSwiftParser `disasm --structured`
-  and `xrefs --unreferenced` under the memory guard. Over budget
-  (defaults: +10% instructions on an input from 2G, +3% in total, +50%
-  footprint on an input from 64 MB, +10% in total) it exits 3, and the
-  gate fails unless a commit under test carries `Perf-cost: <reason>`.
-  Measured: two runs of one binary agree to 0.11% in total instructions
-  and 2.3% on the worst large input; footprint 1.2% in total and 25% on
-  one input. `7c31327` against `8fabd02`, which reverts the four fixes,
-  is red: +636% and +733% on libSwiftSyntax, +175% in total. A release
-  build with `CallResultBankCache`'s lookup disabled is red: +12.9% and
-  +15.3% on libSwiftParser, +4.45% in total. The restored build is
-  green at +0.08%. Cost and method: [PARALLEL-WORKFLOW.md](PARALLEL-WORKFLOW.md),
-  "The cost budget".
-- **OPEN: GoodLinks is not in the budget.** The 15,000G `xrefs` regression
-  was on a private app, which the public gate cannot carry. The swift-syntax
-  dylibs hardly reach the mangled-name path it took (their counts moved
-  under 0.3% with its fix), so the `--perf` runs would likely have missed
-  it; whether a fixture render moves is not measured. A fixture that
-  reaches `__swift_instantiateConcreteTypeFromMangledName` through an
-  indirect reference at many call sites would close it.
-## 2026-11-03: `objc` accessor classification memory
-
-A user reported `objc` on a large iOS app past 4.5 GB and killed. The
-header path classifies every property accessor by its body, and
-`classifyAccessors` decoded all of them into one instruction list, then
-segmented, summarized and analysed the lot through `assemble`, holding
-every decoded and analysed body until the last was classified. The 4 KB
-per-accessor prefix (`10712d8`) bounds one body, not the sum.
-
-- **FIXED (61430e5, memory): `objc` held every accessor body at once.** Measured
-  with `gen-manyaccessors.sh` (N classes of 14 accessors, 11 synthesized
-  and 3 custom; `build.sh` builds 100 and 800 classes), release
-  `/usr/bin/time -l swiftdc objc <image>` peak footprint at 9a2446a:
-
-  | image | property lines | footprint | wall |
-  |---|---|---|---|
-  | 100 classes (1,400 accessors) | 800 | 20 MB | 0.7 s |
-  | 400 classes (5,600) | 3,200 | 56 MB | 3.9 s |
-  | 1,600 classes (22,400) | 12,800 | 191 MB | 17 to 29 s |
-  | GoodLinks (`--arch arm64`) | 946 | 91 MB | 9.8 s |
-  | AppKit (`--image AppKit`) | 14,841 | 472 MB | 24.5 s |
-  | UIKitCore (`--image UIKitCore`) | 37,540 | 843 MB | 51.5 s |
-
-  From 400 to 1,600 classes the footprint grows by 8.0 KB per accessor,
-  with each accessor 2 to 10 instructions long. An app whose accessors
-  run to the 4 KB prefix (no `LC_FUNCTION_STARTS`, or long gaps between
-  IMPs) holds up to 1,024 analysed instructions each.
-
-  `analyzeEachFunction` now builds the same cross-function state and
-  decodes each span once per pass, classifying and releasing one accessor
-  at a time. What stays per accessor is its verdict, its name-level stub
-  until the name index is built, and its register summary. After, same
-  command, every output `cmp`-identical to the baseline's:
-
-  | image | before | after | wall before, after |
-  |---|---|---|---|
-  | Electron Framework (Discord, `--arch arm64`, no function starts) | 2,157 MB | 295 MB | 25.1 s, 15.1 s |
-  | UIKitCore | 843 to 857 MB | 411 to 440 MB | 49 to 61 s, 52 to 56 s |
-  | AppKit | 472 MB | 280 MB | 24.5 s, 27.6 s |
-  | Keynote (`--arch arm64`) | 381 MB | 269 MB | 34.9 s, 33.4 s |
-  | 1,600 classes | 188 to 191 MB | 66 to 70 MB | 17 to 29 s, 17 to 25 s |
-  | 400 classes | 56 MB | 22 to 25 MB | 3.9 s, 2.5 s |
-  | 100 classes | 20 MB | 12 MB | 0.7 s, 0.6 s |
-  | GoodLinks (median of 3) | 87 MB | 83 MB | 8.5 s, 8.5 s |
-
-  GoodLinks does not move: its 946 properties are not what sets its peak.
-  The 4.5 GB app itself was not available to re-measure; Electron
-  Framework is the nearest shape on this host. The growth left is 2.7 KB
-  per accessor from 400 to 1,600 classes, against 8.0 KB. `objc` over all
-  255 fixture Mach-Os: identical.
-- **FIXED (0a0e3b8, usability): `objc --metadata-only` exports headers without
-  reading code.** The default path decides each accessor from its body.
-  With no body the status is unknown, and the existing unknown case
-  (`blocks(_:)`, off arm64, a declined accessor) drops the line as
-  class-dump does, which reads as "synthesized". This mode keeps every
-  accessor instead, typed from its property, which the metadata proves,
-  and ends the line `// unclassified accessor: body not analyzed`. It
-  refuses `--methods`, `--pseudo`, `--structured` and `--function`.
-  Release peak footprint and wall, default then `--metadata-only`:
-
-  | image | default | `--metadata-only` |
-  |---|---|---|
-  | UIKitCore | 431 to 446 MB, 56 to 61 s | 109 MB, 28.0 s |
-  | AppKit | 259 to 280 MB, 26 to 28 s | 48 MB, 11.4 s |
-  | Keynote | 269 to 271 MB, 24 to 33 s | 113 MB, 9.2 s |
-  | Electron Framework (Discord) | 269 to 295 MB, 14 to 15 s | 156 MB, 0.5 s |
-  | GoodLinks | 83 MB, 8.5 s | 42 MB, 1.4 s |
-  | 1,600 classes | 66 to 70 MB, 17 to 25 s | 33 MB, 3.5 s |
-
-  Its growth is 1.2 KB per accessor from 400 to 1,600 classes, so of the
-  default path's 2.7 KB, 1.2 KB is metadata and header text and 1.5 KB is
-  the classification's cross-function state.
-- **FIXED (soundness): the default header dropped an accessor with no
-  verdict, with no mark.** An accessor the classifier declines (its entry
-  block runs off the 4 KB prefix), or one with no code to decode (an IMP
-  outside `__TEXT,__text`), read as synthesized and lost its line. Each
-  now stays, typed from its property, ending `// unclassified accessor:
-  body runs past the 4 KB decode limit` or `// unclassified accessor: no
-  body decoded`: two causes, two notes. Output lines changed: the two of
-  the new fixture `accessordeclined.m`. No other fixture and none of
-  GoodLinks, Keynote, Electron Framework, AppKit or UIKitCore has such an
-  accessor, so nothing else moves. Off arm64 the classifier does not run
-  and accessors still drop, as class-dump's do.
-- **OPEN (speed): `ObjCMetadataIndex.outgoingSignature` dominates
-  `objc` on many classes.** `sample` of the 1,600-class run puts 3,066
-  of 4,244 main-thread samples in it (2,081 in
-  `ObjCArgumentABI.parameterTypes`), under `enrichCallArguments`: every
-  `-description` send looks up a signature across every class that
-  implements the selector. Wall time grows faster than the accessor
-  count (5,600 to 22,400 accessors: 3.9 s to 17 to 29 s).
+- **FIXED (dc43daf, speed) (audited 2026-11-10): `objc` works out each
+  selector's declarations once (SendFacts).** At 1,600 classes, 280.3G to
+  87.2G instructions; 8× the classes costs 7.4× the instructions (was 13.8×).
 - **FIXED (`19e5be5`, rechecked 2026-11-08) (soundness): a branchless custom setter reads as
   synthesized.** A store through self must now store an unchanged
   argument; `accessorshapes.m`'s `setClamped:` is this shape and keeps its
@@ -9609,14 +10528,21 @@ bitcode; Electron's `PROTECTED_MEMORY`).
   its 51 `SwiftObject` binds sit in `__DATA_DIRTY`. Now every entry point
   exits 1 with the layout as the cause. NanoTimeKit and the bitcode
   `libswiftCore.dylib` still read.
-- **OPEN — a declined layout could still be read.** The decline is whole
-  image, so `disasm` loses even code no fixup touches (libsystem_pthread,
-  whose four `__DATA_DIRTY` fixups are the only slid ones). Lifting it
-  needs the two dependency fixes: MachOKit reading each chain's pages at its segment's file
-  offset and reporting slots by file offset, and MachOSwiftSection
-  advancing a file offset through VM (`fileOffset → vmaddr + delta →
-  fileOffset`). swiftdc's own `address(forOffset:)` uses (20 sites) need
-  the same mapping before the decline can go.
+- **FIXED (completeness, 2026-11-09) — a declined layout is now read.**
+  The four Mach-O dependencies are pinned to forks that resolve through
+  segments (d27d804): MachOKit reads each chain at its segment's file
+  offset, MachOKitExtensions maps offsets with `MachOSegmentMap`,
+  MachOSwiftSection advances a relative pointer through memory and
+  MachOObjCSection does the same for relative method lists. swiftdc's own
+  readers resolve through one helper (8c1d9de). The preflight now declines
+  only what no reader can place: chain starts that disagree with the
+  segment's address, or a slid segment holding fixups or metadata whose file
+  bytes overlap another segment's. All nine views of the slid fixtures
+  render line for line as their flat twins (`slidsegments_flat`,
+  `slidsegments_c_flat`, and stripped copies), and every fixup `dyld_info
+  -fixups` reports is found at its slot. GameServices: all 17 classes match
+  `dyld_info -objc`. A sweep of 2,600 real arm64 images: 2 newly read, 0
+  newly refused. Ported from the agent-ae29ddf26679fcf00 worktree.
 - **FIXED (soundness, 8dd56e4) — the preflight's own record checks added a VM
   displacement to a file offset.** `__swift5_fieldmd`, `__swift5_assocty`,
   `__swift5_builtin`, `__swift5_mpenum`, the flat relative tables and a
@@ -9634,16 +10560,11 @@ bitcode; Electron's `PROTECTED_MEMORY`).
   arm64 images (a third of /Applications, /usr/lib/swift, the command line
   tools and Homebrew, by `swift-version`): 0 newly refused, 3 declined by
   layout, 3 malformed under both binaries, no signals.
-- **OPEN — readers that take their offsets from the dependency.**
-  `VTableIndex`, `SelfTypeIndex` and `MetadataSymbolizer` (`fieldOffset +
-  relative`), `MangledNamePair`, `UnrecordedTypes.types`,
-  `MethodImplementation.code` and the 20 `address(forOffset:)` sites still
-  assume one slide. They are not converted: a slid image that could reach
-  them is declined above, and every one starts from a descriptor the
-  dependency parsed, so no fixture can show a change until the dependency
-  resolves it through VM. They move to `relativeTarget` with the decline's
-  removal. MachOObjCSection's relative method lists are a third dependency
-  site: `resolvedOffset(base: fileOffset, relative:)` in `ObjCMethodList`.
+- **FIXED (8c1d9de) — readers that took their offsets from the dependency.**
+  `VTableIndex`, `SelfTypeIndex`, `MetadataSymbolizer`, `MangledNamePair`,
+  `UnrecordedTypes`, `MethodImplementation` and the `address(forOffset:)`
+  sites resolve through `MachOFile.relativeAddress`/`relativeOffset`, and
+  ObjC method lists through the MachOObjCSection fork.
 - **FIXED (speed): `ObjCMetadataIndex.outgoingSignature` dominated
   `objc` on many classes.** `sample` of the 1,600-class run put 3,066 of
   4,244 main-thread samples in it: `-owner`, implemented by 1,600 classes
@@ -9753,8 +10674,9 @@ chained headers). After them all 31 crashers exit 1 with a stated cause, and
   Still open: a bitfield or `char` field inside an ivar's struct, and a
   `c` in a method signature, which the printer also writes as `BOOL`;
   their text does not say which encoding they came from.
-- **OPEN (usability): `-f "-[Class sel]"` reads as an option.** Argument
-  parsing rejects the leading `-`. `-f "[Class sel]"` works.
+- **OPEN (usability) (audited 2026-11-10): `-f "-[Class sel]"` reads as an
+  option.** ArgumentParser rejects a value with a leading `-` (`Missing value
+  for '-f <function>'`). `-f="-[Class sel]"` and `-f "[Class sel]"` both work.
 - **DEAD END: a preflight rule on a segment address past 2^63.** It took
   `dump` and `swift-version` away from every such image, as
   WideSegmentAddressTests showed. Skipping `descriptorSymbols` alone did not
@@ -9867,15 +10789,18 @@ this Mac.
   r0)`. The stale x0 also stops binding a call nothing reads (`let r0 =
   sinkL(6)`). Blast radius against the previous commit: only the two
   `objcvreturns.m` dylibs, 20 structured lines; swift-syntax byte-identical.
-- **OPEN — a tail call to a C function reads as a statement, not a return.**
-  `-(double)tailD { sinkL(7); return mkD(); }` ends `b mkD` and renders
-  `mkD()` with no `return`, as do `tailL` and a CGRect-returning `tailR`. The
-  call is shown, so nothing is lost but the return. Cause not established.
+- **OPEN (audited 2026-11-10): an Objective-C tail call to a C function reads
+  as a statement, not a return.** `-[VRets tailD]` (`sinkL(7); return mkD();`,
+  `b mkD`) renders `mkD()` with no `return`, as does `tailL` (objcvreturns.m,
+  -O2). Only a float-aggregate result to a C struct-returning prototype is
+  forwarded. The call is shown; only the return is lost.
 - **OPEN — the `.returnValue` probe reports x0 for every Objective-C method.**
   A method returning in v0 is recorded as `register: x0` with x0's value
   (Disassembler.swift, the `isObjCNonVoid` arm of the probe). The render is
   right; the claim an outside oracle would check is not. A fix needs its own
-  test.
+  test. Location (audited 2026-11-10): Disassembler.swift, the `isObjCNonVoid`
+  arm of the `.returnValue` record; reproduced with `-f "VRets a4"`, which
+  returns in v0.
 
 ## 2026-11-04: corrections to landed commit messages
 
@@ -9900,8 +10825,10 @@ Commit messages on dev stay as they are; these are the true records.
   it lacks the `float-argument` decline, so a prefix that sets v0-v7 before a
   call can render a wrong argument (4 corpus sites), and its author declared
   its mutation proofs void because they did not check for `Build complete`.
-- **OPEN (memory): `4266f7c` raised whole-image footprint.** `xrefs
-  libSwiftSyntax --unreferenced`: 200 to 231 MB before, 285 MB after.
+- **FIXED (memory) (audited 2026-11-10): `4266f7c`'s footprint rise is gone.**
+  `xrefs libSwiftSyntax --unreferenced` peaks at 204 MB at 9369b0e
+  (`/usr/bin/time -l`), against 285 MB after 4266f7c; the 2026-11-08 memory
+  commits recovered it (not bisected).
 - **OPEN (speed): `isGlobalVariableAddressor` allocates an array per unknown
   callee.** A single pass over `callee.utf8` should be cheaper; not measured.
 - **FIXED (`3cb9a7e`, soundness): a frame address passed in a float register.**
@@ -10080,8 +11007,42 @@ Commit messages on dev stay as they are; these are the true records.
   -1.0 for 0x3ff0000000000000, 0x4000000000000000 and
   0xbff0000000000000. This preexisting ambiguity between raw words and
   semantic FP arguments is not closed by the selected-constant repair.
+
+- **FIXED (2026-11-15, soundness): symbolic vector words retain their bit
+  interpretation.**
+  This local slice and its measurements below began at `cc525d7`, before
+  the November 8 DUP repair above; that upstream repair is retained.
+  Packed raw words now project through `floatFromBits`
+  when read as scalar FP values, including predecessor-specific exits.
+  Q spills record raw-word provenance; Q reloads convert scalar FP spills
+  to their bit patterns before packing, and scalar facts stored through Q
+  likewise become raw low words. `vectorbits.s` independently executes the
+  direct DUP return, Q-to-D spill, scalar-D-to-Q-to-integer copy, direct Q
+  spill, and two unchanged-value round trips. The focused regression checks
+  all five analysis APIs. Broader typed memory and register-width provenance
+  remain separate work; this is not a complete bit-provenance model.
   The separate d8-d15 callee-summary issue is fixed in the vector-summary
-  change below; this symbolic-bit-provenance issue remains open.
+  change below.
+
+  Verification: 48 native bit-exact controls cover ordinary values, signed
+  zero, infinity and a NaN payload. All five analysis APIs and the separate
+  predecessor-exit path pass. Six independently compiled mutations fail:
+  scalar projection (10 issues), Q reload normalization (20), Q store bank
+  (10), scalar Q store normalization (10), predecessor projection (2), and
+  selected-bit normalization (4). Restoration rebuilds successfully, and
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build` passes **1,447 tests
+  in 39 suites**, after `swift build --build-tests -j 2`.
+
+  Matched release builds against `cc525d7` pass the original
+  `Tools/blast-radius.sh <baseline> <candidate> <out> --real --perf`:
+  **352 inputs in four views plus four SDK workload pairs**, all 1,412 cost
+  rows positive. Instructions rise 0.16% (5,122.0G to 5,129.9G); summed
+  per-render physical peaks rise 0.24% (17,799 MB to 17,841 MB), within all
+  default budgets. Only `libVectorBits.dylib` changes: four corrected return
+  expressions, eight changed lines each in structured, pseudo and listing,
+  and sixteen JSON lines (annotation and statement). Every other JSON field,
+  instruction and function is unchanged. All four large SDK outputs match.
+  Publication remains through the original integration gate.
 
 ## 2026-11-05: reuse Capstone instruction storage
 
@@ -10162,14 +11123,10 @@ Commit messages on dev stay as they are; these are the true records.
   Their compact core records are not comparable to retained Swift IR.
   Capstone DIET is incompatible without replacement metadata: the pinned
   mapping source omits operand access and update-flags inference in that mode.
-- **PROFILED / OPEN:** separate five-second cooperative sample windows find
-  signature splitting at 28.6% in a late Reconstruction window, Capstone at
-  31.2% early, and callee summaries at 39.9% mid-run. These are phase samples,
-  not additive whole-run CPU shares. Investigate repeated signature parsing
-  and callee-summary scans next, with owner/lifetime evidence before compacting
-  retained IR. Structurer workers reserve 256 MiB stacks; summed virtual stack
-  reservations are not resident RAM. Reusing workers would need to preserve
-  probe context, reentrancy and stack-depth safety.
+- **PROFILED / OPEN (audited 2026-11-10):** the phase samples (signature
+  splitting 28.6%, Capstone 31.2%, callee summaries 39.9%) predate the
+  2026-11-08 summary-memory commits and have not been re-taken; no speed
+  change has targeted signature parsing or summary scans since.
 
 - **REGENERATED / PROFILED baseline (`e7bb401`, docs `0d4df7b`):** force-rebuilt
   all 317 authored Mach-O products (401 generated products in total) and four
@@ -10750,11 +11707,10 @@ Commit messages on dev stay as they are; these are the true records.
   `swift build -c release --scratch-path .build-release -j 2`;
   `Tools/blast-radius.sh <39edfbb-release> <new-release> <out> --real --perf`.
 
-- **OPEN — the complete frame-memory IR model.** Boundary/provenance
-  discovery and result/context spaces remain with their analyses. Shared exact
-  footprints, must facts and durable MAY reach follow below; these extractions
-  do not yet complete the model. Preserve Onone spill recovery, caller ownership,
-  disjoint bounds and escape closure as those pieces move.
+- **SUPERSEDED (audited 2026-11-10):** an intermediate status of the
+  frame-memory model; its follow-up pieces landed (086bd05, d2f05ad, 4cafe27,
+  464399e, 81c31d0). The current gap is the bounded-producer entry at the end
+  of the 2026-11-06 work.
 
 ## 2026-11-05: share exact frame-store footprints
 
@@ -10816,11 +11772,10 @@ Commit messages on dev stay as they are; these are the true records.
   `swift build -c release --scratch-path .build-release -j 2`;
   `Tools/blast-radius.sh <6b6ab7e-release> <new-release> <out> --real --perf`.
 
-- **OPEN — complete frame layout, provenance and spaces.** Shared must-fact
-  storage and durable escape ownership follow below; layout discovery, register
-  MAY aliases and result/context models remain separate. A deliberate change
-  to legacy endpoint failure behavior still needs an accepted-input reduction
-  and its own proof.
+- **SUPERSEDED (audited 2026-11-10):** an intermediate status of the
+  frame-memory model; its follow-up pieces landed (086bd05, d2f05ad, 4cafe27,
+  464399e, 81c31d0). The current gap is the bounded-producer entry at the end
+  of the 2026-11-06 work.
 
 ## 2026-11-05: share frame-fact ownership and transfers
 
@@ -10880,12 +11835,10 @@ Commit messages on dev stay as they are; these are the true records.
   `swift build -c release --scratch-path .build-release -j 2`;
   `Tools/blast-radius.sh <9531e4b-release> <new-release> <out> --real --perf`.
 
-- **OPEN — the complete frame-memory IR model.** Fact storage and must
-  transfers are shared; durable escape ownership follows below. Layout/boundary
-  discovery, register MAY aliases, ownership policies and result/context spaces
-  remain with their analyses.
-  SelfState's MAY slot set remains separate from the shared must intersection.
-  No accepted-input endpoint-failure repair or unified value identity is claimed.
+- **SUPERSEDED (audited 2026-11-10):** an intermediate status of the
+  frame-memory model; its follow-up pieces landed (086bd05, d2f05ad, 4cafe27,
+  464399e, 81c31d0). The current gap is the bounded-producer entry at the end
+  of the 2026-11-06 work.
 
 ## 2026-11-05: share durable frame escape state
 
@@ -10948,12 +11901,10 @@ Commit messages on dev stay as they are; these are the true records.
   `swift build -c release --scratch-path .build-release -j 2`;
   `Tools/blast-radius.sh <89ea2a0-release> <new-release> <out> --real --perf`.
 
-- **OPEN — complete frame layout, provenance and spaces.** Fact storage,
-  must transfers and durable MAY reach now share owners and operations.
-  Register-fact ownership follows below. Layout/evidence discovery, ownership
-  policies, SelfState's MAY slot set and result/context spaces remain with their
-  analyses. Unified value identity and an accepted-input endpoint repair are
-  not claimed.
+- **SUPERSEDED (audited 2026-11-10):** an intermediate status of the
+  frame-memory model; its follow-up pieces landed (086bd05, d2f05ad, 4cafe27,
+  464399e, 81c31d0). The current gap is the bounded-producer entry at the end
+  of the 2026-11-06 work.
 
 - **OPEN — temporary effect construction costs.** Earlier summary-window CPU
   samples identify
@@ -11048,11 +11999,10 @@ Commit messages on dev stay as they are; these are the true records.
   `swift build -c release --scratch-path .build-release -j 2`;
   `Tools/blast-radius.sh <04a86c1-release> <new-release> <out> --real --perf`.
 
-- **OPEN — the complete shared frame-memory model.** Persisted frame facts,
-  durable reach and register facts now have common owners and operations.
-  Full structured layout/evidence discovery, space aliasing, frontend ownership
-  and call policies, SelfState's MAY self-slot representation and unified value
-  identity remain open. No new origin tag proves separate spaces disjoint.
+- **SUPERSEDED (audited 2026-11-10):** an intermediate status of the
+  frame-memory model; its follow-up pieces landed (086bd05, d2f05ad, 4cafe27,
+  464399e, 81c31d0). The current gap is the bounded-producer entry at the end
+  of the 2026-11-06 work.
 
 - **OPEN — register-owner storage and query costs.** Sparse columns avoid
   uniform metadata padding, but dictionary headers, COW lifetimes and query/
@@ -11212,11 +12162,10 @@ Commit messages on dev stay as they are; these are the true records.
   `swiftdc disasm Fixtures/Sample/libReconstruction.dylib --structured`;
   `Tools/blast-radius.sh <aa46bb7-release> <new-release> <out> --real --perf`.
 
-- **OPEN — full shared memory semantics and value identity.** MAY self-slot
-  storage now shares the frame owner. Complete structured layout discovery,
-  object/space provenance, ownership proofs, callee memory footprints and
-  value identity remain open; existing save, alias and arithmetic policies
-  have been preserved rather than newly proven.
+- **SUPERSEDED (audited 2026-11-10):** an intermediate status of the
+  frame-memory model; its follow-up pieces landed (086bd05, d2f05ad, 4cafe27,
+  464399e, 81c31d0). The current gap is the bounded-producer entry at the end
+  of the 2026-11-06 work.
 
 ## 2026-11-06: model body-proven callee memory effects in the IR
 
@@ -11299,11 +12248,10 @@ Commit messages on dev stay as they are; these are the true records.
   still requires the original `Tools/integration-gate.sh --push` to rebuild and
   reproduce the reviewed outputs and default positive counts.
 
-- **OPEN — full shared memory semantics and value identity.** The new producer
-  proves only supported complete literal-store bodies and frame-resolved
-  inputs. General callee reads, captures and call composition, structured object
-  extents, space provenance, ownership proofs and unified value identity remain
-  open. Independent address observations remain insufficient ownership evidence.
+- **SUPERSEDED (audited 2026-11-10):** an intermediate status of the
+  frame-memory model; its follow-up pieces landed (086bd05, d2f05ad, 4cafe27,
+  464399e, 81c31d0). The current gap is the bounded-producer entry at the end
+  of the 2026-11-06 work.
 
 - **FIXED (2026-11-06): preserve declared operator operands.** An authored
   Swift/C reduction verifies equality, prefix and postfix calls at `-Onone`,
@@ -11352,7 +12300,7 @@ Commit messages on dev stay as they are; these are the true records.
   functions. Both SDK xrefs outputs match. Publication uses the original
   `Tools/integration-gate.sh --push`.
 
-- **IN PROGRESS (2026-11-07): preserve uniqueness query evaluations.**
+- **FIXED (2026-11-07, `cc525d7`): preserve uniqueness query evaluations.**
   SwiftParser's array growth paths reused an earlier uniqueness result after
   calls and stores, but the output repeated the query or moved it to a later
   consumer. The existing owner of call results now binds a reused or delayed
@@ -11388,6 +12336,358 @@ Commit messages on dev stay as they are; these are the true records.
   producer, and both SDK cross-reference outputs match. Final publication
   still requires the original `Tools/integration-gate.sh --push`.
 
+## 2026-11-15: preserve prefix grouping before float bit-pattern reads
+
+- **FIXED (soundness): `(-x).bitPattern` rendered as `-x.bitPattern`.**
+  `fneg d0, d0; fmov x0, d0` negates the Double before reading its bits;
+  the old expression applied negation to the integer bits instead. For
+  1.0, the native result is `0xbff0000000000000`, while wrapping integer
+  negation of its bits gives `0xc010000000000000`. Negative literals and
+  negative zero had the same precedence error. The renderer now groups
+  prefix receivers before member access, including prefixes exposed by
+  inlined values. Primary and already-grouped receivers keep their spelling.
+
+  The authored `floatpostfix.s` fixture covers Double and Float, a Q spill,
+  -1.0, -0.0, a plain argument and a compound expression. All five analysis
+  APIs produce the expected exact return lines in pseudo and structured
+  output. Its 42 native checks include signed zero, subnormals, infinity and
+  NaN payloads supplied through arguments. Disabling prefix detection
+  compiles and fails 50 rendering assertions while the native oracle stays
+  green. Restoring the source rebuilds to the identical CLI hash and both
+  focused tests pass. A fresh `swift build --build-tests -j 2` followed by
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build` passes **1,449 tests
+  in 39 suites**.
+
+  Matched release comparison against `d01157d`, using the original
+  `Tools/blast-radius.sh <baseline> <candidate> <out> --real --perf`:
+  **353 inputs in four views plus four SDK workload pairs**, all 1,416 cost
+  rows positive. Instructions are 5,131.4G to 5,128.9G (-0.05%); summed
+  per-render physical peaks are 18,020 MB to 17,791 MB (-1.28%). All default
+  budgets pass. Only `libFloatPostfix.dylib` changes: five corrected returns,
+  ten changed lines each in structured, pseudo and listing, and twenty JSON
+  annotation/statement lines. All other JSON fields, instructions and
+  functions match. All four large SDK outputs match. Publication remains
+  through the original integration gate.
+
+- **FIXED (2026-11-15, soundness): known floating constants lost NaN encodings
+  when formatted.** `renderValue`'s `.floatConstant` case and the separate
+  `renderTypedConstant` path converted bits through decimal strings. An
+  authored `0x7ff8000000000001`, moved into d0, negated and read as an
+  integer, executes as `0xfff8000000000001` but rendered `(-nan).bitPattern`.
+  The payload was absent; native canonical negative `Double.nan` has bits
+  `0xfff8000000000000`.
+
+  Both owners now use `renderFloatingConstant`: classify normalized IEEE
+  bits without FP conversion, and spell every NaN as a width-specific
+  `Double`, `Float` or `Float16` bit-pattern constructor. Sign, signaling
+  state and payload survive; finite values and infinity keep their spelling.
+  Width normalization happens before formatting, and unsupported widths
+  decline. The half path never widens a NaN to Float before printing it.
+
+  `build-nan-literals.swift` checks 27 emitted LLVM signatures before
+  assembling the authored fixture, including half results and scalar FP
+  arguments. Thirty-five independent native observations check quiet and
+  signaling NaNs, both signs, two payloads, negation and finite controls at
+  all three precisions, plus single/double call arguments. Exact-return tests
+  cover all five analysis APIs. Unit boundaries include canonical and
+  maximal-payload NaNs, dirty upper bits, type aliases, zero, infinity and
+  greatest finite values.
+  A local compiler/native check also preserves all four tested encodings
+  through Double-to-CGFloat coercion.
+
+  Eight compiled mutations fail independently while the native oracle stays
+  green: NaN admission (290 issues), exponent (56), fraction (3), single
+  normalization (18), half normalization (9), expression owner (30), typed
+  owner (233) and unsupported widths (1). Restoring and rebuilding passes
+  all focused tests and reproduces the original CLI hash. After a fresh
+  `swift build --build-tests -j 2`, the fixture-enforced suite passes
+  **1,452 tests in 39 suites**.
+
+  Matched release comparison against `a160817`, using the original
+  `Tools/blast-radius.sh <baseline> <candidate> <out> --real --perf`:
+  **354 inputs in four views plus four SDK workload pairs**, all 1,420 cost
+  rows positive. Instructions are 5,132.6G to 5,131.6G (-0.02%); summed
+  per-render physical peaks are 17,866 MB to 17,884 MB (+0.10%). All default
+  budgets pass. Only `libNaNLiterals.dylib` changes: twenty returns and two
+  call argument lists. Structured/pseudo each change forty lines, listing
+  forty-four, JSON eighty-eight. JSON changes only return annotations and
+  statements plus the two calls' annotations and arguments; all other
+  fields, instructions and functions match. All four large SDK outputs
+  match with zero exits. Publication remains through the original gate.
+
+- **FIXED (soundness): preserve scalar literal-pool widths and FP domains.**
+  Before this fix, `ValueTracer.floatOperand` marked immediates as FP bits
+  but passed `.loaded` through; after literal resolution, a unary expression could see an
+  untyped integer. An authored `ldr d0` from `__TEXT,__const`, followed by
+  `fneg d0, d0; fmov x0, d0`, renders `return -0x4004000000000000` for
+  2.5, while native execution returns `0xc004000000000000`. The NaN variant
+  rendered `return -0x7ff8000000000001`, while native execution returns
+  `0xfff8000000000001`. The pre-fix release reproduces both data-flow
+  defects, before the formatter receives a proven floating constant.
+  The corrected expression is
+  `(-2.5).bitPattern`; the NaN uses its exact Double bit-pattern constructor
+  before negation and the bit-pattern read.
+
+  Absolute half/single loads now retain their physical byte count in a raw
+  `loadedBits` value. They do not become pointer slots or semantic floats.
+  FP operations attach their interpretation before enrichment resolves the
+  literal. This distinction matters for `ldr s0; ret` returning Double:
+  native D0 contains the zero-extended raw word, not a widened Float.
+  Inside expressions, narrow constants carry explicit Float/Float16
+  constructors so widening preserves their original rounding:
+  `Double(Float(0.1))`, rather than `Double(0.1)`.
+
+  The scalar reader accepts only 2/4/8 backed bytes in read-only TEXT
+  literal sections, within both section and segment bounds. It rejects
+  section relocations, zero-fill, offset overflow, unrepresentable offsets,
+  and any byte overlapping a known or unresolved chained pointer. Cache
+  reads additionally require a containing mapping without slide info.
+  Narrow reads at actual section ends no longer borrow adjacent bytes.
+
+  Two authored public fixtures check 25 emitted LLVM ABI signatures before
+  assembly. Twenty-eight native observations cover all three precisions,
+  finite and NaN negation, addition, conversions, raw GPR loads, alternate
+  FP register views, section ends and changing writable globals. Exact
+  pseudo/structured returns are checked through all five analysis APIs;
+  separate metadata-only copies exercise reader rejection without dyld
+  loading or executing malformed images.
+
+  Seventeen compiled mutations independently remove wide/narrow FP tagging
+  (41/81 issues), load/read geometry (100/100), explicit precision (60),
+  literal-section admission (2), section bounds (8), relocation/zero-fill/
+  write-protection/file-backing checks (one each), fixup admission (4),
+  interior overlap (1), unresolved fixups (1), and snapshot width (1).
+  Removing unsigned-offset overflow or signed-offset representability
+  separately traps the malformed-input test runner (signal 5). The native
+  oracle passes under every mutation. Restoring and rebuilding reproduces
+  the original CLI hash and passes the focused tests.
+
+  The existing selected-lane and half-immediate assertions now require
+  explicit narrow constructors inside expressions. After a fresh
+  `swift build --build-tests -j 2`, the fixture-enforced suite passes
+  **1,457 tests in 39 suites**. The matched release candidate also fixes
+  both original standalone finite/NaN reductions.
+
+  Structured/pseudo output changes fourteen fixture images. Eighteen
+  returns in the two new pool fixtures gain correct FP interpretation,
+  byte width or section-end recovery. Sixteen existing expressions in
+  Conversions, FPImmediates, FloatReinterpret, ObjCOutgoing, ObjCVReturns
+  and SelectedVectorLanes gain explicit Float/Float16 precision. Four
+  coroutine allocation arguments across the optimized and stripped
+  CoroAccessors images simplify masked adjacent-field bytes to `0`:
+  independent objdump and raw reads at 0xfa4/0xfb4 confirm `ldr w1` reads
+  four zero bytes, followed by `0xc163`/`0x8f32` in the next field.
+  Structured and pseudo have identical 76 changed lines.
+  Listing changes 156 lines in 23 images: the same 38 annotations plus
+  forty async allocation arguments in nine more images. Each additional
+  argument replaces an over-read 64-bit value under `& 0xffffffff` with its
+  exact low word (16/32/48); independent arithmetic checks confirm every
+  old/new masked value agrees. All instruction text remains identical.
+  JSON changes 322 lines in the same 23 images: 78 annotations, 38
+  statements and 45 argument strings (44 low-word reads, one explicit
+  Float constructor). All other fields, functions and instructions match.
+
+  Matched release comparison against `a53d2a5` with the original
+  `Tools/blast-radius.sh <baseline> <candidate> <out> --real --perf` covers
+  **356 inputs in four views plus four SDK workload pairs**, with all
+  1,428 cost rows positive. Instructions are 5,133.7G to 5,132.2G
+  (-0.03%); summed per-render physical peaks are 17,864 MB to 17,908 MB
+  (+0.25%). All default budgets pass. All four large SDK outputs match
+  with zero exits. Publication remains through the original gate.
+
+- **FIXED (soundness): preserve all four half/GPR bit moves.**
+  An authored Swift-ABI UInt32 function containing `fmov h0, #1.0;
+  fneg h0, h0; fmov w0, h0; ret` returns `0xbc00` natively, the negative
+  half's raw encoding zero-extended to W0. The `d0629be` release rendered
+  `(-Float16(1.0) & 0xffffffff)`, omitting the bit-pattern read. It also
+  retained dirty upper bits in half/GPR round trips: native `rawX` returns
+  `0x7e01` where that release rendered `0x12340000abcd7e01`.
+  The compiler's emitted LLVM signature independently confirms an i32
+  result without hidden arguments. Literal-load geometry alone did not
+  close this separate FMOV width mismatch.
+
+  H-to-W/X moves now extract the half's bit pattern and zero-extend only
+  sixteen bits, including raw dirty words viewed through H. W/X-to-H moves
+  truncate before creating a half value. Half arguments and call results
+  retain their own precision during bit-pattern rendering, and symbolic
+  half constructors use an explicit truncating UInt16 conversion.
+  A raw half move subsequently read through S/D reinterprets its
+  zero-extended word, rather than numerically widening Float16. The raw
+  word remains bounded even when the abstract constructor's operand was
+  not normalized by an instruction. These four forms also appear in the
+  [Arm instruction reference](https://documentation-service.arm.com/static/6245c734b059dc5ff9a8bdab),
+  D4.31; native execution independently checks their effects here.
+
+  The authored fixture checks 27 emitted LLVM signatures before assembly.
+  Its 127 native observations cover both register widths, signed zero,
+  quiet/signaling NaN payloads, dirty upper bits, addition, argument/call
+  results, round trips and both wider FP views. Exact pseudo/structured
+  returns are checked through all five analysis APIs. A unit boundary
+  additionally checks wider views of unnormalized and selected abstract
+  operands, preserving their raw interpretation and declining at the
+  expression-depth cap.
+
+  Twelve distinct compiled mutations independently remove outward move
+  handling (140 issues), outward width (20), inward handling (140), inward
+  width (80), half constructor type/width (40/40), argument/call precision
+  (40/20), wider interpretation (48), wider raw-word normalization (4),
+  selected-word interpretation (2), and the depth cap (2). The 127-observation
+  native oracle stays green under each. Restoring and rebuilding passes
+  all focused tests and reproduces the original CLI hash.
+
+  A fresh fixture-enforced suite passes **1,460 tests in 39 suites**.
+  The frozen release also fixes the original standalone half-bit-read
+  reduction. A subsequent same-line documentation correction rebuilds to
+  identical debug/release binaries and passes the focused tests again.
+  Matched CLI checks of dump, layout, interface, objc and xrefs
+  (`--unreferenced`) have zero exits and identical output. Analyze changes
+  only the new fixture's 25 return annotations.
+
+  Structured, pseudo and listing each change only `libHalfMoves.dylib`,
+  with the same 25 returns (50 changed lines per view): eight FP-to-GPR
+  bit-pattern reads, four half construction/arithmetic expressions, two
+  integer round trips, four dirty raw constants, one half round trip, and
+  six wider raw FP views. The producer and X-register half round trip
+  remain unchanged controls.
+  JSON changes 100 lines in that same fixture: 25 return annotations and
+  25 statements. Every other field, function and instruction matches.
+
+  Matched release comparison against `d0629be`, using the original
+  `Tools/blast-radius.sh <baseline> <candidate> <out> --real --perf`, covers
+  **357 inputs in four views plus four SDK workload pairs**, with all
+  1,432 cost rows positive. Instructions are 5,135.2G to 5,134.2G
+  (-0.02%); summed per-render physical peaks are 17,968 MB to 17,919 MB
+  (-0.27%). All default budgets pass. All four large SDK outputs match
+  with zero exits. Publication remains through the original gate.
+
+- **FIXED (soundness, `5a92dc9`): retain computed scalar FP precision across physical register views.**
+  A Swift-ABI Double function containing `mov w8, #0x3c00;
+  fmov h0, w8; fneg h0, h0; ret` returns Double bits `0xbc00`
+  natively. At `58bda36` it rendered `-Float16(1.0)`; the candidate
+  renders `Double(bitPattern: UInt64((-Float16(1.0)).bitPattern))`.
+  LLVM-emitted signatures independently establish the return ABI.
+
+  Scalar arithmetic and conversion results now retain their written
+  precision. A different register view reads their raw encoding, masks
+  narrowing reads, and widens only when the rest of the low 64-bit word
+  is proven zero. Scalar copies and loads clear that word's remaining
+  bits; stores, copies, call snapshots and exit snapshots preserve the
+  precision until the consumer's register or ABI width is known. Metadata
+  consumes no semantic expression depth, while actual projections still
+  enforce the depth limit. SIMD field stores keep their independent
+  register value rather than replacing its precision with an untyped
+  field alias. High vector bits remain unknown.
+
+  The upper-bit proof respects FEAT_AFP / FPCR.NEP: binary arithmetic
+  can merge Rn, whereas unary arithmetic and conversions can merge the
+  old destination. Dirty merging sources decline wider views. Scalar
+  FMOV clears independently of NEP. The current Apple M2 Pro reports
+  FEAT_AFP absent; the oracle conditionally exercises NEP merging on
+  supporting hardware, but NEP=1 is not claimed as natively verified here.
+  Instruction semantics were checked against Arm's 2025 A64 reference
+  (https://documentation-service.arm.com/static/67e40f3398aa3c3b6eea6a85).
+
+  The owned `build-fp-results.swift` fixture independently validates
+  **202 LLVM signatures**. Exact results are checked through listing,
+  whole-image array, filtered, streaming and analyzeEach paths. Its
+  independent native oracle passes **212 observations**, covering all
+  supported scalar arithmetic/conversion widths, mismatched raw views,
+  NaNs, dirty merging controls, scalar/whole-vector copies, integer reads,
+  frame/pair reloads, byte copies, calls, joins and literal pools.
+  Synthetic tests cover invalid widths, depth bounds, result buffers,
+  field-store precision, snapshot provenance and probe serialization.
+
+  A fresh fixture-enforced suite passes **1,465 tests in 39 suites**.
+  All **43 distinct compiled mutations** are caught. They independently
+  remove producer tagging, upper-bit and merging-source proofs, physical
+  projections, ABI snapshot preservation, narrowing/depth limits,
+  integer/frame/copy encoding, load clearing, field-store protection,
+  inferred widths, probe fields, and renderer casts. Two initially
+  surviving copy mutations are caught by a direct result-buffer copy
+  witness, with no later register reload to repair the missing facts.
+  The native oracle remains green in every final red run. Restored
+  sources are rebuilt before the final suite; their release is byte-
+  identical to the measured candidate. Same-line comment corrections
+  explain the delayed ABI projection.
+
+  Matched release comparison using
+  `Tools/blast-radius.sh <baseline> <candidate> <out> --real --perf`
+  covers **358 inputs in four views plus four SDK workload pairs**:
+  all **1,436 cost rows** have positive counts. Instructions are
+  5,138.0G to 5,137.5G (-0.01%); summed per-render physical peaks are
+  17,882 MB to 17,767 MB (-0.64%). All default budgets pass.
+
+  Structured and pseudo each change 298 lines in two fixtures:
+  `libFPResults.dylib` has 147 corrected returns; `libObjCPairStores.dylib`
+  retains `0` on the second zero-vector store and `(arg0, arg0)` on the
+  second duplicated-vector store, both confirmed by the instructions.
+  Listing changes 300 lines, adding the typed sink's corrected call
+  argument. JSON changes 600 lines: 150 annotations, 149 statements and
+  one argument, with no other leaf changes. Dump, layout, interface,
+  objc and xrefs (`--unreferenced`) match with zero exits. Analyze changes
+  only the new fixture's corresponding annotations.
+
+  Three large SDK outputs match. SwiftParser structured output changes
+  one stack store from raw `s0` to `Float(bitPattern: 0x8533ce2a)`:
+  `ldr d0` at 0x926b4 reads the literal at 0xe9ae0, `str q0` spills it,
+  `ldp q0, q1` reloads it, and `stur s0` at 0x92768 writes its low word.
+  Independent Mach-O segment mapping confirms literal bits `0x8533ce2a`.
+  Publication remains through the original gate.
+
+- **FIXED (soundness): preserve scalar encodings and byte widths across copies.**
+  At `5a92dc9`, an owned Float16 argument stored with `str h0`, copied by
+  memcpy and loaded with `ldrh w0` renders `(arg0 & 0xffff)`; the native
+  result is the argument's bit pattern. Float and Double copies likewise
+  lose their interpretation, including byte/halfword truncation and
+  memcpy/memmove results. A direct half spill/reload has the same defect.
+
+  Stack facts now record the 16-bit FP bank as well as 32/64. GPR half
+  reloads read that bank's encoding. Memory helpers use the source store's
+  bank to recover raw bits even when the abstract value is a bare argument,
+  then truncate a short copy at the copy boundary. This normalization
+  also applies to already-raw values and literals after a preceding copy,
+  and to short copies of integer words. Already-tagged computed results
+  retain their existing interpretation. Integer-bank copies stay integer;
+  partial overwrites continue to invalidate the old whole-word snapshot.
+  No claim is made about uninitialized bytes beyond a scalar store.
+
+  `build-fp-copies.swift` independently validates **24 LLVM signatures**.
+  All authored functions have exact pseudo/structured assertions through
+  listing, array, filtered, streaming and analyzeEach paths. The separate
+  native oracle passes **192 observations** over zeros, signed zero,
+  subnormals, finite values, infinities, signaling/quiet NaNs and all-one
+  payloads. Cases cover direct loads, memcpy, memmove, short copies, FP
+  reloads, partial overwrites, full replacement and integer-bank controls.
+  Synthetic direct and chained result-buffer copies test raw encodings,
+  byte widths, literal truncation and integer-bank sources without a
+  later load that could repair a missing copy-boundary fact. The chained
+  witness first exposed 14 failures after single-copy cases were green;
+  frame chunks now normalize at every copy boundary.
+
+  A fresh fixture-enforced suite passes **1,468 tests in 39 suites**.
+  All **nine independent compiled mutations** are caught: loss of half
+  store/load banks, loss of copy interpretation or its precision, skipped
+  byte truncation, treating the integer bank as FP, missing literal masks,
+  bypassing normalization for already-raw copies, and accepting an encoding
+  wider than the copied chunk. Both native oracles remain green in each
+  final red run. Restored sources are rebuilt before the final suite.
+  Matched releases built in the same scratch path are compared with
+  `Tools/blast-radius.sh <baseline> <candidate> <out> --real --perf`:
+  **359 inputs in four views plus four SDK workload pairs**, with all
+  **1,440 cost rows** positive. Instructions are 5,142.7G to 5,145.4G
+  (+0.05%); summed per-render physical peaks are 18,053 MB to 18,160 MB
+  (+0.59%). All default budgets pass. All four large SDK outputs match
+  with zero exits.
+
+  Structured, pseudo and listing each change **28 lines in two fixtures**:
+  twelve returns in `libFPCopies.dylib` now read the argument's encoding,
+  and `libFloatBitsWidth.dylib`'s copied byte mask and byte swap likewise
+  use `arg0.bitPattern`. JSON changes 56 lines: fourteen annotations and
+  fourteen statements, with no other leaf changes. Dump, layout, interface,
+  objc and xrefs (`--unreferenced`) match with zero exits; analyze changes
+  only the new fixture's twelve return annotations. The final source
+  matches the restored mutation snapshot and the measured release remains
+  frozen. Publication remains through the original gate.
 ## 2026-11-08: LC_FUNCTION_STARTS ends at its first zero
 
 - **FIXED (diagnostics, soundness): an image with no code was called a
@@ -11402,3 +12702,2755 @@ Commit messages on dev stay as they are; these are the true records.
   callers use it. `disasm libNoCode.dylib` now prints "This binary
   contains no recoverable functions." Test
   `anImageWithNoCodeDeclaresNoFunctionIfPresent`.
+  producer, and both SDK cross-reference outputs match. The original
+  `Tools/integration-gate.sh --push` subsequently passed all 1,444 tests and
+  measured its own fresh release binary over 1,408 cost rows: instructions
+  5,113.6G to 5,114.1G (+0.01%), summed per-render peak footprint 17,598 to
+  17,579 MB (-0.11%). Default budgets pass, the final output diffs match the
+  reviewed outputs, and `origin/dev` advanced to `cc525d7`.
+
+- **FIXED (2026-11-09): prove ARC identity from the actual target.** A
+  retain-like call was read as returning its argument, with no field writes
+  and hidden as runtime noise, by its spelling alone. A local or foreign
+  function with the same name keeps its ordinary effects now: identity needs
+  the exact resolved symbol in its owning runtime, carried as the typed
+  `arcIdentityContract` fact through the call-fact cache key, the tracer,
+  field summaries (all three production callers) and the renderers.
+
+  Ordinary imports need a strong two-level binding to the expected runtime,
+  the exact raw symbol, a zero addend and agreement with the loader slot;
+  weak, flat-namespace, ambiguous and mismatched bindings decline. Legacy
+  binds stop at DONE, and lazy binds need the selected lazy entry and the
+  ordinary dyld binder (`LegacyImportBindings`). Cache calls need an ordinary
+  export of the owning runtime through a fixed read-only slot, and an import
+  island must start at its aligned entry with the complete scratch-register
+  sequence and final branch (`RuntimeFunctionReference`). Late indirect-call
+  resolution reruns the affected analysis.
+
+  Two repairs ride with it, each for a regression the stricter proof
+  exposed. A declined branch condition keeps the call results it reads as
+  typed dependencies (`unresolvedBranchCallResults`), so an allocation is
+  not moved across later calls and stores (49 SwiftSyntax functions held at
+  their call PCs). A raw C symbol displayed like a Swift setter needs Swift
+  calling-convention evidence before its value is placed. Fixtures
+  `arc_identity_origin` (local and imported twins at -Onone/-O/-Osize) and
+  `result_identity` (standard, legacy-bind and indirect-call variants), with
+  native runs; the Codex worktree's own qualification recorded 46
+  independent ARC mutations red. Ported from the
+  compiler-ir-arc-origin-20261107 worktree.
+
+## 2026-11-04: input shapes
+- **FIXED (robustness) — any symlinked input failed.** `swiftdc dump
+  link.dylib` printed `link.dylib is 7 bytes, shorter than a dyld shared cache
+  header`: `attributesOfItem` reports the link. So did `--cache` through a
+  link, a versioned macOS framework (`No Mach-O executable found`; its
+  top-level binary is always a link), `--list-binaries` on one (empty),
+  `disasm --binary M1 T.app`, and Homebrew's `bin/` entries.
+  `BinaryLoader.followingSymlinks` now resolves the last component at each
+  boundary (`load`, the bundle resolver, `--cache`), with `realpath` as the
+  loop guard. A dangling link and a loop each say what they are. A framework
+  finds its `Info.plist` under `Resources/`, or failing one its binary by the
+  bundle's name. Measured on `disasm`, `dump`, `layout`, `interface`, `objc`,
+  `analyze`, `xrefs` and `swift-version`: all read a link to a link and give
+  the target's output byte for byte. Test: `InputShapeTests`.
+- **FIXED (soundness) — x86_64 code was decoded as ARM64.** `disasm --pseudo
+  -f sum4` on an x86_64 dylib printed `mem0[x2 + 0x4a] = ?` for `pushq %rbp`,
+  exit 0, and `xrefs` printed `callees (0)`. Each command now decides:
+  `disasm --pseudo`, `--structured`, `--cfg`, `--json` and `-f`, `xrefs`,
+  `score` and `objc --methods`/`--pseudo`/`--structured`/`-f` refuse with
+  `x86_64 code cannot be analyzed`, exit 1 (`score` 2). `analyze` prints the
+  declarations, states the refusal in place of a disassembly, and exits 1, as
+  it does for any failed disassembly. Plain `disasm` prints llvm-objdump's
+  listing, which decodes the real architecture, with a stderr warning and no
+  swiftdc annotation. `dump`, `interface`, `layout`, `objc` headers and
+  `swift-version` read metadata and are unchanged. Behind the commands,
+  `codeSections` is empty for such an image, so a path that misses the check
+  declines rather than decodes. `arm64_32` counts as not arm64: it decodes,
+  but every analysis assumes 64-bit pointers; no fixture has one.
+- **FIXED (soundness) — relocations in `.o` files were ignored.** `disasm
+  c1.o` printed `bl _printf ; args(sub_0)`, `xrefs` a callee `0x30 sub_30`,
+  and a function at offset 0 two symbols "folded by identical code folding".
+  A valid Swift object failed as `Malformed Mach-O: … __objc_classlist[0]
+  points at 0x0` while the C object was accepted (D2). Metadata in an object
+  is relocated too, so the refusal covers every command: `MH_OBJECT` reads
+  `Relocatable object: … is not linked`, thin or in a universal file, before
+  the section checks. A relocation pass stays out of scope; the message names
+  `llvm-objdump -d -r`, which applies them. `dump` on a C object used to say
+  there was no metadata and now refuses like the rest.
+  An object whose sections list no relocation has nothing unresolved and is
+  read as it stands (`MachOPreflight.mayHoldRelocations`); the tests'
+  hand-built images are such objects.
+- **FIXED (soundness, diagnostics) — a false boundary claim, and silent
+  merging.** With no LC_FUNCTION_STARTS the comment on a nameless function
+  still read `[boundary from LC_FUNCTION_STARTS]`. `clang -O1
+  -Wl,-no_function_starts`, then `strip`: one function where the source has
+  three, exit 0, no warning. The comment now states what marks the address:
+  LC_FUNCTION_STARTS, or `no recorded boundary: decoding began here`. A run
+  on an image with neither function starts nor a Go table warns once on
+  stderr when it finds a direct call to an unmarked address, or code after a
+  return that no branch reaches, and an image whose symbols mark every
+  function stays quiet.
+- **OPEN (completeness) — recovering boundaries from code.** A `ret` then an
+  unreferenced prologue is evidence, not proof: a switch case reached through
+  an unresolved jump table can start with a shrink-wrapped prologue after a
+  `ret`, and a cut there splits one function in two. It feeds the warning and
+  no boundary.
+- **FIXED (diagnostics) — `--arch` on a thin file was ignored.** `--arch
+  x86_64` or `--arch ppc` on an arm64 file printed the arm64 image, exit 0. A
+  mismatch now reads `Architecture 'ppc' not found. Available: arm64`, as a
+  fat file's miss does, and so does a cache image's, whose commands dropped
+  the option.
+  The separate d8-d15 callee-summary OPEN item also remains.
+
+## 2026-11-10: specializations laid out from their mangled clauses
+
+ABI review item 11. Truth for every shape is `swiftc -O -emit-ir` on
+`droppedargs.swift`, and the fixture's comments carry each IR signature.
+
+- **FIXED: a closure-propagated call kept its signature.** The clause's
+  unclosed `[` hid the arrow from `strippedCallee`, so the call read
+  `… P.apply<A>(A.Type, Swift.Int, (Swift.Int) -> Swift.Int) -> Swift.Int(arg0, arg0)`.
+  It now reads `… P.apply<A>(arg0, arg0)`. Fixed on dev by 628f33e; this fixture and
+  `aClosurePropagatedCallHasNoSignatureInItIfPresent` guard it.
+  It now reads `… P.apply<A>(arg0, arg0)`.
+- **FIXED: a `Tt` index read as a formal's position.** Indices count SIL
+  arguments: an indirect result comes first and a tuple formal counts once
+  per element. `genericResult<Double>(A.Type, Int, A) -> A` is `Tt0`, index
+  1, the metatype, and read as a position it removed the Int. A clause
+  that cannot be followed is `.declined`, and a call to it is bounded by
+  the body, since its printed list holds a parameter that is not there.
+  Past the formals is `self` or a capture: `Tt1` is most often a static's or
+  an allocator's own thin metatype, and the printed formals stand. A tuple
+  result with a generic element declines too, since a buffer stays in x0.
+- **FIXED: a specialization's body was seeded from the printed list.**
+  `meta<Int8>(A.Type, Swift.Int)` takes `a` in x0, and its body read `return
+  ?`; it reads `return (arg0 + 1)`. `layoutName` is the one source for every
+  query that indexes a parameter (`swiftEnumArgumentTypes`,
+  `swiftBoolArgumentIndices`, `swiftFloatArgumentInfo`,
+  `TypeInference.argumentTypes`) and for the result type, so `arg1` in
+  `float<Int8>` is its Int, not the printed list's Double. `arg k` numbers
+  the real list. `bump<Double>(A) -> A` returns `(arg0 + arg0)`.
+- **FIXED: a closure-propagated specialization's survivors.** A `Tf`
+  clause has one entry per SIL argument, which checks the parameter list:
+  a `self` or an indirect result makes the counts differ, and the name
+  stands. The closure goes, every argument left comes first, then each
+  closure's captures in clause order (`Tf1cncn_n` is `(double x, i64 z, i64
+  a, i64 b)`). `C<n>` adds no capture.
+- **OPEN (not provable): a capture after a float or multi-word capture.** A
+  clause lists SIL value types, so a capture by address prints as one by
+  value: `captureDouble` and `captureDoubleVar` both say `Swift.Double`, and
+  are `(i64, double)` and `(i64, ptr)`. Only a one-integer-register type
+  takes the same register either way. The list stops there, the survivors
+  stay seeded, and a call is bounded by the body. An integer capture by
+  address reads as its pointer, in the right register.
+- **OPEN (audited 2026-11-10): `Arg[n] = Dead`, methods, async.** A `Dead`
+  entry stays declined (ABISourceLoweringTests). A method's value `self` is
+  not seeded: `Holder.method` and its `<Swift.Int8>` specialization both read
+  `return ?` (droppedargs.swift, -O); the specialization is a `Tg`, not a
+  `Tt`. Async specializations are not measured.
+- **FIXED: a tail call to a specialization was a statement.** `useLast`
+  read `generic specialization <Swift.Int16> of last<A>(arg0, arg1)` with no
+  `return`, as did a closure-propagated specialization over a generic one
+  and a specialization's own tail call. A proven signature now supplies the
+  callee's head and result, so `-> A` compares as the Double it is.
+- **Not changed: a call's name.** A `Tg` or `Tt` call still prints
+  `generic specialization <Swift.Int8> of P.meta<A>(arg0)`, the clause and
+  the name up to its generic list. It reads shorter than the printed
+  declaration because the metatype is gone.
+- **OPEN — full shared memory semantics and value identity.** The bounded
+  producer proves complete supported literal-store bodies and selected final
+  register expressions rooted in one call-entry snapshot. It can instantiate
+  frame and own-result destinations, transport exact register aliases, and
+  split supported q stores into raw words. Typed direct return contracts keep
+  their ordinary logical call-result path; known-size indirect results gain
+  producer identity only after complete byte coverage. General callee reads,
+  captures and call composition, structured object extents and a unified memory
+  model remain open. Independent addresses are insufficient ownership evidence.
+
+- **FIXED (ported 2026-11-10) — caller-owned slots and mutable field provenance.**
+  The authored `caller_frame_alias.swift` / `.s` pair fixes a valid inout value
+  self at entry-SP+64. Native execution returns 99 after a store through that
+  pointer, while both the published binary and the earlier candidate rendered
+  the cached 7. Writes through other spaces now forget potentially aliased
+  caller-owned frame facts through the shared frame owner. Lost pointers keep
+  their MAY reach; the paired private-frame control still returns 7. A second
+  reduction creates a private pointer, stores it into a class argument's field,
+  reloads it and writes 99 through it. That field load cannot inherit entry
+  provenance. The per-argument class-field map now distinguishes mutable field
+  names from immutable by-value argument fields for private-frame reasoning,
+  alias invalidation and complete-call output sanitization.
+
+  Native oracles check the changed value, private controls, pointer coordinates,
+  neighboring words and the independently compiled Swift ABI references at
+  `-Onone`, `-O` and `-Osize`. The separate `callee_body_transfer` controls include
+  an external `memset` into a caller-owned result and a q store followed by a
+  narrow vector reload: the latter returns raw UInt32 bits 9 after overwriting
+  an earlier GPR store. Across these fixtures, all **26 native oracles at all
+  three optimization levels** pass. Listing, array, filtered, streaming and
+  selected-function analyses exercise the relevant raw-state checks; the
+  explicit raw ABI seeds are checked against the compiler/native references,
+  not claimed as automatic one-word aggregate decomposition.
+
+  The current enforcing run passes **1,476 tests / 39 suites**. The new frame
+  checkpoint has four independently compiled-red mutations (explicit and opaque
+  writes, lost-pointer reach, and the `memset` storeStack path). The field/q
+  checkpoint has six (mutable-field provenance, per-index entry provenance,
+  entry-field invalidation, complete-output sanitization, q source bank and
+  erasure of an old bank). Both checkpoints restore and rebuild green. Ported onto dev with the rest of the worktree; see the entry on what it costs with the x29-clobber escape.
+
+  Reproduce the enforcing checks after rebuilding fixtures and tests:
+  ```sh
+  Tools/fixtures.sh
+  swift build --build-tests -j 2
+  SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build
+  ```
+
+- **FIXED (ported 2026-11-10): receiver arguments require positive ABI proof.**
+  Real-app review found stale ordinary arguments attached to imported resilient
+  value methods. An authored native URL bridge reproduces eight fabricated
+  arguments when its real pointer receiver loses symbolic provenance. A real
+  `String.hasPrefix` call with an unrelated address in x20 acquired false
+  context self; with a scalar in x20 it acquired four stale ordinary words.
+
+  The candidate requires complete direct integer receiver layout and positive
+  ordinary entry-register reads for in-image methods, independently of MAY-x20
+  analysis. Indirect formal transport is separate from direct value footprint.
+  Proven unchanged entry arguments and unknown word placeholders are retained.
+  The narrowly compiler-verified external `String.hasPrefix` ABI requires an
+  exact libswiftCore import and matching semantic identity: a checked undefined
+  stub symbol/dependency, or a fixed GOT bind with both addends zero. Cache
+  presentation names alone supply no such proof. The same per-site proof
+  excludes context x20 and selects exactly one paired String receiver after
+  its formal parameter. A whole String call requires both words and a String
+  result declaration; an integer word cannot name a whole multiword producer
+  or a Double field read through a GPR.
+
+  A self-field word also requires a unique actual load width covering exactly
+  one whole field. A packed eight-byte load across eight UInt8 fields must not
+  name only the first field. A whole Int-field control remains nameable.
+
+  `imported_receiver.swift/.s` supplies sixteen native oracles at each of
+  `-Onone`, `-O` and `-Osize`, including direct/GOT imports, unknown URL receiver,
+  unchanged integer receiver, unread receiver, matched/mismatched String
+  words, scalar/partial producers, Double/Int fields and four/five-word ABI
+  boundary and spanning-field controls. Relevant listing, array, filtered, streaming and selected
+  analyses are covered. The enforcing suite passes **1,482 tests / 39 suites**.
+  Thirteen independent mutations compile and fail the relevant checks while
+  the native oracles remain green: unproved tails, missing ordinary reads,
+  entry trimming, direct/indirect boundary, context role, direct/GOT proof use,
+  shared String-pair identity, exact footprint, scalar result admission,
+  argument/self field types and self-field extent. Restoration rebuilds the
+  identical binary from the full-suite pass. The shared pair validator was
+  mutated directly; bypassing only its redundant caller check left the render
+  safely protected and is not counted as a red proof.
+  Full original fixture regeneration, release cost/profile measurements,
+  negative binding/addend and remaining proof-limit audits, actual real-app
+  diff qualification and the original integration gate remain required before
+  shipping.
+  `Sample.Tree.sum` now retains the call while declining its unsupported
+  payload-enum receiver layout, replacing an expectation based on the old
+  unbounded heuristic. Recovering that receiver requires a separate complete
+  payload ABI proof.
+
+
+## 2026-11-16: reconcile current dev with local FP provenance fixes
+
+- **VERIFIED (`542f6a7`, soundness):** merge current upstream `5bb6fb2`
+  with the seven local FP commits ending at `23cbcab`. The local branch
+  began at `cc525d7` and omitted 260 later upstream commits. The earlier
+  1,468-test reports described that stale branch, not current upstream dev.
+  No upstream test file or declaration is removed: all 1,780 upstream
+  declarations, 24 local additions and one integration regression test
+  remain. A fresh fixture-enforced run passes **1,805 tests / 43 suites**.
+- Resolve the raw packed-word / call-preserved scalar interaction without
+  interpreting DUP twice or inventing a vector's unknown high lane. Keep
+  packed SIMD frame provenance separate from ordinary GPR stores: narrow
+  reads of packed words truncate; the existing ordinary GPR prefix-read
+  decline remains. Retain current upstream import-identity proofs together
+  with literal pointer-ownership exclusions. Keep the half-move fixture
+  fully named through a local padding symbol, without changing its public
+  ABI or instructions.
+- The release diff exposed an extra GridSampler decline: FP precision
+  markers consumed the C whole-scalar-result validator's recursion limit.
+  Metadata now leaves semantic depth unchanged while the underlying call
+  result validation remains. The new test is compiled red before the fix
+  and checks exact pseudo/structured output across five analysis pipelines.
+  Nine other independent integration mutants compile and fail their
+  targeted tests; all four independent native FP oracles pass in each run.
+- Matched releases against `5bb6fb2` cover **503 inputs in four views plus
+  four SDK workload pairs**, all **2,016** cost rows positive. Retired
+  instructions: **6,078.1G -> 6,089.0G (+0.18%)**. Summed per-render peak
+  footprint: **18,794 -> 18,648 MB (-0.78%)**. All default budgets pass
+  without an override. All four large SDK outputs are byte-identical.
+  Structured and pseudo each change **26 files / 588 lines**, listing
+  **36 / 682**, JSON **36 / 1,388**. JSON changes only 341 annotations,
+  294 statements and 59 call arguments; every change is reviewed and
+  explained in the merge commit. GridSampler matches the baseline again.
+- Fetch and reconcile upstream before each new slice. Develop in the main
+  checkout on `dev`; reuse the existing gate checkout only for validation.
+  Record the verified code hash, then use the original integration gate
+  to publish before starting another feature slice. No readiness or ABI
+  coverage percentage is inferred from the test count. The pinned outcome
+  benchmarks in STATUS.md are unchanged.
+
+
+## 2026-11-16: preserve scalar FP entry precision
+
+- **VERIFIED (`7fd125d`, soundness):** an owned Swift-ABI Float16-to-Double
+  function containing only RET rendered `return arg0` at `2425b30`. Native
+  execution with Float16(1) returns Double bits `0x3c00`. Narrow FP parameter
+  types define only their low scalar bits; dirty raw callers disprove any
+  implicit zero-extension assumption for the rest of the physical register.
+- Tag existing proven FP entry seeds with their scalar width, using Swift
+  parameter types, Objective-C f/d encodings, trusted exact floating fields
+  of HFA/mixed structures and async overlays. No register seed is invented
+  and GPR entry values are not retagged. Both entry-state paths and both
+  ordinary/async proof tracers use the precision; entry probes report it.
+  Whole-vector MOV preserves a narrow known value and unknown upper bits.
+  Wider unproved reads decline; narrower reads retain masked encodings.
+- The fixture checks **24 independently emitted LLVM ABI signatures** and
+  **192 native observations**, including all three scalar widths, scalar
+  clears, raw truncation, vector copies, callee-preserved copies across
+  getpid and dirty-upper-bit callers. Five analysis APIs check exact pseudo
+  and structured returns. The synthetic async context-slot test rejects a
+  widened half/single parameter as a portable fact and retains a full-width
+  Double control; this is not a complete native async ABI fixture.
+- **19 distinct compiled mutations** fail the targeted tests while the
+  native oracle remains green. The field-extent mutation initially survived
+  because its constructor filtered the invalid negative control; a computed
+  Swift-layout field exceeding its aggregate size now independently kills
+  it. After the final renderer-cast mutation, restored CLI/test executables
+  are byte-identical to the binaries from the **1,810-test / 43-suite**
+  fixture-enforced pass. All **1,805** upstream test declarations remain.
+  The existing lab assertion retains its register-placement/body checks and
+  expects the new precision metadata.
+- Matched releases against `2425b30` cover **504 inputs in four views plus
+  four SDK workload pairs**: all **2,020** cost rows positive. Retired
+  instructions: **6,092.5G -> 6,091.6G (-0.02%)**; summed per-render peak
+  footprint: **18,626 -> 18,605 MB (-0.11%)**. All default budgets pass with
+  no override; these deltas show no meaningful cost difference. All four
+  large SDK outputs are byte-identical. Only the new entry fixture changes:
+  **22 lines** each in structured/pseudo/listing, **44 JSON lines**, exactly
+  **11 annotations and 11 statements**. Three unproved wider RETs decline,
+  three narrower RETs reinterpret masked bits, three scalar-clear controls
+  retain the correct mask and two preserved narrow parameters recover their
+  value. Dump/layout/interface/objc/xrefs match, analyze changes those eleven
+  annotations and lab shows the corresponding precision/copy facts. All
+  seven commands exit zero for both releases. The pinned outcome benchmarks
+  in STATUS.md are unchanged; no readiness percentage is inferred.
+
+
+## 2026-11-16: preserve scalar FP call precision and evaluation
+
+- **FIXED (`59db870`, soundness):** published `db2f822` renders
+  `FPReturns.call16to64` as returning its Float16 producer's logical value,
+  although native execution reads Double bits `0x3c00`. Dirty half/single
+  producers leave nonzero upper bits, disproving ABI zero extension. Exact
+  synchronous Swift scalar and C float/double results now carry their width.
+  Wider unproved reads decline while preserving the producer once; narrower
+  reads reinterpret masked bits. Same-width calls retain their logical value.
+- Typed argument/return projections precede producer-use collection. Existing
+  typed immediate spelling remains. Metadata is peeled iteratively during
+  rendering: adding precision to a ten-call chain otherwise reproduced a
+  worker-stack SIGBUS in an existing return-outcome test. The semantic depth
+  limit and its partial/complete claims remain unchanged.
+- Owned `build-fp-returns.swift` checks **44 LLVM ABI signatures**. Five tests
+  retain all **1,810** upstream declarations/files and add **36 native
+  observations** (30 Swift raw returns with counter=1; six C reads at proven
+  widths). Listing, array, filtered, streaming and analyzeEach agree. Exact
+  scalar types, register banks, name twins and invalid widths have controls.
+  Synthetic Objective-C/async return seams check producer retention; this is
+  not a complete native async ABI fixture or proof of values across awaits.
+- **14** distinct compiled mutations fail their targeted checks, including
+  independent C float/double widths, upper bits, typed argument/return use,
+  literal spelling and iterative metadata rendering. The latter restores the
+  same SIGBUS. The native oracle passes under every mutation. Restored sources
+  are rebuilt before 21 focused green checks and the **1,815-test / 43-suite**
+  fixture-enforced pass. Reproduce: `Tools/fixtures.sh`,
+  `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+- Matched releases against `db2f822`, using
+  `Tools/blast-radius.sh <base> <new> <out> --real --perf`: **505 inputs** in
+  four views plus four SDK workloads, **2,024 positive cost rows**.
+  Instructions **6,094.3G -> 6,091.9G (-0.04%)**; summed per-run physical
+  peaks **18,546 -> 18,592 MB (+0.25%)**. All default budgets pass without
+  override; all four SDK outputs are byte-identical. Exit statuses match,
+  including **35** identical expected object/unsupported-input preflight
+  declines. Those are not successful decompilations.
+- Structured/pseudo each change **two files / 62 lines**. FPReturns corrects
+  **24 return expressions** and **10 outgoing arguments**; **13** unproved wider
+  reads retain their standalone producers, and **11** narrower views use
+  masks. DroppedArgs.Onone `moded` retains its enum comparison: its generic
+  size load makes the return unknown, so no rendered return consumes that
+  call. Its raw lab analysis is identical. Listing changes **one file / 68
+  lines**; JSON **two / 150**, exactly **34 annotations**, **24 return
+  statements**, **10 argument values**, and **14 added call statements**.
+  No instruction/address fields change. Dump/layout/interface/objc/xrefs
+  match; analyze changes those 24 returns and 10 arguments; lab wraps 36 exit
+  facts and 15 call snapshots with precision. All seven commands exit zero
+  on FPReturns. The pinned outcome benchmarks remain unchanged.
+
+## 2026-11-16: preserve awaited scalar FP precision
+
+- **FIXED (`c8640cc`, soundness):** published `889e00f` prints the logical
+  awaited Float16 value for `AsyncFPReturns.view16to64`, although its real
+  Swift continuation returns Double bits `0x3c00` for half 1.0. The resume
+  saves V0 in V8 across `swift_task_dealloc`, then physically copies D8 to
+  D0. Dirty half/single producers prove the unused result bits need not be
+  zero. Wider unproved reads now render `?`; same-width values, narrower
+  masked reads and numeric conversions remain known.
+- Only an existing ownership-proven V0 await result receives the exact
+  callee scalar width. Caller widths supply no evidence. Typed-error,
+  closure, unknown/generic result, integer-bank and shared-owner guards
+  remain. Scalar word copies preserve fitting partial FP facts through
+  bounded one-lane wrappers/selects; full-width, truncating and proven-zero
+  copies keep their ordinary projection and clearing rules.
+- Authored `build-async-fp-returns.swift` checks **40 LLVM entry/resume
+  signatures** and parent continuation operand types. Raw/control libraries
+  keep compiler frames and executor hops; only ten cross-width FCVTs become
+  physical D0/D8 copies in the raw library. Both modes poison unused bits in
+  two narrow producers. Native Task drivers pass **210 observations**,
+  including one-invocation effect checks (clean increment 1, dirty increment
+  2). Disabling the compiler's function-merging pass keeps each tested
+  continuation independent; separate synthetic tests enforce shared-owner
+  rejection. This is a scalar result-boundary proof, not recovery of arbitrary
+  values carried in async context slots.
+- Four new tests retain every **1,815** published declaration/file. Listing,
+  array, filtered and streaming APIs agree on all 30 raw/control resumes;
+  analyzeEach safely omits unproved async grouping. **15** distinct compiled
+  mutations fail width/bank/callee/error/closure/copy/depth checks; native
+  210 passes under each. An initial closure mutation survived because a
+  separate trailing-signature guard already declined it; an isolated
+  source-type-only closure control then caught that rebuilt mutation.
+  Restored sources were rebuilt before **23 focused checks** and the full
+  fixture-enforced **1,819-test / 43-suite pass (705.350 s)**. Reproduce:
+  `Tools/fixtures.sh`, `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+- Matched frozen releases against `889e00f`, using
+  `Tools/blast-radius.sh <base> <new> <out> --real --perf`: **509 inputs** in
+  four views plus four SDK workloads, **2,040 positive cost rows**.
+  Instructions **6,116.5G -> 6,115.8G (-0.01%)**; summed per-run peaks
+  **18,703 -> 18,677 MB (-0.14%)**. Default budgets pass without override;
+  all SDK outputs are byte-identical. All render statuses match, including
+  **35 identical expected preflight declines**, not successful decompilations.
+- Only `libAsyncFPReturns` changes: structured/pseudo/listing each **one
+  file / 12 lines**, JSON **one / 24**. Six raw wider returns now decline:
+  Float16/Dirty16 to Float/Double, Float/Dirty32 to Double. JSON changes
+  exactly **six annotations and six statements**; instruction/address fields
+  stay identical. Every existing fixture output and the numeric control are
+  unchanged. All **28** raw/control CLI survey runs exit zero:
+  dump/layout/interface/objc/xrefs match; analyze corrects the six raw
+  returns; lab only wraps **30 entry seeds, 30 call snapshots and 20 exits**
+  with precision metadata. The pinned outcome benchmarks remain unchanged.
+
+
+### 2026-11-16: decline ambiguous async integer argument locations
+
+**FIXED for soundness (29bb3b22ef7135fd9b2160e2b6afef58573e32ca).**
+Published `06c8d0c` renders the authored `outer(a,b)` calling `inner(b,a)`
+as `inner(arg0, arg1 & 0xcfffffffffffffff)` under nonsending isolation.
+The compiler exports the same mangled symbol with either zero or two leading
+isolation words. A printed source signature cannot prove GP placement.
+
+- Entry analysis drops unproved GP formals, fields, metadata and witness
+  tables, retaining independent FP facts and Swift's dedicated self register.
+  An outgoing GP argument survives only if both candidate locations carry
+  the same fact. Shifted stack words decline. Unplaced async callees use a
+  trusted source count or an explicit unknown tail, never a body register
+  count that includes hidden words. `analyzeEachFunction` retains validated
+  entry/resume ABI roles without recovering suspension edges or await-result
+  ownership; resumes inherit no parent parameters.
+- Authored `Fixtures/Sample/build-async-isolation.swift` builds explicit
+  `nonisolated(nonsending)` and `@concurrent` variants at **-O/-Onone/-Osize**,
+  plus a stripped library. It checks **108 LLVM signatures** (102 async
+  entries and six synchronous controls). Native Task drivers pass **426
+  observations**, including **420 effectful leaf evaluations** and six pure
+  constant observations. Integer, mixed FP, struct fields, nine-word stack
+  arguments, class self and an unnamed local callee are covered. The focused
+  libraries disable machine outlining and LLVM function merging to isolate
+  this proof; native drivers retain normal optimization.
+- Every **1,819** published test declaration remains. Six tests are added;
+  four existing files correct GP expectations from unsupported formals to
+  `?`, preserving await bindings, error-path and context-header assertions.
+  **27 distinct mutations are separately compiled red.** Two initial
+  self-preservation mutations survived a vacuous check over a trimmed
+  snapshot; an explicit x6 self-presence assertion then caught both rebuilt
+  mutations. All **636 native observations** (426 new plus 210 awaited-FP)
+  pass under every final mutant. Canonical sources are restored byte-exact
+  and rebuilt before focused checks, **189-test async/FP breadth**, and the
+  full fixture-enforced **1,825-test / 43-suite pass (669.230 s)**.
+  Reproduce: `Tools/fixtures.sh`, `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+- Matched frozen releases against `06c8d0c`, using
+  `Tools/blast-radius.sh <base> <new> <out> --real --perf`, cover **522 inputs**
+  in four views plus four SDK workloads: **2,092 positive cost rows**.
+  Instructions **6,202.5G -> 6,242.3G (+0.64%)**; summed per-run physical
+  peaks **19,458 -> 19,243 MB (-1.10%)**. All default budgets pass without
+  override; all four SDK outputs are byte-identical. Render exits match,
+  including **35 identical expected preflight declines**, not successful
+  decompilations.
+- All differences are reviewed: **28 files** per view, **267 changed lines**
+  each structured and pseudo, **256 listing**, **1,006 JSON**. The **124
+  changed functions** retain call counts and outlined-producer order. JSON
+  changes **226 GP argument leaves to `?`**, four FP aliases to their same
+  producer expression, and seven arity arrays to an explicit unknown tail.
+  It changes **128 annotations and 124 statements**: 105 GP calls, seven
+  arity declarations, 11 GP-derived returns and one raw store target.
+  Fifteen unconsumed producers remain standalone; four sole-use FP bindings
+  inline once. Instruction/address fields stay identical. The old streamed
+  views and JSON already spell actor-witness words differently at **11
+  structured / 18 pseudo** occurrences; all corrected values are unknown
+  in every path.
+- All **98 CLI survey invocations** across seven libraries exit zero:
+  dump/layout/interface/objc/xrefs match; analyze changes **30 annotations**
+  only. Lab changes **76 entry records** (124 GP facts removed), **36 call
+  snapshots** (48 GP facts removed) and **63 layout strategies**, retaining
+  FP, context and dedicated self facts. The pinned outcome benchmarks and
+  readiness estimates remain unchanged.
+
+**OPEN:** choosing the actual isolation prefix, arbitrary values carried in
+async context slots, and the existing outlined-helper false-result model.
+The default-outlining reproduction remains separate and is not claimed fixed.
+A suspension-free constant also already renders `return ?` with the published
+baseline, despite a proven exit x0 of 17. Reproduce with the new constant
+fixture and `swiftdc lab Fixtures/Sample/libAsyncIsolation.O.nonsending.dylib
+-f 'AsyncIsolation.constant'`: the LDR of ResumeParent, MOV w0,#17 and BR
+establish the exit value. The positive control checks that dataflow fact;
+recovering its source return remains open.
+
+
+### 2026-11-16: preserve unwritten result registers through helper calls
+
+**FIXED for soundness (731194275752bd3e45bedcaf20b26a6fa21f5d9c).**
+Published `d6bcfe2` renders native `-Osize` async driver arguments as nested
+`OUTLINED_FUNCTION` results where the machine carries the literal **0.25**
+through helpers. An authored reduction renders
+`return (OUTLINED_FUNCTION_0(37, counter) + 5)` though native execution
+returns **42** and the helper leaves x0 untouched.
+
+- Direct calls use existing decoded-body proofs for x0 and v0 independently.
+  A proven unwritten register keeps its input, including its exact FP
+  precision. Missing summaries, writes and outgoing control flow supply no
+  preservation proof. Values are copied after memory/field invalidation,
+  so unchanged hardware never revives a stale symbolic field value.
+  Swift/C declared result banks, String, tuple and aggregate contracts retain
+  priority: a typed identity still produces its logical call result. Existing
+  FP tests caught that distinction in the first patch.
+- The authored assembly library and stripped copy exercise both banks,
+  helpers that write either bank, and one producer consumed by both helper
+  and return. Stores and x19 writes keep helpers opaque. The native C driver
+  passes **21 observations / 21 helper effects**. Existing compiler-generated
+  concurrent/nonsending `-Osize` drivers pass another **142 observations**
+  with real Task/executor frames; all five analysis APIs retain their proven
+  0.25 arguments. These compiler controls are separate from the assembly
+  reduction.
+- All **1,825** existing test function declarations remain; **five** tests
+  are added. One old expectation changes from an invented `r4` receiver to
+  **2.0**: the constructor target is a single RET, the caller loads 2.0 into
+  d0 and copies it through v8 into the receiver's d2, and native execution
+  prints the expected dot product **31.0**. The receiver's second word stays
+  unknown; the no-integer-receiver assertion remains.
+- **16 distinct mutations separately compile and fail** GP/FP body-proof,
+  transport, stale-field, missing-summary and logical-result contract checks.
+  Native 21 passes under each. After adding real compiler controls, removing
+  the FP proof again makes both mix/mixOuter literal checks fail while the
+  combined **163 native observations** pass. Canonical sources are restored
+  byte-exact and rebuilt; **16 focused checks** and the full fixture-enforced
+  **1,830 tests / 43 suites pass (673.391 s)**. The first full run caught only
+  the independently verified receiver expectation. Reproduce:
+  `Tools/fixtures.sh`, `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+- Matched frozen releases against `d6bcfe2`, using
+  `Tools/blast-radius.sh <base> <new> <out> --real --perf`, cover **525 inputs**
+  in four views plus four whole-image SDK workloads: **2,104 positive cost
+  pairs**. Instructions **6,243.3G -> 6,244.9G (+0.03%)**; summed per-run
+  physical peaks **19,634 -> 19,736 MB (+0.52%)**. All default budgets pass
+  without override; all four whole-image SDK outputs match. Render exits
+  match, including **35 identical expected preflight declines**, not
+  successful decompilations. The final rebuilt release is byte-identical
+  to the measured binary.
+- Every difference is reviewed: **16 files** per view; **185 structured**,
+  **184 pseudo**, **212 listing**, **475 JSON** changed lines. **50 functions**
+  retain instructions, addresses, callee metadata, rendered call counts and
+  helper evaluation order. JSON changes **72 statements**, adds **40** (29
+  standalone calls, three producer bindings, eight raw register returns),
+  changes **96 annotations** and adds **10**. One added condition is the
+  existing low-byte test of arg1 through an identity RET. Its **43 changed
+  argument words** are ten temporary renames, 21 references to the same
+  prior producer, five physical FP literals and seven false GP results
+  declined; one indirect argument list gains its preserved arg0.
+- The other render effects follow those facts: 15 fake/unused bindings
+  disappear with their calls retained; seven existing producers gain a
+  binding; five later bindings renumber. Two print arguments bind the actual
+  allocation instead of an outlined helper; three stripped enum stores name
+  arg0; two false helper returns decline. Two unused String-copy bindings
+  disappear in the plugin-message SDK fixture, with both calls retained.
+  Raw frame/constant register return comments remain explicit. Structured
+  libc-twin output already inferred one bare return where JSON had no
+  statement; the new raw comment explains that spelling difference.
+- All **28 CLI survey invocations** pass. Dump/layout/interface/objc/xrefs
+  are identical; analyze changes nine annotation pairs per library, lab
+  seven named/eight stripped register-value pairs. Instruction/address
+  prefixes stay unchanged. Readiness estimates and pinned outcome benchmarks
+  remain unchanged.
+
+**OPEN:** outlined entry x8 seeding, transport of other untouched registers,
+helper effects without a decoded preservation proof, actual async isolation
+prefixes, arbitrary context-slot carry and the constant source-return gap.
+This change proves physical x0/v0 transport through a bounded class of calls;
+it does not recover a source result type from a helper's name.
+
+
+### 2026-11-16: bound body-only calls by positive input proof
+
+**FIXED for soundness (92e1007f313c4a73448cf56d6043623fb65c8700).**
+Published `46e51b6` gives Go `internal/runtime/maps.newobject` six arguments
+though its declaration takes one type pointer. A separate authored C ABI
+reduction returns n+9 and performs one opaque void effect, but renders
+`arity_one(?, ?, ?, ?, ?, 37)` because x5 happens to hold 37. The frozen
+candidate renders `arity_one(?, …)` and Go `newobject(?, …)`.
+
+- `argumentReads` remains a MAY bound for machine analysis. Source arguments
+  now stop at the positive input prefix; only proved slots receive values,
+  holes remain `?`, and possible later GP reads or incoming stack reads
+  append an unknown tail. Unknown GP inputs prevent placing FP formals;
+  mixed GP/FP source order remains unknown. The tail is uncertainty, not a
+  declaration of variadic source code. A probe count excludes the tail.
+- A single direct B alias and an exact five-instruction frame
+  (`stp x29,x30,[sp,#-16]!; mov x29,sp; bl target; ldp x29,x30,[sp],#16; ret`)
+  can carry the decoded target's independently proved GP/FP reads and widths.
+  Strict typed operands, contiguous entry, correct LR return and a declared
+  target are required. Missing/partial entries, changed inputs and cycles
+  cannot seed proof. The original identity tests remain byte-identical.
+  A shared signed offset and forwarding kind fits the unchanged 144-byte
+  summary budget; the first expanded representation failed that test and
+  was replaced, without relaxing its limit.
+- Authored assembly plus separate opaque C provider and C contracts run at
+  O0/O2/Os: **252 native observations / 147 effects**, named and stripped,
+  across all five analysis APIs. Closed GP/FP bodies, B aliases and canonical
+  framed calls retain known values. The private reduction independently
+  passes seven returns / seven effects. No private source is published.
+- All **1,830** existing test declarations remain; **eight** tests are added.
+  Seven existing test files require explicit unknown tails, preserving
+  proved prefixes, stale-word exclusions, field destinations and stack-read
+  distinctions. RuntimeResultIdentityTests and MemoryLayoutTests are
+  byte-identical. **Thirty** mutations separately compile and fail targeted
+  GP-tail/hole/mixed-bank, forwarding shape/provider/cycle/width, packed
+  kind/offset/copy and memory-budget checks. Native execution passes under
+  each. Removing framed proof also fails 80 original identity assertions
+  while 36 native lifetime observations pass. Byte-exact restore and rebuild:
+  13 focused tests pass, 408 tests / nine suites pass, and the full
+  fixture-enforced **1,838 tests / 43 suites pass (709.314 s)**.
+- Reproduce: `Tools/fixtures.sh`, `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`. Frozen matched release
+  comparison against `46e51b6`: `Tools/blast-radius.sh <base> <new> <out>
+  --real --perf`, **537 inputs / 2,152 positive cost pairs**. Instructions
+  **6,260.7G -> 6,272.0G (+0.18%)**; summed per-run physical peaks
+  **19,915 -> 19,888 MB (-0.14%)**. All default budgets pass without override.
+  All 35 expected render declines match. Both SDK xrefs match; both structured
+  SDK outputs differ. Four guarded rerenders match the measured hashes.
+- Every output delta is reviewed: structured/pseudo **146 inputs** and
+  **38,379/38,220 lines**; listing/JSON **154 inputs** and **41,762/141,948
+  lines**. In **4,971** changed JSON functions, instruction/address/branch
+  metadata and function boundaries match. Outlined/sub helper evaluation
+  order is unchanged. Of **20,645** argument sites, 18,074 add a tail, 1,559
+  decline possible words, 149 rename bindings, 594 carry nested tails/renames,
+  one combines decline and a nested tail, 190 carry nested declination or
+  producer inlining, and 65/9 gain caller/target frame proofs. Four nested
+  MainActor expressions regain the accessor argument already in the listing;
+  52 additional empty argument arrays change no value.
+- JSON changes 19,093 statements, adds 21 standalone producers and removes
+  seven bindings: two getfp calls inline once and five uniqueness checks lose
+  speculative uses under the existing runtime filter. One more uniqueness
+  expression and boxed-existential projections disappear only from source
+  output; listings keep the calls. Generic metadata becomes visible ahead of
+  unknown tails under the existing trailing-plumbing rule. Whole-image SDK
+  changes follow the same rules: **13,149 Syntax / 172 Parser functions**, all
+  headers stable. A parser hasError producer moves into its condition after
+  its false second use is declined. No renderer code changes here.
+- All **126 CLI survey invocations** pass. Dump/layout/interface/objc/xrefs
+  match; analyze changes 84 annotation lines and lab 96 layout/seed lines.
+  Readiness estimates and pinned outcome benchmarks remain unchanged.
+
+**OPEN:** arbitrary forwarding frames and transitive calls supply no positive
+source input proof; mixed GP/FP ordering and complete formal counts remain
+unknown. This change does not fix outlined x8 entry ownership, actual async
+isolation prefixes, arbitrary await context-slot carry or source return
+recovery. Candidate release SHA256:
+`89865267199f73c22b1dca27aac60122b44b5ee0094056090bc2b4c4aff3b7fa`.
+
+
+### 2026-11-16: retain MAY writes after a failed complete callee transfer
+
+**FIXED for soundness (774ed5667cf84f15166e4d70901014543c87a67e).**
+Published `7efd0d2` renders the authored `UnknownStore.frameWord(UInt)` as
+`return arg0`, though native execution returns **99** for seven distinct
+inputs. The helper writes below its incoming x10, but an unknown x11 output
+rejects the complete transaction; upward escape reach then misses the
+private-frame word below that base. Unknown store destinations can likewise
+alias an async context or caller-owned result buffer. Published `lab` reports
+an async exit value **7** where native execution returns **99**.
+
+- Failure to instantiate the complete MUST transaction no longer discards
+  its body-proven MAY stores. Every literal-store footprint goes through
+  the existing frame/context/result owners. Checked frame ranges forget
+  only overlapping facts; unbounded frame ranges forget the frame. Only a
+  complete negative private-frame extent is disjoint from opaque context
+  and result allocations. LR at callee entry is not the caller's pre-BL
+  frame alias. No literal/register prefix of the failed transaction is
+  installed; successful complete transfers are unchanged.
+- Known context-relative coordinates retain their existing precise owner.
+  In particular, ResumeParent at +8 survives a store through a proved
+  context+16 pointer. The original test and native oracle caught an initial
+  over-decline; neither was weakened. Own/callee context identities are
+  separate, arithmetic and widths are checked, and unknown roots receive
+  no borrowed context identity. A body with no stores adds no memory write.
+- Own-source assembly plus native C at O0/O2/Os passes **105 observations**:
+  unknown and disjoint/crossing private pointers, context header/guard words,
+  a five-word caller buffer, and the stale frame word. Named and locally
+  stripped libraries cover all five APIs. analyzeEach retains its existing
+  async-chain-context decline; explicit-ABI raw replay checks its body too.
+  The existing **15** AsyncCalls native cases pass, including incomingLeaf's
+  observed **11**, which the baseline passed to observe as **7**.
+- All **1,838** existing test declarations remain, and every existing test
+  file and assertion is byte-identical. **Seven** tests are added. **23**
+  distinct mutations separately compile and fail: the three memory owners
+  independently (other two green), unknown roots, LR, offset/width/overflow,
+  no-store and multi-store cases, bounded frame erasure, no failed prefix,
+  context coordinate arithmetic and own/callee identity. All 105 new native
+  observations and 15 existing cases pass under each. Canonical source is
+  restored byte-exact and rebuilt: nine focused tests pass (1.590 s), **113
+  tests / five suites** pass (12.846 s), and the full fixture-enforced
+  **1,845 tests / 43 suites pass (660.627 s)**. Reproduce with
+  `Tools/fixtures.sh`, `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+- Matched frozen releases against `7efd0d2`, using `Tools/blast-radius.sh
+  <base> <new> <out> --real --perf`, cover **546 inputs / 2,188 positive cost
+  pairs**. Instructions **6,285.3G -> 6,282.8G (-0.04%)**; summed per-run
+  physical peaks **20,054 -> 20,075 MB (+0.10%)**. All default budgets pass
+  without override. All four whole-image SDK outputs match, as do all
+  render exits, including **35** expected preflight declines.
+- Every difference is reviewed: **seven inputs**, structured/pseudo **39
+  changed lines each**, listing **40**, JSON **107**. Across **19 functions**,
+  physical instructions, addresses, function boundaries, blocks and callee
+  metadata match. Six false arg0 returns decline, 13 unproved return labels
+  become unresolved BRs, and incomingLeaf's stale observe(7) becomes a single
+  observe(?) statement before its unresolved branch. Rendered call counts
+  and evaluation order are retained. All **54 JSON deltas** are 19 changed
+  statements, one added statement, 20 annotations, 13 flow labels and one
+  argument 7 -> ?. Both source views match those exact statement deltas.
+- All **84 CLI survey invocations** pass. Dump/layout/interface/objc/xrefs
+  match; analyze and lab each change 36 annotation/exit lines across the six
+  libraries. The frozen release declines every false frameWord return and
+  removes the two unproved async exits, keeping the private control's 7.
+  All **1,021** source/test/fixture/tool hashes still match the measurements.
+  Readiness estimates and pinned outcome benchmarks remain unchanged.
+
+**OPEN:** complete callee register transport with unknown inputs, unmodelled
+body effects, arbitrary context identities and general async context-slot
+carry. This change retains negative write evidence from the bounded producer;
+it does not recover a source result type or infer a value from a failed
+transaction. Outlined x8 entry ownership remains separate.
+Candidate release SHA256:
+`45d4b7081fc2b2e92b1ab1d8671f67e22f5043d447f35d005f2b2242fa042353`.
+
+
+### 2026-11-17: qualify incoming x8 by the entry ABI
+
+**FIXED in part (947904890b2b712b7b33ef0492a3ec74da20c1ac).** Published
+`8f1793b` prints an outlined helper's incoming data word as `&result` and
+returns its call as a five-word result, though native execution leaves the
+caller buffer untouched. Go `main.store9` likewise receives its ninth word
+in x8 as data. A physical x8 read now establishes neither role by itself.
+
+- Entry seeds and caller result conventions require the supported ordinary
+  ABI. Async/validated Go entries, outlined/generated/empty identities and
+  missing ordinary preservation evidence decline; Swift's x21 error output
+  remains supported. Exact Go runtime-table membership reaches all three
+  context constructors and all five APIs. Entry, caller, probe, fixpoint and
+  nested modes agree. A declined callee convention remains unknown, not
+  direct. This qualifies ABI eligibility, not actual hidden-result ownership.
+- Removing a phantom seed does not erase proved GP/FP, incoming-stack or
+  opaque input extents. A separate fact closes unknown extents through tails,
+  opaque calls and unwritten incoming words, including a registered target
+  with no usable summary. No source count is invented from a MAY mask.
+  Existing metadata/witness layouts, trusted zero-formal getters, x21 runtime
+  handling, nonvoid ObjC owning tails and resolved BL-only input policy remain.
+  Internal/switch/async-return branches stay excluded; recursive calls remain.
+- Go's exact `morestack`, `morestack_noctxt`, `morestackc` and ABI0 entries
+  retain zero source formals despite their register/spill inputs. The contract
+  survives missing summaries and unknown/live snapshots; a spelling, another
+  Go entry, interior address or near name proves nothing. The installed Go
+  1.27.3 runtime declarations and `$0-0` assembly ground this bounded contract.
+- Authored assembly, fixed/resilient Swift, reabstracted and ObjC aggregate,
+  HFA and scalar controls at all optimization levels give **53 LLVM signatures
+  and 420 native observations**. Actual separate optional-Go builds match the
+  non-Go matrix: without Go, all **53 signatures / 406 observations** remain.
+  Native receipts and all 44 frozen new/BodyArity products are checked.
+- All **1,845 existing tests** remain; every original test body and assertion
+  is byte-identical across **333 Swift files**. Only a selected-FP setup helper
+  gains real d8 preservation and decoded evidence. **22 tests** are added.
+  **48 product mutations and two fixture controls** separately compile red,
+  with native controls green; independent halves fail separately. Sources
+  restore byte-exact and rebuild: **92 tests / two suites** pass (324.152 s),
+  then the full fixture-enforced **1,867 tests / 43 suites** pass (849.252 s).
+  Commands: `Tools/fixtures.sh`; `swift build --build-tests`;
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+- Matched frozen releases against `8f1793b`, with `Tools/blast-radius.sh
+  <base> <new> <out> --real --perf`: **578 inputs / 2,316 positive cost pairs**.
+  Instructions **7,466.2G -> 7,477.2G (+0.15%)**; summed per-run physical peaks
+  **21,959 -> 22,025 MB (+0.30%)**. Default budgets pass without override.
+  All exits match, including **35 identical expected preflight declines**.
+- Every output difference is reviewed: structured/pseudo **57 inputs,
+  9,955/9,659 lines**; listing/JSON **58 inputs, 10,450/35,325 lines**. In
+  **2,877 changed JSON functions**, serialized blocks, instruction text,
+  addresses, targets and control flow match. Deltas are **4,840 statements,
+  5,225 annotations and 4,335 argument sites**. Result-role declines retain
+  stores and producing calls; typed string stores can revert to raw words.
+  Existing GP-word facts survive Go's growth loop, recovering operands and
+  198 conditions. These word labels are not complete Go source formal layouts.
+  Named invocation spelling/count/order matches in both source views and flat
+  statements; JSON does not serialize typed callee facts or raw bytes.
+- Of **406** earlier unknown-to-empty sites, **284** now retain unknown arity,
+  four target Go's exact zero-formal shim, 117 call witness accessors and one
+  is a stripped partial-apply forwarder under the existing BL-only policy.
+  The latter absent lists do not establish zero source parameters.
+- Whole-image SDK changes: **137 Syntax functions / 296 lines**, **19 Parser
+  functions / 65 lines**. All 179 pairs/blocks are result-pointer/receiver
+  declines, retained unknown extents or three declined whole-result returns
+  retaining their producers. All prior unknown-arity markers remain. Four
+  guarded rerenders match measured hashes; both SDK xrefs outputs match.
+  All **252 CLI invocations** pass. Dump/layout/interface/objc/xrefs/lab and
+  stderr match; analyze changes only **2,215 annotation lines on ten inputs**.
+- Ten guarded renders of **Clarc, GoodLinks, Terminal, TextEdit and Chess**
+  pass (maximum sampled footprint **239 MB**, guard **2,000 MB**). All
+  **21,290 changed lines in 5,813 functions** are reviewed: role/arity declines,
+  raw symbol/string/vector stores, raw x0 return comments and retained
+  single-evaluation bindings. Independent LLVM decoding and function starts
+  account for **1,875 removed arity markers**: 1,849 witness-accessor sites
+  and 26 BL-only sites, with no opaque outgoing transfer. Headers and
+  per-function lexical named-call sequences match. Private reports/bodies/
+  strings stay ignored. These comparisons are not source-grounded app
+  correctness or proofs of lazy execution/ObjC bracket-send effects.
+- All **1,031 frozen source/test/fixture/tool hashes** still match. Readiness
+  estimates and pinned outcome benchmarks remain unchanged.
+
+**OPEN:** actual sret-parameter ownership, complete Go source inputs/results
+(including `main.store9`'s formals), resolved BL-only forwarding arity,
+`swifttail`/`swiftcoro` and other unmodelled helper effects. An absent argument
+list is not a zero-arity proof. Native reductions and guarded vendor-output
+comparisons imply no overall reconstruction accuracy or readiness percentage.
+Candidate release SHA256:
+`784483ca93b22a9d09dbacad688c0dc01a2465655a889b5edde500004aa021cd`.
+
+Publication follow-up: the original `Tools/integration-gate.sh --push`
+rebuilt `917dea7`, passed **1,867 tests / 43 suites** (907.882 s) and pushed
+it to `origin/dev`. Its independent release SHA256 is
+`2a89a1693f0c8663368137d83056277151a6af3f5eecb7a9ce400b9113d03b87`.
+All 578 outputs in each of four views and all four SDK workload hashes
+match the reviewed frozen candidate. The gate's 2,316 positive cost pairs
+measure **+0.18% instructions / +0.45% summed per-run physical peaks**
+against `8f1793b`; all default budgets pass without override.
+Hosted [run 44070526750 at 917dea7](https://github.com/CamdenBopp/swiftdc/actions/runs/44070526750)
+failed at Toolchain on Xcode 26.3 / Swift 6.2.4; fixtures, build and the
+suite were skipped. It supplies no CI test result.
+
+
+## 2026-11-17: retain input uncertainty through ordinary calls
+
+**FIXED in part (09324d78f3bcc4d82533bdb312bd62d4e5212066).** The own-source LR-saving BL wrappers
+`sub_BLInput_wrapper` and `sub_BLInput_fpWrapper` consume incoming words,
+but the published baseline rendered empty argument lists when caller snapshots
+were absent. They now retain unknown input extent. A separate MAY FP0...7 byte
+closes through calls and survives fallback, reanalysis, copies and projection.
+Missing providers and per-call unwritten masks participate; FP-only changes
+requeue callers. No MAY mask becomes a positive source count. Exact alias/frame
+proofs and machine vector effects are unchanged. PendingRead remains 16 bytes;
+the summary stays within its existing 144-byte budget.
+
+Possible FP formals can precede GP inputs in source. Decline GP values whose
+source positions are unproved; retain independently established pointer prefixes
+only for authentic, unambiguous compiler helpers. Contracts come from Swift
+compiler `1b7bd8eaf460396047c2644d1d69afb4a404b13d`:
+`lib/IRGen/Outlining.cpp`, `lib/IRGen/GenExistential.cpp` and
+`stdlib/public/core/ErrorType.swift`. Matching printed/raw identities and folded
+symbol negatives are tested. These are prefix proofs, not complete C arities.
+
+Verification:
+
+- Own assembly and native C controls cover **195 observations** across O0/O2/Os,
+  including both source orders at the same mixed GP/FP entry, sparse reads,
+  overwrites, zero-input and prior-call-result controls. Named/locally stripped
+  fixtures cover **160 caller/API contract cases**. Helper pipelines cover three
+  callers, two optimization levels, five APIs and two source renderers.
+- Retain all **334 original Swift test files and named functions**. Five original
+  files intentionally change expectations: PureTailInput (unknown extent),
+  X8EntryABI (present input-using provider uncertainty, plus true-zero control),
+  BodyArityBound (unproved GP source position), StackArgs (undeclared sink order,
+  plus closed-body constant control), DroppedArguments (unplaced capture order).
+  No cases removed; HiddenStoreTests and BodyReadsTests remain unchanged.
+- Ten new tests; **26 unique independently compiled-red product mutations**,
+  native controls green throughout. An additional run of the mixed-position
+  mutation proves both amended capture assertions red. Exact source restoration,
+  rebuild and focused tests precede the full enforcing suite: **1,877 tests /
+  43 suites pass in 827.707 s**. All 1,035 frozen public inputs and five fixture
+  product hashes still match.
+- `Tools/blast-radius.sh <base> <new> <out> --real --perf` against `e6c478c`:
+  **583 inputs, four views, four SDK workloads, 2,336 paired cost rows**.
+  Instructions **7,488.1G -> 7,302.6G (-2.48%)**; summed per-run physical peaks
+  **22,155 -> 22,024 MB (-0.59%)**. Every default budget passes without override.
+  Structured/pseudo change 63 inputs, 39,719/40,248 lines; listing/JSON change
+  75, 41,088/153,241 lines. Four Go inputs account for most changes. Both whole
+  SDK xrefs outputs match. These are instruction counts, not wall-time speed claims.
+- Every delta is reviewed. All serialized function/block metadata and instruction
+  counts/text/addresses/targets/control flow match. The 61,350 changed JSON fields
+  are 19,841 arguments, 19,965 statements and 20,544 annotations: argument/extent
+  declines and scoped result redisplays, lost String-pair coalescing at 22 sites
+  with unchanged six-word proofs, 569 removed unused bindings with expressions
+  retained, 594 serialized existing physical calls/tails and propagated notes.
+  All 75 lexical-call exception functions are accounted for by function-reference
+  signatures, false generic/owner tokens, unused plumbing and 23 existing calls
+  materialized once in 17 ParserDiagnostics functions. No new decoded calls/edges.
+- Whole-SDK and five-app changed functions keep identical headers and lexical
+  control shapes. All 1,008 extra expression/binding review units are classified.
+  Fifteen expanded unknown lists retain the same decoded code, raw snapshots and
+  positive layout counts in guarded labs. One receiver call adds only an ellipsis;
+  a false leaf diagnostic and three inserted nullary statements map to existing
+  physical calls. The indirect case is matched to its exact function occurrence
+  among 77 shared names; only its statement DTO changes. Lexical audits are not
+  AST/lazy-execution or source-grounded app-accuracy proofs; JSON omits typed
+  callees and raw bytes.
+- All **130 CLI invocations** pass. Four SDK rerenders match measured hashes.
+  Ten renders of Clarc, GoodLinks, Terminal, TextEdit and Chess pass under a
+  2,000 MB footprint guard (maximum sampled 231 MB). Private bodies, strings and
+  audit reports remain ignored. No readiness percentage is inferred; pinned
+  outcome and entry-register benchmark tables remain unchanged.
+
+Candidate release SHA256:
+`d84a096e8e7ab30d54cad7e2ad4336af69289dd8bf4544355c223c82e7e1afa7`.
+Publication follow-up: the original `Tools/integration-gate.sh --push`
+independently rebuilt `9b28a4555c481720b4ab7d65560dc2c9a4fe89e5`, passed
+**1,877 tests / 43 suites (1002.168 s)** and pushed it and code `09324d7` to
+`origin/dev`. The independent release SHA256 is
+`c764cbf3572e9531882a78751ebdc724be019a9fba15663f3d3dce15706ea010`.
+All **583 inputs in each of four views** and all four SDK workload output
+hashes match the reviewed frozen release. All **2,336 paired cost rows** are
+positive; instructions **7,488.1G -> 7,314.2G (-2.32%)**, summed per-run physical
+peaks **22,155 -> 22,102 MB (-0.24%)**. Every default budget passes without
+override. A fresh fetch confirms local dev and origin/dev agree.
+Hosted [run 44121265588](https://github.com/CamdenBopp/swiftdc/actions/runs/44121265588)
+at `9b28a45` was queued when inspected on 2026-11-17; it supplies no test
+result yet. Earlier [run 44073528460](https://github.com/CamdenBopp/swiftdc/actions/runs/44073528460)
+at `e6c478c` failed Toolchain on Xcode 26.3 / Swift 6.2.4, with fixtures,
+build and suite skipped. This is separate from local gate validation.
+
+**OPEN:** complete source arity and GP/FP order through ordinary forwarders,
+nonstandard and stack transports, complete Go input/result layouts, actual sret
+ownership, `swifttail`/`swiftcoro` and other unmodelled helper effects. This fixes
+uncertainty retention without claiming the full ABI or a new comprehensive audit.
+
+
+## 2026-11-17: qualify callee evidence for Swift error folds
+
+**FIXED in part (e0b608c2873fa4c3a30f0d23bce75d0651fda0cf).** A separate Swift provider exports
+`plain_error_raise` and `getpid` with the Swift error ABI. The baseline
+`c095298` retains pre-call x21=0 merely because the names look like C and
+folds away real catch/forward paths. A declaration name is not a callee ABI
+proof. Require an independent language contract, exact raw symbol/provider
+binding and supported export, or a closed body proof. Validate strong
+two-level imports, complete islands, zero addends, and actual export/reexport
+identity; reject weak, TLS, wrong-provider and unsupported evidence. Provider
+exports are generated from SDK 27.2; ABI declarations remain SDK 27.0.
+Independent regeneration reproduces the table byte-for-byte.
+
+Body proofs close exact entries and outgoing transfers, declining x21 writes,
+unresolved edges and open fallthrough. Track entry return-address origin
+through copies, spills, joins and actual RET operands/authenticated returns.
+A separate temporary strict GP/vector preservation closure rejects transitive
+frame corruption without weakening existing carried MAY effects. Actual
+in-image GP reads and all vector inputs govern alias escape, rather than
+name-based arity; external formal counts do not prove an integer-only bank.
+The existing 144-byte summary bound remains. Additional decoded indirect
+bodies qualify error preservation only; ordinary argument/result and outlining
+facts retain the original requested/direct-dependency boundary.
+
+Native frame-alias reductions expose the strict-proof requirement: a helper
+returns a frame pointer in x19; a later call carries it through d0 or x9 to
+a writer that redirects saved LR to an error helper. Native returns 0; the
+pre-fix debug build renders 1; the fixed build declines the unsupported result.
+
+Verification of the exact frozen source:
+
+- All **335 existing Swift test files** are byte-identical to published HEAD;
+  two new files define **34 tests**. Native controls pass **114 observations
+  per optimization level** (Onone/O/Osize), **342 total observations**, not
+  342 distinct semantic cases. Six provider/caller LLVM pairs and twelve
+  calls explicitly use `swiftcc`/`swifterror`; twelve named/stripped import
+  inspections distinguish the custom provider from libSystem.
+- **95 unique independently compiled semantic-red faults** (91 product,
+  four generator) fail their intended tests with all 342 native controls
+  green under each. Exact restoration, rebuild and 35 selected tests pass
+  (22.247 s). `Tools/fixtures.sh`, `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build` pass **1,911 tests /
+  43 suites (950.578 s)**. All **1,045 public inputs / 24 fixture products**
+  match frozen hashes after verification.
+- `Tools/blast-radius.sh <base> <new> <out> --real --perf` compares frozen
+  releases against `c095298`: **601 inputs in four views + four SDK
+  workloads = 2,408 paired cost rows**. Instructions **7,341.6G -> 7,444.0G
+  (+1.39%)**; summed per-run physical peaks **22,439 -> 22,636 MB (+0.88%)**.
+  Every default budget passes without override. Four whole-SDK outputs match.
+- Every changed line across **14 inputs / 86 functions** is reviewed:
+  structured/pseudo/listing/JSON **218 / 218 / 220 / 470 lines**. All
+  serialized function/block metadata, instruction counts/text/addresses/
+  targets/control-flow DTOs match. JSON omits typed callees and raw bytes.
+  Its **238 changed fields** are 112 statements, 110 annotations and 16
+  arguments. Own-source changes decline false error zeroes/success constants,
+  preserve calls while removing unused bindings or materializing existing
+  producers, make unresolved exits explicit, and recover positive controls.
+  Named own-source producers remain once per function.
+- In two SDK dylibs, six specialized mergeTopRuns/finalizeRuns epilogues
+  recover `true`: raw code sets w0=1 and local primary Sort.swift confirms
+  the legacy Bool return. Two OperatorTable initializers preserve an existing
+  static-object pointer in x21 through a default-argument generator whose
+  owner name contains `throws` but whose body preserves x21. The existing
+  allocation binds once, then the initializer consumes it. Default-generator
+  argument notes redisplay that value; this does not prove source arity.
+- All **468 CLI invocations** pass. dump/layout/interface/objc/xrefs and
+  all stderr are identical; whole views match measured bytes. analyze/lab
+  raw instructions, headers and entry seeds match; filtered deltas share
+  the reviewed fixture semantics. Four guarded SDK rerenders match measured
+  hashes. Ten renders of Clarc, GoodLinks, Terminal, TextEdit and Chess pass
+  with identical paired outputs, maximum sampled **196 MB** under a
+  **2,000 MB** footprint guard. Private bodies/strings/reports stay ignored.
+
+Candidate release SHA256:
+`5b28d9206c36969bea5311bbb8f256104097d21de2276d54ec36c74cb8e1123c`.
+Publication follow-up: the original `Tools/integration-gate.sh --push`
+independently rebuilt `23d7bb192c57843917e1932d1ea64314dcb06375`, passed
+**1,911 tests / 43 suites (959.261 s)** and pushed it and code `e0b608c`
+to `origin/dev`. Independent release SHA256:
+`5224e05fd3c151d000a0687589cf6ce38f365cfca365c1907baaa57282d92339`.
+Every **601 inputs in each of four views** and all four SDK workload hashes
+match the reviewed release. All **2,408 positive cost pairs** pass default
+budgets without override: instructions **7,341.6G -> 7,450.6G (+1.48%)**;
+summed per-run physical peaks **22,439 -> 22,671 MB (+1.04%)**. A fresh
+fetch confirms local dev and origin/dev agree. Hosted
+[run 44209378717](https://github.com/CamdenBopp/swiftdc/actions/runs/44209378717)
+at `23d7bb1` failed Toolchain on Swift 6.2.4 / Xcode 26.3, with fixtures,
+build and enforcing suite skipped; it supplies no hosted test result.
+Hosted [baseline run 44124725391](https://github.com/CamdenBopp/swiftdc/actions/runs/44124725391)
+at `c095298` failed Toolchain (Swift 6.2.4 / Xcode 26.3), with fixtures,
+build and suite skipped; it supplies no hosted test result.
+
+**OPEN:** foreign C prototype arity/order/result width/memory ownership,
+general RET source reconstruction, complete fallthrough input/memory
+reconstruction and values carried across awaits. This qualifies no-error
+folds, not the full Swift/C ABI. No source-grounded app accuracy, readiness
+percentage or ABI coverage percentage is inferred; pinned benchmarks remain
+unchanged.
+
+
+## 2026-11-17: preserve compare-and-branch operand width
+
+**FIXED (86054a10d6906d10c82b4676f909dfa80557b7c6).** `branchTakenCondition` read a `cbz w0`
+operand from the canonical x-register map without narrowing it. An own-source
+producer returns `0x100000000`; native execution takes the low-word zero
+branch and returns 1, while published `23d7bb1` renders a whole-result test
+that selects 2. The same defect affects CBNZ and copied registers and does
+not require a runtime-name assumption.
+
+Use the existing width-aware operand reader for CBZ/CBNZ. Word views retain
+their low 32 bits; x views stay 64 bits; unavailable or opaque truncated
+values decline. Both published conditions and reconstructed diamond results
+use the correction. TBZ/TBNZ and the existing 64-bit-only zero-edge refinement
+are unchanged. This fixes machine operand width, not callee source typing.
+
+Verification of the exact frozen source:
+
+- All **337 existing Swift test files and declarations remain**; 336 files
+  are byte-identical. One LabReportTests assertion now requires the actual
+  masked w0 condition and is independently compiled red under the CBZ fault.
+  **Four tests** are added. The first full-suite attempt was stopped after
+  the obsolete lab-format expectation failed; it is not a passing run.
+- Native C callers at **O0/O2/Os** pass **72 observations each / 216 total**
+  over eight assembly forms and nine inputs. These are repeated observations,
+  not 216 distinct semantic cases. Named and locally stripped libraries cover
+  all five analysis APIs: **240 function/API checks / 2,160 input comparisons**,
+  each checking branch and selected value against actual native execution.
+  Unit matrices add **144 branch/result comparisons** without source ABI
+  inference. The assembly is fixed; the optimization levels apply to C callers.
+- **Three unique faults** independently compile and fail: bypass CBZ's view
+  (429 assertion issues), bypass CBNZ's view (428), and truncate 64-bit tests
+  (856). Native controls remain green under each. Exact restoration, rebuild
+  and **18 selected tests (1.075 s)** pass. `Tools/fixtures.sh`,
+  `swift build --build-tests`, then
+  `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build` pass **1,915 tests /
+  43 suites (924.489 s)**. All **1,048 public inputs / nine fixture products**
+  match frozen hashes after verification.
+- `Tools/blast-radius.sh <base> <new> <out> --real --perf` compares frozen
+  releases against `23d7bb1`: **610 inputs in four views + four SDK workloads
+  = 2,444 paired cost rows**. Instructions **7,453.8G -> 7,449.8G (-0.05%)**;
+  summed per-run physical peaks **22,786 -> 22,814 MB (+0.12%)**. Every
+  default budget passes without override. Both whole-SDK xrefs outputs match.
+- Every changed line in **80 inputs / 147 functions** is reviewed:
+  structured/pseudo/listing **294 lines each**, JSON **588**. Each function
+  changes one statement and one annotation; arguments and all serialized
+  function/block/raw-instruction/control-flow DTOs match. JSON omits typed
+  callees and raw bytes. Every field/line differs only by wrapping the existing
+  zero-tested value in a low-word mask: **122 Boolean-store predicates,
+  24 new-fixture selected returns and one mainOr return** in libKnownArity.
+  The latter calls pthread_main_np, whose word result controls a pointer-or-zero
+  return. Existing calls and control structure remain.
+- Four guarded whole-SDK rerenders match measured hashes. Syntax changes
+  **five** Boolean stores; Parser **one**. Independent LLVM raw decoding
+  confirms `cbz w1`, the two w8 constants and `strb` at all six sites.
+- All **234 unique CLI invocations** pass. All **117 stderr pairs** and
+  **45 dump/layout/interface/objc/xrefs stdout pairs** match. Whole views match
+  measured bytes; analyze/lab raw instructions, headers and entry seeds match.
+  All **120 analyze/lab/filtered changed line pairs** are exact mask additions;
+  no other CLI contract changes occur.
+- Ten Clarc/GoodLinks/Terminal/TextEdit/Chess renders pass a **2,000 MB**
+  footprint guard (maximum sampled **210 MB**). Every app delta is reviewed:
+  **129 changed line pairs / 133 inserted masks**, including unresolved
+  producers and nested selects. Exact reverse transformation preserves other
+  zero tests, calls, headers and control text. Private bodies, strings and
+  reports stay ignored; this is not source-grounded app accuracy.
+
+Candidate release SHA256:
+`ce9529d865ec7c64b0107b1f9aceb7b656eafa8ea0bf4a9e023b6a3a647e06f3`.
+Publication follow-up: the original `Tools/integration-gate.sh --push`
+independently rebuilt `1635cbc32e30a4ded1c548e9ce84ff23b8d25ea0`, passed
+**1,915 tests / 43 suites (945.388 s)** and pushed it and code `86054a1`
+to `origin/dev`. Independent release SHA256:
+`30f595c522c8ad6916926ab8631569de2db3ff4e27c03cd55ade900a8269be39`.
+All **610 inputs in each of four views** and all four SDK workload hashes
+match the reviewed candidate. Structured SDK output retains the six reviewed
+store changes; both xrefs outputs remain unchanged against baseline. All
+**2,444 positive cost pairs** pass default budgets without override:
+instructions **7,453.8G -> 7,459.2G (+0.07%)**, summed per-run physical peaks
+**22,786 -> 22,838 MB (+0.23%)**. A fresh fetch confirmed agreement with
+origin/dev. Hosted [run 44219380730](https://github.com/CamdenBopp/swiftdc/actions/runs/44219380730)
+at `1635cbc` failed Toolchain on Swift 6.2.4 / Xcode 26.3, with fixtures,
+build and enforcing suite skipped; it supplies no hosted test result.
+
+**OPEN:** foreign C prototype arity/order/results/ownership and other named
+runtime contracts, general RET/fallthrough reconstruction and values carried
+across awaits. No readiness/coverage percentage or pinned benchmark is
+recomputed. This is a bounded machine-width correction.
+
+## 2026-11-18: qualify named declaration contracts by provider
+
+**FIXED (3af60f82f0652308f834a534b21b1dd8c0237c17), within the catalogued declaration consumers.**
+`1635cbc` borrowed the SDK's zero-formal `getpid` declaration for an own-source
+foreign Swiftcc `getpid(Double) throws -> Double`. Related reductions named
+`sqrt`, `free`, `CGRectInset` and `printf` demonstrate distinct GP/FP,
+non-void, aggregate and variadic conventions. Require exact strong
+symbol/provider evidence before applying named arity, prototype placement,
+no-stack-argument, memory-helper, result-bank, word-result and scalar-tail
+facts. Independent body/error-register proofs do not establish a declaration;
+ARC retains its stronger identity evidence, and language entities retain
+their separate contracts. Facts survive instruction copies, summaries,
+cache keys/values and reanalysis. Unbound declarations retain unknown extent.
+
+Apply the same boundary to result-buffer conventions. A foreign Swift
+`malloc` writes five words through x8, invalidating the caller's preceding
+stores; decline the old fabricated five-word constructor. A genuine SDK
+GOT `malloc`/`free` pair does not receive that result buffer, so refresh its
+late-bound direct convention and replay before folding the unchanged stores.
+ObjC dispatch does not declare the selected method's result convention.
+The exact manual-arity switch labels add **19 names / 231 symbol-provider
+pairs** to the SDK provider catalogue without removing entries or changing
+its **263 library indices**; arity membership alone adds no error-register
+preservation fact. Positive CoreGraphics and Swift-intrinsic fixture controls
+now link their providers; their former dynamic-lookup recipes remain as
+explicit unbound controls.
+
+**Verification.** All **338 original Swift test files and declaration
+counts remain**, with **330 files byte-identical**. Seven files add binding
+evidence to positive setups while retaining their result/register predicates;
+one Go expectation replaces its unproven fixed `clock_gettime` argument list
+with unknown extent and checks the exact target, single call and raw inputs.
+There are **27 added tests**: 25 regressions observed red under separately
+compiled faults, plus two independent native/declaration controls.
+**34 faults** (31 product, three generator) compile and fail their intended
+tests, recording **5,761 assertion issues**. Restoration is byte-exact;
+rebuild and **30 selected tests** pass before the rebuilt full
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build` passes
+**1,942 tests / 43 suites (993.561 s)**. All **1,064 public input hashes**
+and **788 fixture product hashes** remain fixed throughout qualification.
+
+Own-source Onone/O/Osize providers, callers, native drivers and independent
+IR/import checks pass **672 native observations**: 342 plain-name/error,
+258 GP/FP/void/aggregate/variadic and 72 result-buffer observations. These are
+observations, not distinct semantic cases. **30 import inspections** and
+**45 lowered declaration/definition checks** distinguish custom and genuine
+SDK entries. The buffer native control reads the first field; the decompiler
+assertions inspect all five stored words. Named and locally stripped products
+cover all five analysis APIs.
+
+`Tools/blast-radius.sh <base> <new> <out> --real --perf` compares matched frozen
+releases against `1635cbc`: **648 inputs in four views plus four SDK workloads**,
+**2,596 paired cost rows**, **7,507.3G -> 7,513.5G instructions (+0.08%)** and
+**23,673 -> 23,801 MB summed per-run physical peaks (+0.54%)**. Every default
+budget passes without override. The corpus includes **35 identical,
+independently raw-header-checked preflight-decline pairs**; these are not
+successful decompilations. All four whole-SDK structured/xrefs output pairs
+are unchanged; four guarded structured rerenders match measured hashes.
+Release SHA256:
+`952376415826f920024d73266f29b23db67cea8e09ee78dded2e14d5d1faa4ae`.
+
+Every fixture delta is reviewed: structured **53 inputs / 894 diff-side lines**,
+pseudo **53 / 890**, listing **58 / 1,552**, JSON **58 / 4,902**. JSON changes
+**1,951 fields across 565 functions**: 776 annotations, 695 argument lists,
+480 statements. Serialized instruction text/addresses/targets/control-flow
+and function/block/CFG metadata match; JSON does not serialize typed callees
+or raw bytes. Deltas retire unbound formals and declaration-specific result
+facts, preserve displaced producer evaluations, decline the foreign five-word
+constructor and fold the genuine SDK control. Argument-transforming wrappers
+keep unknown extent. A local handwritten os_log-name helper uses x9: retiring
+the borrowed six C formals to an existing body-read projection is not proof
+of zero machine inputs or zero source formals. Listing lines match classified
+annotations; structured/pseudo lines match classified statements and four
+consistent temporary-condition renamings.
+
+All **1,248 CLI invocations** pass: 48 inputs, thirteen commands, two binaries.
+All **624 stderr pairs**, **240 metadata/xrefs pairs**, **384 measured whole
+views**, **192 filtered-body comparisons** and **96 analyze/lab raw/header/entry
+checks** match their expected counterparts. Each changed semantic line is
+classified, including opaque result snapshots tied to the same producer
+addresses; no concrete equivalence between GP and FP result banks is claimed.
+
+Ten guarded Clarc/GoodLinks/Terminal/TextEdit/Chess pseudo renders pass,
+maximum sampled **203 MB** under a **2,000 MB** footprint guard. All **84,833
+function headers and their order** remain. All **1,674 changed diff-side
+lines across 391 functions** are reviewed: 346 functions only retire
+unsupported declarations, conservatively project arguments, remove unused
+bindings and rename temporaries; 30 preserve 36 producer evaluations exposed
+from retired arguments; eight hide now-unused runtime uniqueness bookkeeping
+while independent strong imports and Lab confirm the machine calls remain.
+Five Terminal functions gain receivers, integer-field loads, a dynamic stack
+buffer or a saved handler, all checked against independent LLVM instructions
+and ObjC ivar metadata. Two Chess sites retire one unknown recovered prefix
+at unchanged unresolved authenticated calls, retaining unknown extent.
+Fifteen supplemental guarded Lab runs support these checks. This establishes
+output reliability, not source-grounded app accuracy. Private bodies,
+strings and reports remain ignored; only app names and aggregates are public.
+A final synthetic late-probe test changed no production or fixture bytes;
+strict binary/source/input hashes retain these completed CLI/SDK/app runs,
+with a fresh full suite, release and default-cost comparison.
+
+**Performance and DEAD END.** The first soundness candidate failed default
+cost limits (**+9.85% total instructions**, SDK workloads roughly +12–14%).
+A release profile identified repeated declaration work. Reject absent binding
+bits/non-transfers before parsing and memoize immutable per-site decisions.
+A remaining fixture outlier still cost about +13–14% because newly bound
+stack-probe bits alone retriggered two function analyses. Omit replay only
+when the first trace already used the exact registered GOT slot's special
+transfer; three alternating pairs give **+0.39% median instructions** with
+identical output. All 2,596 fixture/SDK output/exit pairs remain byte-exact to
+the original soundness candidate. A late-probe regression independently
+requires replay where no earlier slot model existed. Moving direct conventions
+earlier was tried and reverted: **+13.35% versus baseline**, about **-0.12%**
+versus the prior outlier candidate, no material improvement. Only experiment-added
+assertions were reverted with that dead end; no pre-existing test was removed.
+
+**Published:** the original `Tools/integration-gate.sh --push` independently
+rebuilt `90b41690c063d5bd2a1c8d718ac520245b4f8cd0`, passed
+**1,942 tests / 43 suites (1014.377 s)** and pushed it and code `3af60f8`
+to `origin/dev`. All **648 inputs in each of four views**, including the
+35 expected preflight-decline pairs, and all four SDK workload output hashes
+match the reviewed release. Gate costs are **7,507.3G -> 7,521.3G instructions
+(+0.19%)** and **23,673 -> 23,686 MB summed per-run physical peaks (+0.06%)**;
+all **2,596 positive cost pairs** meet every default budget without override.
+All **1,064 public source hashes / 788 fixture product hashes** agree in the
+main and gate checkouts. Independent gate release SHA256:
+`e3fb96b32642ca9c20ae09546ee361fa9fe09a535424e61d40b99f0724c9b908`.
+A fresh fetch confirmed agreement with origin/dev before this documentation
+follow-up. Hosted [run 44271037278](https://github.com/CamdenBopp/swiftdc/actions/runs/44271037278)
+at `90b4169` failed Toolchain on Swift 6.2.4 / Xcode 26.3, with fixtures,
+build and enforcing suite skipped; it supplies no hosted test result.
+
+**OPEN:** general/transitive incoming-x8 ownership through in-image helpers,
+narrow C parameter/result widths, other name-only call-effect models,
+general RET/fallthrough reconstruction and values carried across awaits.
+This fixes named declaration provenance and its listed consumers, not all C
+ABI recovery. Pinned Ghidra/entry benchmarks and readiness/coverage estimates
+are not recomputed.
+
+
+## 2026-11-18: require body proof for boxed existential projection effects
+
+**FIXED (`c0429a1`):** a name-only readonly/plumbing contract kept a stale 7
+across a foreign projection-shaped call that writes 41 into the caller's
+local, then hid the call. The independent native caller returns 42; the
+published binary showed `boxedProjectionConsumeWord(7)`. A named in-image
+helper differing from a canonical shape by one STR had the same defect.
+The caller now retains the effectful call and declines the stale argument.
+
+Exact complete 9/19-instruction helper bodies supply a separate typed
+memory fact, including named candidates without renaming them. Exact
+entry/immutable-pointer checks, direct and late-indirect resolution,
+cache isolation, instruction copies and independent replay on proof
+addition/revocation keep it distinct from SDK, ARC and Swift-error facts.
+Unproved external source argument extent declines; existing in-image
+body-read layout remains independent. Statement, text-condition and reused
+producer rendering require the same proof before hiding a projection.
+
+All **339 existing Swift test files and function declarations remain**;
+**338 files are byte-identical**. One test supplies explicit body proof to
+its original positive expectations and adds name-only rejection. **13 tests
+are added**: twelve regression tests each observed failing and one native
+control. **25 independently compiled faults** fail with **1,681 assertion
+issues**, while the native control stays green. Own-source assembly and C
+drivers give **129 native observations**, at three **C driver** optimization
+levels; this is not a three-level Swift code-generation claim. The fresh
+fixture-enforced **1,955 tests / 43 suites** pass (**903.366 s**).
+
+Against the published `90b4169` release, **658 inputs in four views plus
+four SDK workloads** give **2,636 paired cost rows**: instructions **+0.60%**,
+summed per-run physical peaks **+0.07%**. Every default budget passes without
+override. Only the new client and its stripped copy change: five functions,
+22 JSON fields, 14 listing diff-side lines and 11 lines in each pseudo and
+structured view. Every delta is reviewed against native execution and raw
+LLVM instructions/imports. The 35 identical independently checked
+preflight-decline pairs are not successful decompilations.
+
+All **468 CLI invocations** pass and every difference is classified. Four
+guarded SDK rerenders match measured hashes; all four whole-SDK
+structured/xrefs output pairs are unchanged. Ten guarded renders of the
+five original apps pass with **byte-identical output**, retaining all
+**84,833 function headers and their order**; maximum sampled
+footprint is **195 MB** under a **2,000 MB** guard. This is output
+reliability, not source-grounded app accuracy. The final rebuilt release is
+byte-identical to the reviewed candidate.
+
+The original integration gate independently rebuilt `7a7f43f`, passed
+**1,955 tests / 43 suites (994.975 s)** and pushed it and code
+`c0429a1` to `origin/dev`. All **658 inputs in four views** and all four
+SDK workload hashes match the reviewed release. Gate costs are
+**+0.71% instructions / +0.38% summed physical peaks**; all
+**2,636 paired cost rows** meet every default budget without override.
+All **1,071 source / 797 product hashes** agree in main and gate checkouts;
+a fresh fetch confirmed remote agreement. The independent gate release
+SHA256 is `dca3dbdd1d4728ddf053b558a8dc573da780ff2d4244ce7dfd41a4218175e1a4`.
+Hosted [run 44289424221](https://github.com/CamdenBopp/swiftdc/actions/runs/44289424221)
+failed Toolchain on **Swift 6.2.4 / Xcode 26.3**. Fixtures, build and the
+enforcing suite were skipped; it supplies no hosted test result.
+
+A historical check against Claude's `ff0e782` retains all **318 original
+Swift test files** and their named function declarations. **293 files are
+byte-identical**; the other **25** have reviewed setup/expectation changes,
+including explicit declines, FP views and positive binding/body evidence.
+No `@Test` or `@Suite` annotations were removed. Inspect the original-file
+changes with `git diff --diff-filter=M ff0e782..7a7f43f -- Tests`.
+
+**Corpus provenance:** the fresh fixture cache adds ten built products;
+an old auxiliary Python bytecode file is absent. 179 existing product hashes
+changed on rebuilding. Both frozen releases use the exact same current
+797-product corpus; no cross-slice byte-equivalence claim is made for those
+rebuilt products. All 1,071 public source and 797 product pins stayed fixed
+through full qualification, CLI, SDK and app runs.
+
+Reproduce: `Tools/fixtures.sh`; rebuild tests with `swift build --build-tests`,
+then `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`. The seven caller
+cases and separate two-shape pointer/no-write controls live in
+`Fixtures/Sample/boxed_projection_*`; run the six built
+`boxed-projection-*-oracle` programs. Freeze matched releases built with
+`swift build -c release --scratch-path .build-release`, then run
+`Tools/blast-radius.sh <base> <new> <out> --real --perf`. The code commit
+records every fault/test mapping and each changed fixture line/field.
+Reviewed release SHA256: `aa1e2d858ea6a23d4459965bf37bc2add37a2107255b838513024f0006dacc02`.
+
+**OPEN:** the near-shape helper's unchanged two-GP body-read prefix is not
+full source ABI recovery; raw x9=41 supplies an additional nonstandard
+input. The returned projection-pointer follow-up is recorded below at
+`3a51ab8`; readonly effects alone do not prove returned-pointer provenance.
+General source ABI and
+incoming-x8 ownership, other name-only call effects, C widths,
+RET/fallthrough and values across awaits remain open.
+Pinned Ghidra/entry measurements and readiness/coverage percentages are
+not recomputed. The published local gate and hosted toolchain failure are recorded
+separately above.
+
+
+## 2026-11-18: retain frame origins of projection results
+
+**FIXED (`3a51ab8`):** an exact readonly projection can return its caller's
+container/payload address. A later write through that opaque result left the
+pre-write frame value live: `projectionAliasS1B0M1` rendered
+`projectionAliasConsumeWord(7)` while its native result is 42. The result now
+retains latent MAY origins and the consumer declines the stale value.
+
+The new typed state metadata belongs to the opaque producer. It captures the
+inline container and a frame-backed first-word box header before the call,
+joining possible lower bounds and widening unsupported/partial provenance.
+Canonical alignment adds 16..256 bytes. Copies and spills keep producer
+identity; joins union metadata before handling lost values. Unknown arithmetic
+or a lost alias retains conservative escape reach. Direct writes and decoded
+literal-store calls invalidate the shared frame owner independently of saved
+register boundaries. The fixture includes a boxed payload preceding its
+container with a saved word between header and payload.
+
+A fully decoded literal-store body cannot capture its input pointer. Physical
+transport across a logical result boundary retains MAY reach on the new
+producer, with whole-frame fallback when that transport falls out of the model.
+Exact returned-pointer values, general identity-return contracts and complete
+source arity remain unproved. Ignored results and unrelated getpid calls retain
+unescaped locals; an unrelated word and a different producer stay intact.
+
+The own-source fixture has **48 callers / 144 native observations**, repeated
+at C-driver O0/O2/Os. The fixed assembly bodies exercise two helper shapes;
+these counts do not establish three Swift lowering levels. Named/stripped
+images contain **70 wrong known caller-image results** at the published
+`7a7f43f` baseline; all 70 now decline. **26 correct controls remain unchanged**.
+Independent LLVM evidence checks 840 equal named/stripped instruction-byte
+records, both helper bodies, consumer/identity bodies and the saved-word layout.
+All 256 alignment-byte outcomes lie in 16..256.
+
+All **340 pre-existing Swift test files remain byte-identical**. Add **eleven
+tests**: ten regression tests each observed red under compiled faults, plus
+one native/raw/import control. **22 independently compiled faults** fail while
+the native control stays green. Each batch ends with exact canonical source
+restoration, a rebuild and green tests. One separate whole-frame retagging
+coarsening stays green; it is excluded from rejected-fault evidence and supplies
+no precision proof at that boundary. The fresh fixture-enforced suite passes
+**1,966 tests / 43 suites in 922.508 s**.
+
+Matched frozen releases over **663 inputs in four views plus four SDK workloads**
+give **2,656 paired cost rows**: **7,583.6G -> 7,584.7G instructions (+0.01%)**,
+**24,040 -> 23,929 MB summed per-run physical peaks (-0.46%)**. Every default
+per-input/global budget passes without override. All **5,304 render exits**
+match; the **35 expected preflight-decline pairs** remain identical and are
+independently checked against raw headers. Those declines are kept outside
+successful-decompilation claims.
+
+Every fixture difference is classified: **12 inputs / 80 functions / 436 JSON
+fields** (171 annotations, 150 statements, 99 argument elements, four argument
+arrays and twelve inferred indirect targets). The new fixture accounts for
+210 fields. The other **226 fields in ten existing inputs are conservative
+precision losses** after a projected pointer may escape: metadata/witness
+reloads, vectors, receivers, result aliases and saved returns lose proof. Sample
+variants retire three inferred witness targets each; StrippedFold loses a
+metadata/witness prefix; the existential oracle declines a spilled return after
+destruction; parser diagnostics loses vector/self/result aliases; the debug
+sample keeps raw stores formerly folded into array arguments. These former
+values are not labelled native-refuted errors. Restoring useful precision needs
+stronger readonly/noncapture proofs.
+
+All **342 listing / 288 structured / 286 pseudo / 832 JSON diff-side lines**
+are accounted for. Pseudo suppresses the same builtin string constructor in
+both versions. Applying the 436 fields reconstructs candidate JSON exactly;
+function/block/CFG metadata and other instruction data stay identical, while
+twelve inferred BLR target facts are explicitly retired. Named/stripped raw
+code bytes agree. The current cache has **802 products**, adding five with no
+removals; 181 existing hashes changed on rebuilding. Both releases use the same
+current corpus. The earlier hand-built O0 oracle differs from the qualification
+copy only in UUID/signature bytes; exact qualification products supply the final
+native/raw evidence. All **1,075 source / 802 product hashes** stay fixed through
+qualification and review.
+
+All **858 core CLI/view invocations** pass. Analyze's 342 changed lines match
+reviewed fields; filtered views transfer through 120 exact whole-body matches
+and twelve classified pre-existing extent/address-label variants. Four Sample
+baseline extent discrepancies disappear in the candidate; three SDK addresses
+retain the pre-existing label/hex split. All **168 changed lab records** only
+lose existing call/exit values or target/layout facts; raw instructions and
+headers match. Four xrefs outputs each add three unresolved sites and three
+functions without resolved callers, exactly matching the twelve retired targets;
+the explicit unresolved-dispatch warning remains.
+
+Four guarded SDK rerenders match measured hashes. Whole SwiftSyntax changes
+**six lines in one function**: remove an unused binding wrapper while retaining
+the call, then renumber a later producer. All remaining text matches; the other
+three SDK workload hashes are unchanged. Ten guarded renders of the original
+five apps pass, retaining **84,833 function headers and order**. Clarc changes
+one function and GoodLinks 92 (**930 diff-side lines**), reviewed against raw
+LLVM instructions: **115 newly unresolved PCs / 100 changed store operands**
+match the binary, and write-width/control-statement counts remain. All 93 bodies
+call independently byte-proven projection helpers. Terminal, TextEdit and Chess
+are byte-identical. Maximum sampled footprint is **201 MB** under a **2,000 MB**
+guard. These are vendor-binary reliability/output checks with explicit precision
+costs; source-grounded app accuracy remains unmeasured. Private bodies, strings
+and reports stay outside this repository's public history.
+
+Reproduce: `Tools/fixtures.sh`; run the three built
+`Fixtures/Sample/projection-return-alias-*-oracle` programs. Rebuild tests with
+`swift build --build-tests`, then run
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`. Freeze matched releases
+built with `swift build -c release --scratch-path .build-release`, then run
+`Tools/blast-radius.sh <base> <new> <out> --real --perf`. The code commit records
+the complete compiled fault/test matrix and each output-change class.
+Reviewed release SHA256:
+`7f5c2d078b9155d1dfbfdc32393dd667ae50c9af50f6c3c0745e825c1790e202`.
+
+The original integration gate independently rebuilt `877e613`, passed
+**1,966 tests / 43 suites (983.799 s)** and pushed it and code `3a51ab8` to
+`origin/dev`. Every output/exit pair across **663 inputs in four views** and
+all four SDK workload hashes matches the reviewed release. Gate costs are
+**7,583.6G -> 7,591.5G instructions (+0.10%)** and **24,040 -> 24,076 MB summed
+per-run physical peaks (+0.15%)**; all **2,656 paired cost rows** meet every
+default budget without override. Complete **1,075 public source / 802 product
+hash inventories** agree in main and gate, and a fresh fetch confirms the
+published head. Independent gate release SHA256:
+`6396b0d83af266954f1a3ea8f81dcbde98536ccab1b1cd4fe997ad1e74065b78`.
+Hosted [run 44320110986](https://github.com/CamdenBopp/swiftdc/actions/runs/44320110986)
+failed **Toolchain** on **Swift 6.2.4 / Xcode 26.3**. Fixtures, build and the
+enforcing suite were skipped; it supplies no hosted test result.
+The earlier projection-body gate and hosted toolchain failure remain historical.
+
+**OPEN:** general
+readonly/noncapture summaries, unknown receiver/layout recovery, other name-only
+call effects, general source ABI and incoming-x8 ownership, C widths,
+RET/fallthrough and values across awaits. Pinned Ghidra/entry measurements and
+readiness/coverage percentages are not recomputed.
+
+## 2026-11-18: read C arguments at their declared widths
+
+**FIXED (`9ed9748`):** qualified C declaration arguments read their declared signed
+or unsigned 8/16/32-bit value instead of an entire register. Wide Swift scalar
+inputs receive explicit truncation/sign interpretation; unavailable physical
+bits decline before producer-use collection, retaining the producing call.
+Computed comparisons, literal phis and masks retain their proven complete 0/1
+words. A bare source Bool does not prove the rest of its incoming register.
+
+Own-source fixtures cover **12 functions at all three Swift optimization
+levels**, **36 independently bounded exported entries**, **57 native
+observations**, **96 numeric conversions** and **96 computed-word cases**.
+All **341 existing Swift test files remain byte-identical**. Eleven tests are
+added: eight regressions observed red under **ten independently compiled
+faults**, plus three independent controls. Restored tests rebuild green.
+The fixture-enforced suite passes **1,977 tests / 43 suites (960.794 s)**.
+
+Against the prior published behavior (`3a51ab8`), **669 inputs in four views
+plus four SDK workloads** give **2,680 paired cost rows**: **+0.014855%
+instructions / +0.376453% summed per-run physical peaks**. Every default budget
+passes without override. All **5,352 render exits** match, including the
+**35 independently checked preflight-decline pairs**; those remain declines.
+Both releases use the exact same **808-product corpus**. All **1,141 public
+input hashes** remain fixed throughout qualification and review. The cache
+retains every product; 184 product hashes changed during the full rebuild,
+mostly UUID/stabs changes. No cross-slice product-byte equivalence is claimed.
+
+All differences are reviewed: **five inputs / 130 JSON fields**, comprising
+**56 own-source corrected fields, 54 precision fields, ten value-equivalent
+views and ten binding renames**. Every listing (90), structured (87), pseudo
+(87) and JSON (249) diff-side line maps to these fields. Applying the fields
+reconstructs candidate JSON exactly; function/block/CFG metadata and raw
+instruction data match. C result widths remain unproved: getpid/fileno
+producers stay visible while affected consumers lose arguments. The stripped
+SDK strerror_r site also loses an unqualified argument; its named counterpart
+was already unknown. These are explicit precision costs, not native-refuted
+old values. Raw instruction bytes, starts and strong system imports corroborate
+the changed SDK sites.
+
+All **416 CLI/view invocations** pass. Metadata/xrefs and all 16 Lab pairs
+match; whole/filtered outputs and every analyze delta are reviewed. Four
+guarded SDK rerenders match measured hashes; all four SDK workload pairs are
+byte-identical. Ten guarded renders of the original five apps pass and retain
+all **84,833 function headers/order**. **216 changed functions / 874 diff-side
+lines** contain **397 argument precision losses and seven value-equivalent
+views**. All **974 visible catalog calls** retain their exact order/count;
+14 lifted ObjC/Swift producer cases retain complete expressions. Independent
+Mach-O/raw checks cover **33,108 instruction words, 419 direct C consumer
+sites and 74 strong import/provider names**. Memory-write widths and control
+statement counts remain. TextEdit is unchanged. Maximum sampled footprint is
+**336 MB under a 2,000 MB guard**. These checks measure vendor-binary output
+reliability; source-grounded app accuracy remains unmeasured.
+
+Reproduce: `Tools/fixtures.sh`; run the three
+`Fixtures/Sample/c-narrow-arguments-*-oracle` executables; rebuild with
+`swift build --build-tests`, then
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`. Compare matched frozen
+releases using `Tools/blast-radius.sh <base> <new> <out> --real --perf`.
+Reviewed release SHA256:
+`49c17af2630176679118565e82c9a5e6d983e1a5f1dfb7e2c9d893e85b897877`.
+The original integration gate independently rebuilt `549350f`, passed
+**1,977 tests / 43 suites (1,034.902 s)**, and pushed it with code `9ed9748`
+to `origin/dev`. Both sides of the gate comparison match the reviewed frozen
+releases across all **669 inputs in four views** and four SDK workloads.
+All **2,680 paired cost rows** meet every default limit without an override:
+**7,599,375,196,685 -> 7,606,306,521,185 retired instructions (+0.091209%)**;
+**25,294,568,272 -> 25,393,504,080 bytes summed per-run physical peaks
+(+0.391135%)**. The gate's **1,141 public file / 808 fixture product hashes**
+match main, both trees were clean, and a fresh fetch confirmed publication.
+Independent gate release SHA256:
+`5c47463d19a9c0ccfa933489ca031215bad628409ace3c30e7282e2ab660d899`.
+Hosted [run 44359228060](https://github.com/CamdenBopp/swiftdc/actions/runs/44359228060)
+failed **Toolchain** on **Swift 6.2.4 / Xcode 26.3**. Fixtures, build and the
+enforcing suite were skipped; it supplies no hosted test result.
+
+**OPEN:** C result widths, fixed integer parameters on special format paths,
+C Bool formals, source widths for fields/call results, general Swift
+argument/RET narrowing, incoming-x8 ownership and values across awaits.
+Pinned Ghidra/entry benchmarks and readiness/coverage percentages are unchanged.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/9ed974813e44b84da368f40adeb8627cabce43bf)
+for the exact compiled fault-to-test mapping.
+
+## 2026-11-18: qualify narrow Swift integer return views
+
+**FIXED in the proved subset (`3ba928e1387e58ad1a4b9c173a78b50e9c51a01b`):** signed/unsigned 8/16/32-bit
+Swift results consume only their declared bits. A bare optimized RET that
+rendered `arg0` for Int64-to-Int8 now exposes the required signed view; stores,
+selects and known producers use the same proof before rendering and producer
+consumption. Field widths come from existing exact reads or entry seeds.
+Already-qualified awaited results retain only their proved result bits; no
+new async frame/context/argument/result seed is added. A result with unproved
+physical bits declines. A C tail result retains its call before `return ?`
+through a typed fact, independent of annotation text.
+
+Own-source fixtures at **-Onone/-O/-Osize** supply **54 products / 45 exported,
+LC_FUNCTION_STARTS-bounded, raw-byte-checked entries / 702 native observations**
+(453 conversion observations and 249 controls). Twenty old return instances
+are refuted and now projected; three old C atomic wrapper views are refuted
+and now decline while preserving their call. Getter and partial-load outputs
+are controls, not newly refuted values. The initial Int64 value-self shape
+had no supported GP entry; the reduced WordBox uses Int and an existing
+proved convention. The address-only Osize outlined-helper decline remains
+unchanged; it is not counted as corrected. Analysis-only seams cover 24
+synchronous/asynchronous call-result cases and 12 qualified awaited-width
+cases. Numeric conversions cover 288 cases. None establishes native async ABI
+coverage or updates the pinned entry/accuracy measurements.
+
+The full rebuilt enforcing suite passes **1,993 tests / 43 suites
+(1,021.366 s)**. All **342 original test files remain**: 341 byte-identical;
+ExitFactTests has 16 added lines for the independent call-before-return
+oracle, retaining every original line/assertion. Two new files add 16 tests:
+**12 regression guards each seen red under compiled faults**, four controls.
+All **27 independently compiled faults** are rejected, the four controls stay
+green in each, and the extended oracle is red under a dropped tail fact.
+Exact source restoration rebuilds and passes all 30 focused tests. All
+**1,152 public inputs and 862 fixture products** remain fixed during review.
+
+Matched releases against the published C-argument behavior use **723 inputs
+x four views plus four SDK workloads = 2,896 positive paired cost rows**.
+Instructions retired: **7,702,334,181,464 -> 7,706,718,572,682 (+0.056923%)**.
+Summed per-run physical peaks: **26,878,893,960 -> 26,932,289,488 bytes
+(+0.198652%)**. Every default per-input/global cap passes without override.
+All **5,784 render exits** match; 35 identical preflight-decline pairs are
+independently checked against raw headers and remain declines. All eight SDK
+workload runs exit zero; three paired hashes match, with one Syntax structured
+precision loss below. All four guarded structured rerenders match their
+individual measured hashes.
+
+The exhaustive public delta review covers **23 inputs / 71 functions / 158
+fields** (74 annotations, 84 statements): 20 native-refuted return views,
+three refuted C views declined with their calls retained, 36 conservative C
+result declines, nine SDK same-width unsigned views, and three SDK unknown
+result references declined while retaining their indirect calls. Applying
+the fields reconstructs candidate JSON exactly. All structured (181), pseudo
+(181), listing (148) and JSON (300) diff-side lines reconstruct from the same
+classification. Raw instructions, arguments, block/CFG/function metadata
+stay fixed. The three empty annotations becoming absent account for six
+listing-side lines. Independent SDK checks cover **18 nlist/function-start
+frames and 3,007 raw instruction words**, including nine direct calls to
+same-width signed producers and three preserved indirect calls. Named and
+stripped SDK text bytes match; no native SDK accuracy correction is claimed.
+
+**OPEN (measured precision cost):** `CompilerSwiftSyntax.Keyword.rawValue.getter
+: Swift.UInt8` changes `(self & 255)` to `?`. The new proof does not qualify
+an enum-self atom's physical integer width. This is not a native refutation
+of the old output. Its symbol, function start and two raw instruction words
+(ldrb/ret) agree with ten guarded filtered/Lab runs. Both structured bodies
+match measured output and raw Lab facts remain identical. Reproduce on the
+installed host `libSwiftSyntax.dylib`:
+`swiftdc disasm <host>/libSwiftSyntax.dylib -f 'Keyword.rawValue.getter' --structured`.
+C result code `i` also lacks exact width/signedness and can mean a pointer;
+no C result type is guessed from its spelling. Existing correct C result
+renders can therefore become explicit declines; recovering those requires
+qualified result-width evidence.
+
+All **1,742 CLI runs** pass (67 inputs x 13 commands x two releases).
+All 335 metadata/xrefs pairs, 67 Lab pairs and 871 stderr pairs match;
+536 whole-view outputs match measured renders, 268 filtered comparisons
+match whole bodies, and every Analyze/filtered delta maps to approved fields.
+An additional 48 filtered runs cover all 12 changed SDK functions. All ten
+guarded original-app renders pass with **84,833 function headers, bodies and
+order byte-identical**, unchanged input hashes and matched diagnostics.
+Maximum sampled footprint is **211 MB under a 2,000 MB guard**. No new
+source-grounded app accuracy or readiness claim follows.
+
+Reproduce with `Tools/fixtures.sh`, the 27
+`Fixtures/Sample/narrow-integer-return-*-oracle` executables,
+`swift build --build-tests`, then
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`. Build both releases
+with `swift build -c release --scratch-path .build-release` and compare using
+`Tools/blast-radius.sh <base> <new> <out> --real --perf`.
+Reviewed baseline SHA256:
+`49c17af2630176679118565e82c9a5e6d983e1a5f1dfb7e2c9d893e85b897877`.
+Reviewed candidate SHA256:
+`879cd1118b45598489c2209d89bc4463a873fcaecceef583930ce5a27018f81a`.
+The original integration gate independently rebuilt and pushed `6c40aea`
+with code `3ba928e`, passing **1,993 tests / 43 suites (962.779 s)**.
+Both sides match the reviewed releases across all **723 inputs x four views**
+and all four SDK workloads. All **2,896 paired cost rows** meet every default
+cap without override permission or use: **7,704,142,369,610 ->
+7,717,056,592,175 instructions (+0.167627%)**; **26,858,166,808 ->
+27,034,322,280 bytes summed per-run physical peaks (+0.655873%)**.
+The **1,152 public file / 862 fixture product hashes** match main and gate;
+both trees were clean, and a fresh fetch confirmed the remote head.
+Independent gate release SHA256:
+`a37b9db488cf42e29251286de2eb001ac3652f883b5798b60f5bfbb6324fd717`.
+Hosted [run 44400919902](https://github.com/CamdenBopp/swiftdc/actions/runs/44400919902)
+failed **Toolchain** on **Swift 6.2.4 / Xcode 26.3**. Fixtures, build and the
+enforcing suite were skipped. The completed job/logs were checked; this
+provides no hosted test result.
+
+**OPEN:** differing-Swift-result tails, general Swift argument/entry/RET/
+fallthrough cases, C result widths, enum-bit qualification and values carried
+across awaits. A separate own-source reduction of
+`UInt8(bitPattern: signedProducer(x))` shows a B-only optimized Swift body
+whose old/current output omits the return: `scalarTailReturnSites` still
+requires identical Swift result spellings. The reduced native checks (24)
+and three symbol/start/raw frames corroborate that separate completeness
+gap; they do not expand the public 702-observation denominator.
+Pinned Ghidra/entry measurements and readiness/coverage percentages stay fixed.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/3ba928e1387e58ad1a4b9c173a78b50e9c51a01b)
+for the exact compiled fault-to-test mapping.
+
+
+### 2026-11-18: select the tested toolchain on the hosted preview image
+
+**FIXED for configuration; hosted execution verified at `d69fff8`.**
+
+At `7fb855dec2047b1e2c4d1dfa2375f22f7e1349dd`, hosted CI requests the documented `xcode-27`
+ARM64 preview image and explicitly selects the tested Xcode 27.1. The
+previous `macos-15` route failed Toolchain with Swift 6.2.4 / Xcode 26.3
+in [run 44400919902](https://github.com/CamdenBopp/swiftdc/actions/runs/44400919902),
+so fixtures, build and tests were skipped. The optional self-hosted route,
+Swift 6.4 minimum and all fixture/build/test enforcement remain unchanged.
+
+Local verification: actionlint 1.7.12 passes; executing the actual old/new
+selector commands under isolated mock commands selects 27.2 / 27.1
+respectively. Parsed workflow comparison preserves every other step.
+After `Tools/ci/environment.sh`, `Tools/fixtures.sh` and
+`swift build --build-tests`, `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`
+passes **1,993 tests / 43 suites (954.812 s)**. All **344 tracked test files**
+and all executable, fixture and package sources are unchanged. The **1,152
+public input hashes** remained fixed throughout that local qualification.
+
+The original integration gate independently rebuilt and pushed `d69fff8`,
+passing **1,993 tests / 43 suites (939.996 s)**. All **723 inputs x four views**
+and four SDK workloads are unchanged. All **2,896 paired cost rows** pass the
+default caps without override: **7,717,056,592,175 instructions** and
+**27,034,322,280 bytes summed per-run physical peaks** on each side (0% change).
+The rebuilt release is byte-identical to the published baseline, SHA256
+`a37b9db488cf42e29251286de2eb001ac3652f883b5798b60f5bfbb6324fd717`.
+The **1,152 public input / 862 fixture product hashes** match both clean
+trees, and an independent remote-head check confirms the push.
+
+**VERIFIED hosted execution at published `d69fff8`:** completed
+[run 44411756483](https://github.com/CamdenBopp/swiftdc/actions/runs/44411756483)
+and its decoded job logs confirm **1,993 tests / 43 suites passing
+(2,253.679 s)** with fixture presence enforced. The `xcode-27` runner selected
+**Xcode 27.1 / Swift 6.4** on **arm64 macOS 27.0.1**, with **Go 1.27.4,
+7 GB memory and 36 GB free disk**. Toolchain, Fixtures, Build and Enforcing
+suite all completed successfully. This covers that published revision.
+The later published `a841357` also completed
+[run 44423167838](https://github.com/CamdenBopp/swiftdc/actions/runs/44423167838):
+**2,000 tests / 43 suites passed (2,384.404 s)** with fixture presence enforced.
+Its terminal job state and decoded logs were checked. That hosted result
+covers code `3385323`; the newer argument-view change has its own independently gated
+publication and separate hosted run pending. See [CI setup and image sources](CI.md).
+No decompilation benchmark or readiness percentage changes.
+
+
+### 2026-11-18: retain converted integer results at Swift tail branches
+
+**FIXED and published for completeness (`3385323`, gate head `a841357`).**
+
+At `3385323e011e675f1c5bc97078b96110ead2a17e`, an ordinary Swift function or getter tail can retain
+its return when caller and callee use opposite signedness at the same
+8/16/32-bit width. The previous exact-type-spelling check omitted those
+returns. The existing physical-bit proof supplies the explicit mask or
+signed view; branch arguments never become the result, and no ABI,
+frame/context slot or extension seed is added.
+
+Own-source evidence at -Onone/-O/-Osize covers **120 selected unique
+export/nlist/function-start/raw-byte frames**, **six libraries and six native
+drivers**, and **3,846 native observations including controls**. All **24
+omitted optimized returns** now have explicit views; all **36 existing-return
+wrapper controls** remain byte-identical. Different-width ordinary call/RET
+wrappers are controls. Each selected wrapper is checked through all five
+public analysis APIs. All **344 existing test files and assertions remain
+byte-identical**; two files add seven test declarations. Six separate source
+faults compile and fail their intended regressions, with unaffected tests and
+controls green; exact restoration/rebuild is followed by **2,000 tests / 43
+suites passing (907.926 s)** with fixture presence enforced.
+
+Matched frozen releases cover **735 inputs x four views** and four SDK
+workloads. The complete delta is **48 fields in 24 functions across four
+new libraries**: 24 return annotations and 24 converted return statements.
+Structured/pseudo/listing each change 48 diff-side lines; JSON changes 96.
+Every changed JSON and text/listing output is reconstructed exactly from
+those approved fields and return insertions. All raw instructions, arguments,
+CFGs and function metadata remain fixed. Every other corpus output matches;
+all **5,880 render exits** match, including 35 header-checked preflight-decline
+pairs, and all eight SDK exits are zero. All four SDK hashes are unchanged.
+
+All **2,944 positive paired cost rows** meet every default cap without
+override: **7,796,073,720,617 -> 7,787,964,732,650 instructions (-0.104014%)**;
+**27,428,898,136 -> 27,280,790,520 bytes summed per-run physical peaks
+(-0.539969%)**. These qualify the cost budget; they are no speed/memory claim.
+All **572 CLI runs** pass (22 inputs x 13 paths x two releases): all new and
+changed inputs, legacy and named/stripped SDK controls. All 110 metadata/xrefs,
+286 diagnostic and 22 Lab pairs match. All 176 whole views match measurements,
+all 88 filtered comparisons match whole bodies, and Analyze/filtered changes
+map to approved fields. Four guarded SDK rerenders match measured hashes.
+Ten guarded renders of the original five apps retain all **84,833 function
+headers, bodies and order byte-for-byte**; source/diagnostic hashes match,
+maximum sampled footprint **211 MB under a 2,000 MB guard**. No source-grounded
+app/SDK accuracy claim or readiness percentage follows.
+
+Reproduce: `python3 build-swift-integer-tail-results.py`
+from `Fixtures/Sample` (or `Tools/fixtures.sh` for the complete cache);
+execute the six `Fixtures/Sample/narrow-integer-return-TailResults.*-oracle`
+and `…TailGetters.*-oracle` products; `swift build --build-tests`, then
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`. Compare frozen releases
+with `Tools/blast-radius.sh <base> <new> <out> --real --perf`. The **1,159
+public input / 874 fixture product hashes** remained pinned throughout
+qualification. Reviewed release SHA256:
+`a302e4b9e1715beac48449094ef2ed92257237a453506f1da07f0e7ea977c01b`.
+The original integration gate independently rebuilt and pushed `a841357`
+with code `3385323`, passing **2,000 tests / 43 suites (942.385 s)**. Both
+sides match the reviewed frozen releases across all **735 inputs x four
+views** and four SDK workloads. Every **2,944 paired cost row** meets the
+default caps without override permission or use: **7,796,073,720,617 ->
+7,794,797,509,654 instructions (-0.016370%)**; **27,428,898,136 ->
+27,246,259,528 bytes summed per-run physical peaks (-0.665862%)**.
+The **1,159 public input / 874 fixture product hashes** match both clean
+trees; an independent remote-head check confirms publication. Gate release
+SHA256: `4e16def0eb587925dfe8b73b86dfb2dbb19bef5b2a28784b8f2a9c211dd1a2fc`.
+
+**VERIFIED hosted execution:**
+[run 44423167838](https://github.com/CamdenBopp/swiftdc/actions/runs/44423167838)
+at `a841357` completed successfully: **2,000 tests / 43 suites (2,384.404 s)**
+with fixture presence enforced. Toolchain, Fixtures, Build and Enforcing
+suite passed; terminal job status and decoded logs were checked. This
+covers the published tail-return revision, separately from the newer
+argument-view verification. The earlier
+[run 44411756483](https://github.com/CamdenBopp/swiftdc/actions/runs/44411756483)
+at `d69fff8` passed **1,993 tests / 43 suites (2,253.679 s)** on **Xcode 27.1 /
+Swift 6.4**.
+
+Still open: other tail-result conversions (including differing widths and
+64-bit sign views), general Swift argument/entry/RET/fallthrough cases,
+C result widths, enum-bit qualification and values carried across awaits.
+Pinned scoring tables are not recomputed. The
+[engineering record](https://github.com/CamdenBopp/swiftdc/commit/3385323e011e675f1c5bc97078b96110ead2a17e)
+names each separately compiled fault and the regression seen red under it.
+
+### 2026-11-18: integer views at qualified Swift argument sites
+
+**FIXED for matching type/value lists (soundness, `8a15928`).**
+
+At `8a1592827b1ff7fc96a5eeb3eee08c57ac868941`, bounded Swift call sites with matching type/value lists
+read canonical 8/16/32-bit integer formals at their declared width and
+signedness. For example, `signed8BitPatternCaller(UInt8)` previously passed
+`arg0` to an `Int8` consumer: input 128 denoted 128 although the native
+formal is -128. The argument now has an explicit signed view.
+
+The existing scalar-bit proof runs before producer-use collection. Existing
+exactly recovered narrow stack words keep their formal types; unproved
+producer widths become `?` while their calls remain visible. Inout addresses,
+receivers and FP banks retain their roles. This adds no entry, frame/context,
+argument-location or extension seeds, and no semantic annotation parsing.
+
+Own-source fixtures at -Onone/-O/-Osize provide **390 selected unique
+export/nlist/start/raw frames**, **186 wrapper call sites**, and **12,645
+native observations**. All **12,417 numerically classified formal values
+match**, including **4,723 refuted before**. Separate scopes are **72 address
+controls**, **144 unknown-width provider observations with one actual effect
+per call**, and **12 observations with the existing Onone Float getter
+receiver limitation**. Supplemental allocating-constructor drivers pass
+**1,704 observations**, including stored bits, zero setter count and dynamic
+class identity; **17 additional argument views have 34 raw/symbol/start/export
+witnesses**. Nonallocating initializer exports are not separately invoked.
+Existing optimized unsigned-to-signed nominal constructor aliases are not a
+claim of recovered nominal receiver context.
+
+All **346 prior test files and assertions remain byte-identical**; one file
+adds five declarations. The new regressions first fail with **1,642 issues**
+(register views 1,035; roles 247; opaque producers 360). Five separately
+compiled mutations fail: omit Swift views (1,642), erase stack types (42),
+omit producing-ABI proof (280), substitute the requested type for unknown
+producer proof (360), and consume a declined producer effect (450). Exact
+restoration/rebuild passes 26 focused tests, then the fresh fixture-enforced
+suite passes **2,005 tests / 43 suites (884.860 s)**. Fixture cache: **895
+products**. Public input snapshot: **1,168 files**.
+
+Matched frozen releases cover **756 inputs x four views** plus four SDK
+workloads. The complete corpus delta is **711 fields across 12 inputs**:
+**119 native-proved argument views, 17 initializer views, and 61 honest
+argument declines** (18 opaque producers, 42 outlined results, one stripped
+SDK input). JSON, listing and both source views reconstruct exactly from
+those changes. **60 producer statements** survive; four now appear before
+existing unknown UXTH conditions. Those conditions and their consumed-call
+visibility remain open. Raw instructions, CFGs, function metadata and all
+other fields are unchanged.
+
+All **3,028 paired cost rows** meet every default cap without override:
+**8,554,101,285,176 -> 8,552,526,784 instructions (-0.018406%)**;
+**28,505,280,064 -> 28,537,816,504 bytes summed per-run physical peaks
+(+0.114142%)**. No performance improvement is claimed. The frozen main
+release hashes are `a302e4b9e1715beac48449094ef2ed92257237a453506f1da07f0e7ea977c01b`
+and `cfd93816ce8cbfe72edd60fb5a627cda24f72879c988d60eb75f33f0304838a7`.
+
+All **832 CLI invocations over 32 inputs and 13 paths** pass. **160
+metadata/xrefs pairs**, **416 stderr pairs** and **32 Lab pairs** are
+identical; **256 whole views** match measurements and **128 filtered
+comparisons** match whole bodies. All 514 changed analyze lines and the
+filtered pseudo/structured changes map to the reviewed corpus fields.
+Four guarded SDK rerenders match measurement hashes: Syntax is unchanged;
+Parser has one enum-self byte argument to `Hasher._combine(UInt8)` become
+unknown. Its raw byte load, entry seeds and call layout are unchanged.
+Both SDK xrefs workloads are unchanged.
+
+Ten original Clarc/GoodLinks/Terminal/TextEdit/Chess renders pass a **2,000 MB
+footprint guard** (maximum sampled **237 MB**). All **84,833 function
+headers/order** and all call spellings/counts remain intact. The **130
+diff-side lines in 24 functions** are reconstructed from **52 pure argument
+precision declines**, **six UInt16 mask tightenings**, and consistent result
+binding cleanup. Removed binding references occur only in the declined
+arguments; the calls still execute at the same statements. **144 unique
+guarded filtered pseudo/JSON/Lab artifacts** inspect those functions. Two
+preexisting whole/filtered precision differences remain exactly unchanged;
+they are not repaired by this work. Private bodies, literals and reports
+remain ignored. This is reliability/output review, not app accuracy.
+
+**FOLLOW-UP FIXED (`dbbdc83`):** the separate GP/FP receiver probe's
+value/type-list mismatch is repaired by the receiver-extraction change
+recorded in its own verification entry. The earlier matching-list claim
+above remains the scope of `8a15928`. General argument/entry/RET/fallthrough
+placement, C/ObjC result widths, enum-bit qualification and values carried
+across awaits remain open. Pinned scoring/readiness percentages are not
+recomputed.
+
+Reproduce with `Tools/fixtures.sh`, `swift build --build-tests`, and
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`; authored native drivers
+are the nine `Fixtures/Sample/narrow-integer-return-SwiftArgument*-oracle`
+products. See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/8a1592827b1ff7fc96a5eeb3eee08c57ac868941)
+for the compiled faults and their observed red regressions.
+
+**PUBLISHED through the original integration gate:** `5c5ab71` (code
+`8a15928`) passed an independent **2,005 tests / 43 suites (946.199 s)**
+and was pushed to `origin/dev`. Both gate releases match the reviewed main
+outputs across all **756 inputs x four views** and four SDK workloads.
+All **3,028 paired cost rows** pass default caps without permission or use of
+an override: **8,554,276,841,592 -> 8,559,398,887,902 instructions
+(+0.059877%)**; **28,407,856,576 -> 28,578,409,896 bytes summed per-run
+physical peaks (+0.600374%)**. The **1,168 public input / 895 product hashes**
+matched both clean trees at publication, and a separate remote-head check
+confirmed the push. Independent gate release SHA256:
+`76f321ea18de668baf6ba4f7c90f28a3a82ee074b6fc71d96005b13c81833e25`.
+
+New hosted [run 44448308320](https://github.com/CamdenBopp/swiftdc/actions/runs/44448308320)
+at `5c5ab71` completed successfully. Its terminal job state and decoded
+logs confirm fixture-enforced **2,005 tests / 43 suites (1,938.195 s)**;
+Toolchain, Fixtures, Build and Enforcing suite all passed. This covers
+published code `8a15928`, not the subsequent local receiver change. The prior
+published `a841357` completed its own hosted **2,000-test / 43-suite** run;
+that result does not cover these five new declarations.
+
+### 2026-11-18: formal types follow extracted GP receivers
+
+**FIXED for already placed GP value receivers (soundness, `dbbdc83`).**
+
+At `dbbdc834b5a02894d5b8b5e8b062d3da6a7523ac`, extracting trailing integer
+receiver words into `self` also removes their type placeholders from the
+formal list. Previously the unequal value/type counts suppressed the
+existing scalar views and typed literal rendering: an `Int8` argument
+read `arg0` (or its 32-bit reload), Float `3.5` read `0x40600000`, and Bool
+`true` read `1`. Receiver placement and producer-use rules retain their
+existing proofs. The Onone unknown receivers remain explicit unknowns.
+
+Own-source one- and two-word GP receivers, an FP-receiver control and
+Float/Bool controls run at **-Onone / -O / -Osize**. **2,322 native
+observations** include **2,304 numeric formal values** (baseline **768
+refuted / 1,536 matched**, candidate **2,304 matched**) and **18 literal
+controls**. **30 independent nlist/export/start/raw frames** bind **15
+physical calls** to their signatures. All five public analysis APIs check
+exact formal values and receiver rendering. The regression was seen red
+with **180 issues**; separately rebuilt omission and one-type-only cleanup
+mutations fail with **180 / 45 issues**. Exact restoration, rebuild and
+focused tests pass.
+
+The fresh fixture cache restores **901 products** from **1,172 public
+inputs**. All **347 preexisting test files** are byte-identical; one new
+file adds two test declarations. The full fixture-enforced suite passes
+**2,007 tests / 43 suites (911.246 s)** after rebuilding.
+
+All **762 Mach-O inputs x four views** are reviewed. Only the three new
+libraries change: **40 JSON fields** (16 annotations, 12 arguments,
+12 statements) for **12 sites**: six Int8 views, three Float literals and
+three Bool literals. Exact reconstruction explains JSON, both source
+views and listing. Raw instructions, CFG, metadata, receiver spelling and
+producer effects are unchanged. The other **759 inputs** and all four SDK
+workload outputs are byte-identical.
+
+All **3,052 paired cost rows** pass default caps without overrides:
+**8,574,052,349,126 -> 8,571,964,071,628 instructions (-0.024356%)**;
+**28,673,162,360 -> 28,735,768,024 bytes summed per-run physical peaks
+(+0.218342%)**. No speed improvement is claimed. All **416 CLI invocations**
+pass: **80 metadata/xrefs pairs**, **208 stderr pairs**, **128 whole-view /
+measured comparisons**, **64 filtered / whole comparisons**, and **16 Lab
+pairs** are unchanged or match their corresponding reviewed output. All
+**32 changed Analyze lines** and **24 changed lines per filtered source
+view** map to the reviewed fields/whole-source lines. Four guarded SDK
+structured rerenders match measured hashes.
+
+The original five apps produce byte-identical outputs across **84,833
+functions**, preserving every header and its order. All ten guarded renders
+exit zero without kills, maximum sampled **231 MB** under the **2,000 MB**
+guard. Private bodies and reports remain ignored. This is reliability/output
+comparison, not source-grounded vendor accuracy scoring.
+
+Reproduce with `Tools/fixtures.sh`, `swift build --build-tests`, and
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`; native drivers are the
+three `Fixtures/Sample/narrow-integer-return-SwiftReceiverTypeList.*-oracle`
+products. See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/dbbdc834b5a02894d5b8b5e8b062d3da6a7523ac).
+**PUBLISHED through the original integration gate:** `83443a5` (code
+`dbbdc83`) passed an independent **2,007 tests / 43 suites (967.051 s)**
+and was pushed to `origin/dev`. Both gate releases match the reviewed
+outputs across all **762 inputs x four views** and four SDK workloads.
+All **3,052 paired cost rows** pass default caps without override:
+**8,574,052,349,126 -> 8,564,422,553,288 instructions (-0.112313%)**;
+**28,673,162,360 -> 28,674,159,896 bytes summed per-run physical peaks
+(+0.003479%)**. Both clean checkout snapshots retain the **1,172 public
+input / 901 product hashes**, and a separate remote-head check confirms
+publication. Independent gate release SHA256:
+`f7959128c7cd520851b181a0bc0042bd23923d905d5236a25773093f436cba75`.
+
+Hosted [run 44456365627](https://github.com/CamdenBopp/swiftdc/actions/runs/44456365627)
+at `83443a5` completed successfully (suite job `135332241554`). Terminal
+job state and decoded fixture-enforced logs confirm **2,007 tests / 43 suites
+(2,555.394 s)**. This result covers receiver code `dbbdc83`.
+
+**OPEN:** general argument/entry/RET/fallthrough placement, other tail-result
+conversions, C/ObjC result widths, enum-bit qualification and values carried
+across awaits. Existing readiness/scoring tables are not recomputed.
+
+### 2026-11-19: calls replace async link-register facts
+
+**FIXED for call-clobbered async ownership facts (soundness, `5291877`).**
+
+At `5291877b835e54d9d0ba65a25b5ee81caae466fa`,
+`AsyncFuncletIndex` discards held addresses, address pages
+and context aliases in x30 after a call. It previously cleared x0...x17
+but retained x30: a later copy into another register could fabricate a
+resume handoff from the old LR value, although BL/BLR had replaced it.
+Callee-saved x19 facts retain their existing behavior.
+
+A standalone inline-header regression covers address/page/context facts,
+direct/indirect calls and hint-backed/code-only indexing: **12 false
+handoffs become declines**, while **12 x19 controls retain their chains**.
+The initial rebuilt tests fail with **24 issues**. Three independently
+compiled mutations, each retaining one x30 fact domain, fail with **eight
+issues each**; their x19 controls pass. Exact restoration rebuilds both
+regressions green. The source-controlled regression decodes explicit machine
+words with Capstone and checks recovered chains and suspension records;
+it is a reduced ownership proof, not an application-wide accuracy or
+carried-value result.
+
+All **348 preexisting test files/assertions remain byte-identical**. One
+new file adds two test declarations. The rebuilt fixture-enforced suite
+passes **2,009 tests / 43 suites (926.957 s)**. The frozen snapshot has
+**1,173 public input files / 901 fixture products**.
+
+Matched frozen releases produce **identical outputs for all 762 inputs
+in four views**, including 35 unchanged expected preflight-decline pairs.
+All **3,052 paired cost rows** pass every default limit without override:
+**8,564,422,553,288 -> 8,572,825,019,096 instructions (+0.098109%)**;
+**28,674,159,896 -> 28,770,205,872 bytes summed per-run physical peaks
+(+0.334957%)**. No performance improvement is claimed. Baseline release
+SHA256: `f7959128c7cd520851b181a0bc0042bd23923d905d5236a25773093f436cba75`;
+candidate: `e14bb8102648e4e3d30b4de1327dd4d9f5dc54f931d33c217c0d17a021a800b3`.
+
+All **338 CLI invocations over 13 inputs and 13 paths** pass with
+identical output: **65 metadata/xrefs pairs**, **169 stderr pairs**,
+**104 whole views** matching the measurements, and **52 filtered/whole
+comparisons**. Analyze and Lab remain identical. All four measured SDK
+workload outputs are unchanged; four guarded structured rerenders match
+the measured hashes.
+
+Ten original Clarc/GoodLinks/Terminal/TextEdit/Chess renders pass the
+**2,000 MB footprint guard**, preserving identical outputs and all
+**84,833 function headers in order**. The largest sampled footprint is
+**308 MB**. These are reliability/output comparisons, not source-grounded
+application accuracy measurements. Private reports remain under ignored
+`work/`.
+
+Reproduce the regressions with `swift build --build-tests`, then
+`swift test --skip-build --filter 'asyncCalls(ForgetPriorLinkRegister|KeepCalleeSaved)'`.
+The full command is `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`
+after rebuilding. Compare frozen releases with
+`Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/5291877b835e54d9d0ba65a25b5ee81caae466fa).
+
+**PUBLISHED in `abdd596` with outlined-header code `07a9d04`:** the
+original gate's independent **2,013 tests / 43 suites** cover this
+soundness fix. Hosted run `44480495586` also passed the rebuilt,
+fixture-enforced **2,013 tests / 43 suites (1,985.238 s)**; its terminal
+state and decoded log were checked. Separately,
+published receiver code `dbbdc83` at `83443a5` completed hosted
+[run 44456365627](https://github.com/CamdenBopp/swiftdc/actions/runs/44456365627):
+**2,007 tests / 43 suites (2,555.394 s)**, confirmed from terminal job state
+and decoded fixture-enforced logs. That hosted result does not cover this fix.
+
+**OPEN at `5291877`:** recovering values carried across awaits and context handoffs through
+outlined helpers. This commit fixes a false ownership proof; it does not add
+value propagation. No decompilation benchmark or readiness percentage changes.
+
+**FOLLOW-UP FIXED (`07a9d04`):** the complete STP/MOV/RET header
+helper now has a body-proven ownership summary. Carried-value recovery and
+other outlined allocator/runtime-wrapper forms remain open.
+
+### 2026-11-19: complete outlined async header ownership
+
+**FIXED for complete outlined header leaves (completeness, `07a9d04`).**
+
+At `07a9d04468f36ea9e265b10c7460ce1c1cab655d`,
+`AsyncFuncletIndex` proves a declared helper's complete
+non-tail `stp <parent>,<resume>,[<context>]; mov x22,<context>; ret` leaf,
+with exact 64-bit operands, offset zero and no writeback. At the call,
+live context/resume facts must match the pending resume. The proof invalidates
+both overwritten header words, records only ResumeParent as a resume pointer,
+installs the x22 handoff and discards stale x22/LR address facts. The final
+handover check still validates the terminal context, and later calls or
+writes can invalidate it. Parent data is not interpreted as a resume address.
+
+The default -Osize own-source `AsyncOutlinedContext.sequence` calls this
+helper twice. Its declared resume functions were present in nlist, function
+starts and Swift async hint sections but remained orphaned. The sequence
+now groups its three funclets and two awaits, as -Onone/-O already did.
+The helper call remains visible; generic outlined inlining is unchanged.
+Four grouping APIs verify the exact chain, kinds, ordinals and predecessors;
+`analyzeEachFunction` keeps its documented ungrouped/await-result decline.
+
+The public source/native driver covers **21 source-sum controls** at the
+three default optimization levels, including independently varied values
+and wrapping extremes. **16 selected frames** have independent LLVM,
+nlist/export/start/relative-hint witnesses, including both Osize helper calls.
+These native controls establish the source result; the decompiler still
+prints **`return ?` at all three levels**, so no numeric agreement is claimed.
+
+All **25 separately compiled mutations** fail; the native control and both
+committed link-register tests pass every mutant. The omitted helper proof
+fails with **52 issues**. Exact restoration rebuilds **22 focused tests**
+green. Adversarial cases cover the complete helper/start/operand/width proof,
+wrong stores or moves, tail/extra effects, overlapping header words,
+premature handover, and stale x22/LR facts. The composed earlier-call
+regression also retains the separate `5291877` generic LR fix.
+
+All **349 preexisting test files/assertions remain byte-identical**. One new
+file adds four test declarations. The fresh rebuilt fixture-enforced suite
+passes **2,013 tests / 43 suites (917.994 s)**. The frozen snapshot contains
+**1,177 public input files / 907 fixture products**.
+
+Across **768 inputs x four views**, only the new Osize dylib changes:
+**20 fields**, comprising nine ownership-metadata fields and eleven
+instruction fields. The two await notes, two hidden private-frame spill
+notes and raw-proved ResumeParent return classification reconstruct all
+JSON, listing and source-view changes exactly. Physical instructions,
+addresses, targets and CFGs remain unchanged; the other **767 inputs are
+identical**. The final returned value remains unknown.
+
+All **3,076 paired cost rows** meet every default limit without override:
+**8,594,354,856,255 -> 8,601,454,476,795 instructions (+0.082608%)**;
+**28,987,224,456 -> 28,919,951,200 bytes summed per-run physical peaks
+(-0.232079%)**. No performance improvement is claimed. Frozen baseline
+SHA256: `e14bb8102648e4e3d30b4de1327dd4d9f5dc54f931d33c217c0d17a021a800b3`;
+candidate: `31a9504d6f3351148037dd60ca4d9794e155748bd43d3f5d7b36e5d69bb46849`.
+
+All **416 CLI invocations over 16 inputs and 13 paths** pass. The **80
+metadata/xrefs pairs** and **208 stderr pairs** are identical; **128 whole
+views** match the measurements and **64 filtered comparisons** match whole
+bodies. All changed Analyze, Lab and filtered-view lines are reconstructed.
+Lab's live x20 at the final branch is a raw register value; the Int64 return
+is x0 and remains unknown. All four measured SDK workloads are unchanged;
+four guarded structured rerenders match measured hashes.
+
+Ten original Clarc/GoodLinks/Terminal/TextEdit/Chess renders pass the
+**2,000 MB footprint guard**, with identical output and all **84,833
+function headers in order**. The largest sampled footprint is **311 MB**.
+Private reports remain under ignored `work/`; this reliability/output
+comparison claims no source-grounded application accuracy.
+
+For the pending publication interval, published `83443a5` and the
+intermediate `5291877` baseline also match all **3,072 render/exit pairs**
+and four SDK workloads at the same 768-input content key. Choosing the
+separately qualified LR baseline hides no additional output delta.
+
+Reproduce with `Tools/fixtures.sh`, `swift build --build-tests`, then
+`swift test --skip-build --filter 'AsyncOutlinedContextTests|AsyncHandoffShapeTests|AsyncSlotChronologyTests|AsyncCallLinkRegisterTests'`.
+The full command is `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`
+after rebuilding. The three public
+`Fixtures/Sample/async-outlined-context-*-oracle` products execute the native
+controls. Compare frozen releases with
+`Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/07a9d04468f36ea9e265b10c7460ce1c1cab655d).
+
+**PUBLISHED through the original integration gate:** `abdd596`, including
+soundness code `5291877` and completeness code `07a9d04`, passed an
+independent **2,013 tests / 43 suites (967.872 s)** and was pushed to
+`origin/dev`. Both gate releases match the reviewed outputs across all
+**768 inputs x four views** and four SDK workloads. Both clean checkout
+snapshots preserve the **1,177 public input / 907 product hashes**; a
+separate remote-head check confirms publication.
+
+All **3,076 paired gate cost rows** pass default caps without override:
+**8,585,626,225,827 -> 8,601,806,480,483 instructions (+0.188457%)**;
+**28,875,407,592 -> 29,029,392,152 bytes summed per-run physical peaks
+(+0.533272%)**. Independent gate release SHA256:
+`e735966e0d628d7b92e7792377515a7456eb6dfbc98342bff3c42e10bd831f93`.
+
+**VERIFIED hosted execution:** [run 44480495586](https://github.com/CamdenBopp/swiftdc/actions/runs/44480495586)
+at published `abdd596` completed successfully. Job `135411263664` rebuilt
+and passed the fixture-enforced **2,013 tests / 43 suites (1,985.238 s)**.
+The terminal run head, successful job steps and decoded suite log were checked.
+This covers soundness code `5291877` and completeness code `07a9d04`;
+it does not establish recovery of values carried across awaits.
+
+**OPEN:** transporting values across awaits, including chronology, ambiguous
+predecessors, loops, parent-pointer escape and per-edge memory effects.
+Other outlined allocator/runtime-wrapper forms in the same -Osize fixture
+remain unsupported. General argument/entry/RET placement remains open. Existing
+readiness/scoring tables are not recomputed.
+
+## Latest local verification: native frame provenance in async ownership
+
+**VERIFIED locally at `731c17dfe88a8c68ab7ccbd541033d3329c2dfb9`:** a separate native-stack
+MUST analysis replaces the assumption that every x29-based memory operand is
+a hardware-frame access. Full-width copies and constant ADD/SUB carry the
+proof; register writes, call-volatiles/LR and the complete header helper's
+x22/LR outputs invalidate it. The helper's untouched arguments retain their
+proved provenance. Memory classification uses the incoming address before
+writeback or destination updates.
+
+Reachable CFG predecessor intersections and backedges preserve native x29
+across joins; unvisited predecessors start at top and a capped or inconsistent
+solve discards incoming facts. This retains the published Onone concurrent
+and nonsending isolation oracles' chains before outgoing stack-argument
+stores. Both oracles match the published baseline in all four views.
+
+Nine new test declarations exercise overwritten/lost context aliases,
+precise and partial writes, disjoint/native frame controls, full-width frame
+restoration, ordinary/helper effects, writeback ordering, joins, loops, entry
+backedges, unreachable predecessors, missing detail and capped solves.
+**All 25 independently compiled mutations fail** with five retained control
+declarations green in every mutant. The previous index policy records
+82 issues, the context-absence approximation 40, and the path-local version
+two. Exact restoration rebuilds **14 focused tests** green.
+
+Debug and release each pass **28 independently LLVM-decoded own-image
+reductions**: ten false ownerships declined, one valid header recovered and
+17 matched controls preserved. These images are decoded, never executed;
+they establish ownership behavior and do not claim a conforming compiler
+emits the contradictory aliases or establish native numeric agreement.
+
+**All 350 prior test files/assertions remain byte-identical.** One new file
+adds nine declarations. The rebuilt fixture-enforced suite passes
+**2,022 tests / 43 suites (907.912 s)**. The frozen snapshot contains
+**1,179 public input files / 907 fixture products**.
+
+All **768 fixture/toolchain inputs in four views** are byte-identical.
+All **3,076 paired cost rows** pass default limits without override:
+**8,601,454,476,795 -> 8,713,600,310,998 instructions (+1.303801%)**;
+**28,919,951,200 -> 28,858,150,464 bytes summed per-run physical peaks
+(-0.213696%)**. No performance improvement is claimed. Frozen baseline and
+candidate SHA256 are respectively
+`31a9504d6f3351148037dd60ca4d9794e155748bd43d3f5d7b36e5d69bb46849` and
+`877857a7df4a2a6d9e1c6b19c87ae658bdf2ee5606c18c0debaa0a411c418c88`.
+
+All **416 CLI invocations over 16 inputs and 13 paths** pass unchanged:
+80 metadata/xrefs pairs, 208 stderr pairs, 128 whole-view/measurement matches
+and 64 filtered/whole comparisons. All four SDK workloads are unchanged;
+four guarded rerenders match their measurements. Ten guarded renders of
+the original five apps preserve complete output and all **84,833 functions
+and their order**, with no kills and a maximum sampled footprint of **204 MB**.
+Private reports remain ignored. Benchmark scoring tables are not recomputed.
+
+The local baseline matches published `087d2af`'s gate release across all
+3,072 four-view/exit pairs and four SDK outputs. That published baseline
+also passed its original gate's **2,013 tests / 43 suites (918.104 s)** and
+hosted [run 44489579978](https://github.com/CamdenBopp/swiftdc/actions/runs/44489579978),
+job `135441491965`: **2,013 tests / 43 suites (2,075.633 s)**, confirmed from
+the terminal run head/job and decoded enforcing-suite log. Those results
+cover the preceding code, not this new frame-provenance fix.
+
+**PUBLISHED with the indexed-address fix at `b5d0724`:** the original gate
+passed both code changes, **2,025 tests / 43 suites (988.578 s)** and default
+cost limits; see the indexed-address record for the complete publication
+measurement. Hosted run `44519956304` also passed this published batch:
+**2,025 tests / 43 suites (2,582.965 s)**, confirmed from the terminal
+head/job steps and decoded enforcing-suite log.
+The indexed effective-address gap is addressed separately by `e8f2f7e`'s
+qualified index guard. **OPEN:** transporting values across awaits, other
+outlined allocator/runtime wrappers and general context escape/lifetime effects.
+
+Reproduce the focused controls after rebuilding with
+`swift test --skip-build --filter 'asyncKnownFrameRegisterContext|asyncHardwareFrameStores|asyncLostContextFacts|asyncProvedHardwareFrame|asyncUnprovedFrame|asyncFrameProvenanceCrossesCFG|asyncHardwareFrameFactsMeet|asyncProvedHeaderFrameEffects|asyncCallsForgetPriorLinkRegister|asyncCallsKeepCalleeSaved|outlinedContextHeader|asyncSignedResumeBehind'`.
+The full command is `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+Compare frozen releases with
+`Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/731c17dfe88a8c68ab7ccbd541033d3329c2dfb9).
+
+## Latest local verification: complete outlined allocator prefixes
+
+**FIXED locally at `5c4ede235078ba6effcb66166c91ba4b8c7047f8`:** the default-Osize allocator wrapper in
+`AsyncOutlinedContext.first` and `second` no longer leaves their resumes
+orphaned. Both complete three-funclet producer chains are recovered at all
+three default optimization levels across the path, loaded-image, filtered
+and streaming APIs. The unchanged fixture genuinely awaits `Task.yield` in
+both producers. Its carried sum still renders `return ?`.
+
+The index proves the entire native-stack spill/frame setup, descriptor/GOT
+load and 32-bit size load before the bound `swift_task_alloc` tail. Each
+outer call receives a separate context identity. Old x29 page/resume/context
+facts are discarded, and the proved frame prefix is replayed in both the
+CFG-MUST and bounded-path domains before normal call clobbers. Names alone
+prove nothing; the same body proof accepts ordinary and absent labels.
+
+This depends on terminal-handoff soundness code
+`04efb1f8b22764e509a7d61fcac4c41f7d1c03fe`. A combined allocator/terminal
+context-clobber reduction stays declined. Both six-owner isolation controls
+remain intact. Patched images are never executed.
+
+Five new declarations first rebuild red against that dependency: three
+expected failures, 152 terminal issues, with all 25 prior focused controls
+passing. All **19 separately compiled mutations** fail their expected new
+declarations, with those 25 controls passing in every variant; exact
+restoration rebuilds **30 focused tests green**. All **353 prior Swift test
+files are byte-identical**. No existing test or assertion was removed or
+weakened. Fixture-presence enforcement remains intact.
+
+Independent LLVM checks cover 43 literal test words and eight critical
+address/alias encodings. Raw Mach-O relative-pointer tables, four runtime
+bindings and 35 LLVM words classify the original image's 32 changed debug
+fields across six functions. A fresh default-Osize build with a 24-byte GOT
+displacement recovers both complete chains as well. Debug and release each
+check eight whole images in four views, six images with three producer
+filters in three views, and 28 native source observations. Whole/filtered
+JSON typed metadata/facts and addresses match; raw instruction/symbol-note
+spelling differs between the existing LLVM and Capstone paths. Pseudocode
+and structured bodies match exactly. Native source controls do not establish
+numeric decompiler agreement.
+
+The rebuilt fixture-enforced suite passes **2,038 tests / 43 suites
+(927.772 s)**, with **1,182 public inputs / 907 products** frozen throughout
+qualification. Across **768 fixture/toolchain inputs**, only `libAsyncOutlinedContext.Osize.dylib`
+changes: **32 JSON fields / six functions**, adding two complete producer chains
+and four resume funclets. Every changed field and listing/pseudocode/structured
+line matches independently checked metadata, binding and instruction evidence.
+The other **767 inputs are byte-identical in all four views**; all physical
+functions/order/instructions remain intact.
+
+All **3,076 default paired cost limits pass without override**:
+**8,722,665,697,860 -> 8,760,161,140,457 instructions (+0.429862%)**;
+summed per-run physical peaks **28,903,454,672 -> 28,885,611,848 bytes
+(-0.061732%)**. No performance improvement is claimed.
+
+All **416 CLI invocations over 13 paths** pass and their eight changed command
+outputs are reviewed on the same fixture. Analyze's changes match the
+reviewed listing; lab's four context seeds and two opaque global-load exits
+match raw metadata/LLVM evidence. All 80 metadata/xrefs pairs and 208 stderr
+pairs are unchanged; 128 whole views match measurements and 64 filtered
+comparisons match whole bodies. Four SDK workloads and four guarded rerenders
+match. Ten guarded renders of the original five apps are byte-identical,
+retaining **84,833 functions/order**, with no kills and **223 MB** maximum
+sampled footprint. Private reports stay ignored.
+
+Frozen release SHA256 (baseline / candidate):
+`dc42ee93dc0517664ff39ed453412e1ca0c084a54f9d02994bd8498e235427ee` /
+`f2f700e6a20084ec93777b200d10a0b872b99ebfa6435479ec72942fb5867e9b`.
+The baseline directly matches published `b5d0724`'s actual gate release
+across all 3,072 corpus view/exit pairs and four SDK workloads.
+
+**VERIFIED original gate and publication at `3ee39290da522ab29a6be737787f6c2b72797421`:**
+this fix and terminal-handoff code `04efb1f` passed the original gate's
+independently rebuilt **2,038 tests / 43 suites (950.150 s)**. Both gate release
+sides match the reviewed local outputs across all **3,072 corpus view/exit
+pairs and four SDK workloads per side**. The publication audit confirmed the
+actual remote head and clean, matching main/gate snapshots of **1,182 public
+files / 907 products**. No development worktree was added.
+
+All **3,076 paired gate cost rows** pass default limits without override,
+comparing actual published `b5d0724` with this complete batch:
+**8,714,059,703,805 -> 8,763,087,727,947 instructions (+0.562631%)**;
+summed per-run physical peaks **29,088,833,832 -> 29,184,991,576 bytes
+(+0.330566%)**. Independent gate release SHA256:
+`4d7b9cf3b1efc053772b8f6bc84a41327160d717416a051be612679e70e17f4d`.
+
+**HOSTED VERIFIED:** [run 44616043455](https://github.com/CamdenBopp/swiftdc/actions/runs/44616043455)
+completed successfully at documentation head `7cda197`; its enforcing suite
+passed **2,038 tests / 43 suites (2,469.605 s)**. This covers published
+allocator code `5c4ede2`; the later interior-reach change requires its own
+original gate and hosted result.
+**OPEN:** values carried across awaits, other runtime wrappers, and general
+context escape/lifetime effects. No scoring table or readiness percentage is
+recomputed.
+
+Reproduce after `swift build --build-tests` with
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter outlinedTaskAllocator`;
+full suite: `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+Compare frozen releases with
+`Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/5c4ede235078ba6effcb66166c91ba4b8c7047f8).
+
+## Previous local verification: prove outlined terminal handoffs
+
+**FIXED locally at `04efb1f8b22764e509a7d61fcac4c41f7d1c03fe`:** async ownership no longer carries a
+caller's context/header snapshot through an unproved outlined terminal
+prefix. In an independently decoded reduction of the default-Osize
+`AsyncOutlinedContext.sequence` image, clearing x22 inside that prefix
+previously retained the false chain `0x768 -> 0x7a8 -> 0x804`; it now declines.
+The matched context-preserving image retains the complete chain. Patched
+images are never executed.
+
+Follow only a whole two-instruction epilogue that strips x29's async-frame
+tag and performs an aligned full-width SP pop, then reaches an independently
+known entry/binding. Prove every prefix, decline cycles/depth caps and
+interior/unbound targets, and use the final callee for task-switch/runtime-wait
+roles. Validated metadata-declared async entries retain their own ABI
+boundary: an ordinary nine-argument async entry may read/pop incoming stack
+arguments without being an outlined prefix. Both isolation images retain
+all six owners of their shared resume. This boundary was independently
+checked against function starts, symbols, metadata and LLVM decoding.
+
+Eight new test declarations, **19 separately compiled mutation reds** and
+an exact restored **25-test green** cover the proof and boundary behavior;
+all seventeen prior focused controls pass in every variant. All **352 prior
+Swift test files are byte-identical**, with none removed or weakened. Debug
+and release each verify seven whole images in four views, four images in
+three filtered views, and 21 native observations on the original sources.
+Native source controls do not establish numeric decompiler agreement.
+
+The rebuilt fixture-enforced suite passes **2,033 tests / 43 suites
+(990.961 s)**. Public inputs/products stay frozen at **1,181 / 907** through
+qualification. All **768 fixture/toolchain inputs match in all four views**,
+with zero changed JSON fields. All **3,076 default paired cost limits pass**
+without override: **8,716,662,485,172 -> 8,722,665,697,860 instructions
+(+0.068871%)**; summed per-run physical peaks
+**29,037,527,056 -> 28,903,454,672 bytes (-0.461721%)**.
+No performance improvement is claimed.
+
+All **416 CLI invocations over 13 paths** match, including 80 metadata/xrefs
+pairs, 208 stderr pairs, 128 measured whole views and 64 filtered comparisons.
+All four SDK workloads and their guarded rerenders match. Ten guarded renders
+of the original five apps match, preserving **84,833 functions/order**, with
+no kills and **224 MB** maximum sampled footprint. Private reports stay ignored.
+The frozen baseline directly matches published `b5d0724`'s actual gate release
+across all 3,072 corpus view/exit pairs and four SDK workloads.
+
+Frozen release SHA256 (baseline / candidate):
+`534664ebffc03232cfdda78f598397c9d24a39b6392435e23e6ba3f7a4f3e2a1` /
+`dc42ee93dc0517664ff39ed453412e1ca0c084a54f9d02994bd8498e235427ee`.
+
+**PUBLISHED with the allocator fix at `3ee39290da522ab29a6be737787f6c2b72797421`:**
+the original gate passed both changes with **2,038 tests / 43 suites
+(950.150 s)** and all default cost limits. Both releases, corpus/SDK outputs,
+clean snapshots and actual remote head were independently checked; see the
+allocator record for the full publication measurements. Hosted run
+`44560327218` is in progress at that head; hosted verification remains pending.
+The specific outlined allocator prefix is qualified separately by
+`5c4ede235078ba6effcb66166c91ba4b8c7047f8`.
+**OPEN:** other runtime wrappers, values carried across awaits, and general
+context escape/lifetime effects. No readiness percentage or scoring table is
+recomputed.
+
+Reproduce after `swift build --build-tests` with
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter outlinedTerminal`;
+full suite: `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+Compare frozen releases with
+`Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/04efb1f8b22764e509a7d61fcac4c41f7d1c03fe).
+
+## Previous local verification: indexed native-frame addresses
+
+**VERIFIED locally at `e8f2f7ebb72b28e31e3218ceed1f46ec9dc22782`:** native SP/x29 provenance alone no longer
+classifies an indexed effective address as stack memory. Only an absent index
+or literal zero register retains that proof. Unknown-index writes conservatively
+invalidate resume ownership; direct/zero-index stores and indexed loads retain
+valid ownership.
+
+In an own-image reduction of `AsyncOutlinedContext.sequence` at -Osize,
+`x9 = child - nativeBase + 8` makes an indexed store overwrite `ResumeParent`.
+Debug and release each decline both false chains (SP and x29), while preserving
+both direct-store controls. All four images are independently LLVM-decoded and
+never executed; no native numeric agreement is claimed.
+
+Three new test declarations cover hints/fallback, both bases, byte/full-width
+stores, zero-index/direct controls and loads. Five compiled mutants fail
+(16, 2, 8, 8 and 11 issues); the load mutant also fails an existing signed-resume
+control. Exact restoration rebuilds **17 focused tests** green.
+**All 351 prior test files remain byte-identical.** The rebuilt fixture-enforced
+suite passes **2,025 tests / 43 suites (914.316 s)**, with
+**1,180 public input files / 907 fixture products** frozen.
+
+All **768 fixture/toolchain inputs in four views** are byte-identical.
+All **3,076 paired cost rows** pass default limits without override:
+**8,713,600,310,998 -> 8,716,662,485,172 instructions
+(+0.035142%)**; **28,858,150,464 -> 29,037,527,056 bytes
+summed per-run physical peaks (+0.621580%)**.
+No speed improvement is claimed. Baseline/candidate release SHA256:
+`877857a7df4a2a6d9e1c6b19c87ae658bdf2ee5606c18c0debaa0a411c418c88` /
+`534664ebffc03232cfdda78f598397c9d24a39b6392435e23e6ba3f7a4f3e2a1`.
+
+All **416 CLI invocations / 16 inputs / 13 paths** are unchanged, including
+80 metadata/xrefs pairs, 208 stderr pairs, 128 whole-view/measurement matches
+and 64 filtered/whole comparisons. All four SDK workloads and four guarded
+rerenders match. Ten guarded renders of the original five apps preserve complete
+output and **84,833 functions/order**, without kills; maximum sampled footprint
+**215 MB**. Private reports stay ignored; scoring/readiness tables are unchanged.
+
+The intermediate baseline directly matches published `087d2af` across all
+3,072 four-view/exit pairs and four SDK outputs.
+
+**VERIFIED original gate and publication at `b5d0724d5fd34f4567ac2c1ff5111250422e60c0`:**
+this fix and frame-provenance code `731c17d` passed the independent rebuilt
+fixture-enforced **2,025 tests / 43 suites (988.578 s)**. Both gate releases
+match their reviewed counterparts across all **3,072 four-view/exit pairs per
+side and four SDK workloads**; all **1,180 public inputs / 907 products** match
+in the clean main and original gate checkouts. A separate remote-head check
+confirms publication. No development worktree was added.
+
+All **3,076 paired gate cost rows** pass default limits without override,
+comparing actual published `087d2af` with the complete batch:
+**8,601,806,480,483 -> 8,714,059,703,805 instructions (+1.304996%)**;
+**29,029,392,152 -> 29,088,833,832 bytes summed per-run physical peaks
+(+0.204764%)**. Independent gate release SHA256:
+`749b90de957d6c261070b9515f3036041c6dff220fba89479adc800908486cf0`.
+
+**HOSTED VERIFIED:** [run 44519956304](https://github.com/CamdenBopp/swiftdc/actions/runs/44519956304)
+completed successfully at published `b5d0724`; job `135545705472` rebuilt and
+passed **2,025 tests / 43 suites (2,582.965 s)** with fixture presence enforced.
+The terminal head/job steps and decoded enforcing-suite log were checked.
+This covers the frame-provenance/indexed-address batch; later local code
+requires its own original gate and hosted result.
+**OPEN:** values carried across awaits, other outlined allocator/runtime wrappers,
+and general context escape/lifetime effects. Unknown indexes decline rather
+than proving general effective-address disjointness.
+
+Reproduce after `swift build --build-tests` with
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter 'asyncIndexedNativeFrame|asyncDirectAndZeroIndexed'`;
+full suite: `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+Compare frozen releases with
+`Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/e8f2f7ebb72b28e31e3218ceed1f46ec9dc22782).
+
+## Latest local verification: whole-context reach from interior async pointers
+
+**FIXED locally at `4de8391a16d535b94e738dc051ba6825b7422d9a`:** an escaped
+pointer into an async allocation now creates whole-context MAY reach. Negative
+displacement can reach earlier values and the ResumeParent header; a later
+unproved call therefore invalidates every own-context word. Already loaded
+register snapshots remain independent values.
+
+Complete literal-store bodies retain their explicit footprint for the current
+call while preserving durable reach for later calls. A complete physical output
+list distinguishes actual overwrites from caller-saved registers whose logical
+ABI value hid unchanged pointer bits. This covers `x2`, `x3`, `x7`, `x9`,
+`x17` and `x18`; `x30` is excluded because `bl` replaces it. Input-pointer
+transport is not accepted as a noncapturing borrow.
+
+Independent reductions found both final defects. A write through `context+32`
+at displacement -24 overwrites the parent header. In the caller-saved case,
+native execution writes 11 through an `x2` alias while the pre-fix renderer
+showed 7; the candidate renders an unknown observation and unresolved parent
+jump. Authored fixtures separately prove merged unknown/success/error exits.
+Raw instructions show the existing typed-throw image passes `context+16` to
+`swift_willThrowTypedImpl`, so its parent exit is correctly unresolved.
+
+Two current-source material mutations were rebuilt independently. Removing
+post-call provenance produces **23 issues in 12 focused declarations**;
+disabling complete-body footprint bounds produces **six issues across 19
+async/unknown-store controls**. Exact restoration rebuilds all 19 green. No
+test file or declaration is removed: **2,038 -> 2,052 declarations** and
+**354 -> 355 Swift test files**. Two prior expectations are corrected and
+replaced with authored positive/negative controls.
+
+The rebuilt fixture-enforced suite passes **2,052 tests / 43 suites
+(948.872 s)**, with **1,185 public inputs / 911 products** frozen. Frozen
+release comparison covers **772 inputs in each of four views plus four SDK
+workloads**, all **3,092 default cost rows** passing without override:
+instructions **8,766.9G -> 8,767.0G (+0.00%)**; summed footprint
+**27,823 -> 27,833 MB (+0.04%)**. Eight inputs change in all views: seven
+conservative declines and one complete-body proof of the parent target with
+the result value still unknown. Every changed whole output matches the measured
+blast cache.
+
+All **416 CLI invocations / 16 inputs / 13 paths** pass. Metadata, layout,
+interface, Objective-C and xrefs controls are unchanged; analyze/lab/whole and
+filtered view changes are confined to the same eight reviewed inputs. All four
+SDK workload outputs and four guarded rerenders are byte-identical. Ten guarded
+renders of the original five apps retain all **84,833 function headers/order**
+without kills. Four apps are byte-identical. GoodLinks adds **211 conservative
+unresolved indirect jumps** and removes one now-inapplicable leaf comment; it
+removes no body or function. Maximum sampled app footprint is **200 MB**.
+
+Frozen release SHA256 (published baseline / candidate):
+`4d7b9cf3b1efc053772b8f6bc84a41327160d717416a051be612679e70e17f4d` /
+`c6df78e6d8a4e38ad3d532d48f4d4bbf83c491957d8605f1b23578b166504248`.
+
+**VERIFIED original gate and publication at `ec2565ac99c286cb73278671362797484cd8fef5`:**
+the validation-only gate worktree independently rebuilt committed code
+`4de8391`, passed **2,052 tests / 43 suites (955.657 s)** and pushed both code
+and documentation to `origin/dev`. Its four-view differences exactly retain
+the reviewed **8 files / 26 lines** (JSON 78 lines). All **3,092 default gate
+cost rows** pass without override: **8,766,859,437,664 -> 8,763,190,467,784
+instructions (-0.041850%)** and **29,174,305,368 -> 29,009,332,384 bytes
+summed per-run physical peaks (-0.565474%)**. Independent gate release SHA256:
+`4c1e3e8540b1e9658b324838c2f1c0da44af12e0d0bbbbf15b7ab01243d4f0d4`.
+The clean main/gate inventories match at **1,185 public inputs / 911 products**.
+
+**HOSTED VERIFIED:** [run 44638985902](https://github.com/CamdenBopp/swiftdc/actions/runs/44638985902)
+completed successfully at published `ec2565a`. Its Xcode 27 ARM64 job rebuilt
+the fixtures and tests, then passed the enforcing **2,052 tests / 43 suites
+(2,471.718 s)**. The terminal run/head, all job steps and decoded suite log
+were checked. Values genuinely carried across an await remain open. No scoring
+table or readiness percentage is recomputed.
+
+Reproduce after `swift build --build-tests` with
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter 'AsyncInteriorReachTests|UnknownCalleeStoreTests'`;
+full suite: `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+Compare frozen releases with
+`Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/4de8391a16d535b94e738dc051ba6825b7422d9a).
+
+## Latest local verification: recovered async transfer edges
+
+**VERIFIED locally at `1167e836216d79a3e764243e4080e67dbf3bc8e0`:** the
+async index retains each recovered source, site, destination, transfer kind,
+callee and destination ABI separately from rendering. Shared tails, multiple
+sites and shared descendants retain their edges before owner pruning.
+Continuation initialization and runtime waits retain their distinct meanings.
+This enabling refactor changes no rendered output and adds no value recovery.
+The bounded scanner excludes self-handoffs and does not establish a complete
+predecessor set or prove memory preservation.
+
+Eight new tests cover those cases, a two-resume cycle and conflicting ABI hints.
+Independent LLVM disassembly confirms their branch and ADR targets. All existing
+test files are unchanged. Disabling capture produced five issues; pruning
+shared edges produced three; misclassifying continuation initialization produced
+one. Exact restoration rebuilds **27 focused tests** green. The enforcing suite
+passes **2,060 tests / 43 suites (945.271 s)**, with **1,186 public inputs /
+911 products** frozen.
+
+All **772 inputs in four views / 3,088 render pairs** are identical, including
+35 expected preflight declines checked against raw headers. Four SDK workloads
+match. All **3,092 default cost rows** pass without override: instructions
+**8,763,190,467,784 -> 8,768,312,118,376 (+0.058445%)**; summed physical peaks
+**29,009,332,384 -> 29,102,120,392 bytes (+0.319856%)**. All **416 CLI runs /
+16 inputs / 13 paths** match stdout, stderr and function headers. Four guarded
+SDK rerenders and ten original-five-app renders match; all **84,833 app
+function headers/order** remain, no kills, maximum sampled footprint **237 MB**.
+
+Frozen published-baseline/candidate release SHA256:
+`4c1e3e8540b1e9658b324838c2f1c0da44af12e0d0bbbbf15b7ab01243d4f0d4` /
+`b3fc8cbbe973e57a3e889e218e6fde41cc4a7eae84a77f61cdae0b14166de2b3`.
+**GATE PUBLISHED:** the original gate published `409165d`; its terminal
+results and successful hosted run are recorded in the witness entry.
+Values carried across awaits remain open. No scoring table or readiness
+percentage changes.
+
+Published baseline `5bf8fc5` completed
+[hosted run 44988698470](https://github.com/CamdenBopp/swiftdc/actions/runs/44988698470):
+the rebuilt enforcing **2,052 tests / 43 suites passed (1,704.894 s)**.
+That result covers the earlier interior-reach code.
+
+Reproduce after `swift build --build-tests` with
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter 'AsyncTransferEdgeTests|AsyncHandoffShapeTests|AsyncAmbiguityTests'`;
+full suite: `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+See the [engineering record](https://github.com/CamdenBopp/swiftdc/commit/1167e836216d79a3e764243e4080e67dbf3bc8e0).
+
+## Latest local verification: converged async branch witnesses
+
+**VERIFIED locally at `e639a66cc91af43e131ec4bcbbe3e53c0f808e7c`.** In
+`Fixtures/Sample/libAwaitResults.opt.dylib`, the first `useInt` resume
+stores the first awaited scalar at owner +0x18 before the executor hop.
+The recovered edge identifies a continuation, while the legacy slot path
+only observes render-enriched state. The opt-in witness reports the
+local state at an explicitly requested terminal branch. It replays that
+block from the converged tracer entry before select and loop enrichment
+and records exact x22 owner or child identity, a concrete x0 address
+fact, definite owner slots, and independent local MAY capture bits.
+An exact slot written after a join can coexist with an owner capture
+from an incoming path.
+
+The witness declines on iteration or state-budget exhaustion and in
+blocks with missing instruction detail or a modeled predecessor with
+missing detail. Edge completeness, inherited owner capture, reach via
+the child's Parent, runtime memory effects, and successor ownership
+still require separate proof. No production caller requests the witness.
+The prior slot and renderer paths remain in use. `useInt` still renders
+`sink(?)` and `AsyncOutlinedContext.sequence` still renders `return ?`.
+Awaited-value transport remains open.
+
+Nine test declarations cover sparse requests, private and escaped
+spills, conditional capture, owner and child identity, caps, missing
+detail, raw-state ordering, and full recorder equality. Removing the
+missing-detail veto produced two issues. Moving extraction after select
+enrichment produced one. Both were rebuilt eight-test mutation runs.
+The restored rebuild passed **50 focused tests (0.406 s)**. The enforcing
+suite passed **2,069 tests in 43 suites (1,039.324 s)**. Qualification
+froze **1,187 public inputs and 911 fixture products**, including
+**470 source/test paths**. Prior tests match `409165d`.
+
+The audited releases matched **3,088 render pairs across 772 inputs and
+four views**, including **35 checked preflight declines**. Four SDK
+performance-workload output hashes matched. All **3,092 cost pairs**
+passed the default budgets. Retired instructions changed from
+**8,768,312,118,376 to 8,764,841,261,051 (−0.03958%)**. Summed peak
+footprints changed from **29,102,120,392 to 29,140,376,720 bytes
+(+0.13146%)**. The local frozen edge baseline and witness candidate
+SHA-256 hashes were
+`b3fc8cbbe973e57a3e889e218e6fde41cc4a7eae84a77f61cdae0b14166de2b3`
+and `aad2983cbd6d04dc9a3e5adf12d7e9c04c35b7ed2095385cc5e9fe14b0c339ce`.
+
+**POST-REVIEW:** all **416 CLI runs / 16 inputs / 13 paths**, four guarded SDK rerenders and ten original-five-app renders match stdout, stderr and function headers. All **84,833 app headers/order** remain, no guard kills; maximum sampled app footprint **220 MB**.
+
+**GATE PUBLISHED:** the original gate published
+`1fc51d3b39592c4dc13c09b840efba98cf618d99`, containing witness code
+`e639a66cc91af43e131ec4bcbbe3e53c0f808e7c` and the compiler-grounded ABI
+plan. The independent gate passed **2,069 tests / 43 suites (1,034.073 s)**.
+All **1,123 audited source/test/fixture/tool/package inputs** matched the
+committed tree and frozen review bytes. All **3,088 renders**, **35 raw-checked
+declines** and **four SDK workloads** matched the published baseline and
+reviewed witness. All **3,092 cost rows** passed default budgets:
+instructions **8,761,250,332,465 -> 8,768,913,379,889 (+0.087465%)**;
+summed peaks **29,271,933,456 -> 29,075,146,744 bytes (-0.672271%)**.
+Gate release SHA-256:
+`bc7ad12bd26d3bc00e4a8fc3ad8d1602bfbf4c4048024cf1bbe3bb64f062a520`.
+
+[Hosted run 44998598514](https://github.com/CamdenBopp/swiftdc/actions/runs/44998598514)
+completed successfully at `1fc51d3`: **2,069 tests / 43 suites (1,893.323 s)**.
+Decoded job logs confirm Toolchain, Fixtures, Build and Enforcing suite
+passed with Xcode 27.1 on the `xcode-27` ARM64 image. This is separate from
+the pending hosted verification of the later super-result fix.
+Values carried across awaits remain open. The [ABI closure plan](ABI-CLOSURE-PLAN.md)
+records eight source audits and implementation gates, not implemented coverage
+or a new readiness percentage.
+
+Reproduce after `swift build --build-tests` with
+`SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter AsyncBranchWitnessTests`.
+Full suite: `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build`.
+Compare the frozen releases with
+`Tools/blast-radius.sh <baseline> <candidate> <outdir> --real --perf`.
+
+### Previous publication: recovered async transfer edges
+
+The original integration gate published
+`409165d41797d84a24b85c6a918eb22c8187c5a6` to `dev`. The gate's
+**469 source/test paths** match the commit. Its enforcing suite passed
+**2,060 tests in 43 suites (1,185.222 s)**. The published binary SHA-256 was
+`9e90b695406f273eaf6b8796b8f3bd1b41ddf9f7e42f277a21ecc5fdfd01c390`.
+The reviewed local release and the published release produced identical
+outputs on all **3,088 renders** and **four SDK workloads**, including
+the **35 checked preflight declines**. The gate passed **3,092 cost rows**.
+Versus its published baseline, instructions changed from
+**8,763,190,467,784 to 8,761,250,332,465 (−0.02214%)** and summed peaks
+from **29,009,332,384 to 29,271,933,456 bytes (+0.90523%)**.
+[Hosted run 44993492956](https://github.com/CamdenBopp/swiftdc/actions/runs/44993492956)
+completed successfully at `409165d`: the rebuilt enforcing **2,060 tests /
+43 suites passed (1,925.295 s)**. Terminal run/head, job steps and decoded
+suite log were checked. This covers transfer-edge code `1167e83`, not the
+later witness code. No readiness percentage changes.

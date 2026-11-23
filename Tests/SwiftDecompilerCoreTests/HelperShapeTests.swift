@@ -165,7 +165,9 @@ private func demangledPrinted(_ symbol: String) -> String? {
 @Test func everyBoxedExistentialProjectionOnlyReads() {
     for name in ["__swift_project_boxed_opaque_existential_1", "__swift_project_boxed_opaque_existential_0",
                  "__swift_project_boxed_opaque_existential"] {
-        #expect(ValueTracer.CallFacts(callee: name).readsOnly, "\(name)")
+        // This positive control supplies the independently checked body.
+        #expect(ValueTracer.CallFacts(callee: name, bodyProjectsBoxedExistential: true).readsOnly, "\(name)")
+        #expect(!ValueTracer.CallFacts(callee: name).readsOnly, "\(name)")
     }
     #expect(!ValueTracer.CallFacts(callee: "__swift_destroy_boxed_opaque_existential").readsOnly)
 }

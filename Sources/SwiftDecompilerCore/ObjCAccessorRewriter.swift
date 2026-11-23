@@ -261,7 +261,8 @@ extension ObjCDumper {
                 if insn.controlFlow == .call { return false }
                 continue
             }
-            guard isAccessorRuntimeHelper(callee) else { return false }
+            guard !DisassembledFunction.isARCReferenceHelper(callee) || insn.facts.arcIdentityContract,
+                  isAccessorRuntimeHelper(callee) else { return false }
             if propertyStorageHelpers.contains(where: { callee.hasPrefix($0) }) { touchesIvar = true }
         }
         // A getter that returns from its own body hands back the ivar: x0,

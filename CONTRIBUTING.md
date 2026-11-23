@@ -4,12 +4,21 @@ Thanks for helping. swiftdc is trying to be a decompiler whose output you can
 trust without checking it by hand, and most of what follows exists to protect
 that.
 
-If you want somewhere to start, take an issue labelled
-[good first issue](https://github.com/CamdenBopp/swiftdc/labels/good%20first%20issue).
-Each one says what's wrong, how to see it, and what done looks like.
-[help wanted](https://github.com/CamdenBopp/swiftdc/labels/help%20wanted)
-issues are bigger. Comment on an issue before you start, so two people don't
-do the same work.
+## Start here
+
+Try the [Swift fixture walkthrough](README.md#what-the-output-looks-like) on
+`dev`. For a wrong result, compare a single rendered function with its fixture
+source or annotated disassembly. Capture the exact command and a short,
+shareable excerpt using the [bug report fields](.github/ISSUE_TEMPLATE/bug.yml).
+
+For a smaller check without a Swift build, run
+`bash Tools/test-tier-contract.sh` with Bash, Git and Python 3. It checks test
+selection in a temporary Git repository. A focused correction to a documented
+command or fixture example is also welcome.
+
+Browse the [open issues](https://github.com/CamdenBopp/swiftdc/issues) for
+work tagged `good first issue` or `help wanted`. Comment on an issue before
+starting so contributors can coordinate.
 
 By contributing, you agree your work is released under the [MIT license](LICENSE)
 and that you'll follow the [code of conduct](CODE_OF_CONDUCT.md).
@@ -42,7 +51,16 @@ soundness and verification apply to everyone.
 
 ## Setup
 
-You need an Apple Silicon Mac, Xcode 26 (Swift 6.3) and Go:
+The fixture-enforced suite requires an Apple Silicon Mac, Swift 6.4 or
+newer, Go on `PATH`, and at least 15 GB of free disk. The tested toolchain
+is Xcode 27.1 with Swift 6.4. Check your selected toolchain before
+building. [CI environment and toolchain](docs/CI.md#the-environment)
+
+```bash
+Tools/ci/environment.sh
+```
+
+Install Go if needed.
 
 ```bash
 brew install go
@@ -59,15 +77,8 @@ snapshot commits that dev doesn't have. `Tools/test.sh affected` also compares y
 against `origin/dev`, so `origin` should point here:
 
 ```bash
-git clone https://github.com/CamdenBopp/swiftdc.git
-```
-
-```bash
+git clone --branch dev https://github.com/CamdenBopp/swiftdc.git
 cd swiftdc
-```
-
-```bash
-git switch dev
 ```
 
 Then fork on GitHub and add the fork as a second remote, which is where
@@ -90,9 +101,10 @@ swift build
 The first run of each fetches and compiles everything from scratch, so
 expect it to take a while.
 
-`Tools/fixtures.sh` caches fixture builds by content, so it only runs
-`Fixtures/Sample/build.sh` when the fixture sources or toolchain have
-changed. Calling `build.sh` directly also works.
+`Tools/fixtures.sh` restores a content-addressed fixture build. It runs
+`Fixtures/Sample/build.sh` on a cache miss or with `--rebuild`.
+
+See [dependency maintenance](docs/CI.md#dependency-maintenance) before changing a package pin.
 
 ## Running tests
 
@@ -100,19 +112,26 @@ changed. Calling `build.sh` directly also works.
 Tools/test.sh affected
 ```
 
-That runs the tests for the subsystems your change touches. The other tiers:
+Affected mode selects mapped subsystems, changed test files, Determinism
+and FixturePresence. It checks branch changes against origin/dev as well as
+staged, unstaged and untracked changes. Unmapped source and shared test/build
+inputs trigger the full suite.
 
 | Command | Runs |
 |---|---|
 | `Tools/test.sh file <NameTests>` | One test file |
 | `Tools/test.sh <subsystem>` | One of `arm64 abi tracer cflow meta render audit` |
-| `Tools/test.sh quick` | Nearly everything, in about 100 seconds |
+| `Tools/test.sh quick` | The suite with the dyld-cache memory and selected Go tests skipped for iteration |
 | `Tools/test.sh full` | The enforcing suite. Run this before you open a pull request |
 
 Most tests need fixtures, and they skip quietly when the fixtures are missing,
 so a plain `swift test` on a fresh clone is green but proves little. Every
 `Tools/test.sh` tier sets `SWIFTDC_REQUIRE_FIXTURES=1`, which turns a missing
 fixture into a failure.
+
+Run `bash Tools/test-tier-contract.sh` to check test selection and fallback
+behavior with a Swift stub in an isolated Git repository. This self-test
+requires Bash, Git and Python 3. It runs without decompiler tests or fixtures.
 
 ## Making a change
 
@@ -129,9 +148,8 @@ proven through one subcommand isn't proven for the others. Some reach the
 binary through `llvm-objdump` and some go straight to the parser, so they
 fail differently.
 
-**Check both optimization levels.** `-Onone` and `-O` compile the same source
-very differently. Fixtures are usually built at both, and a fix proven at one
-level is untested at the other.
+**Check all three Swift optimization levels.** Test `-Onone`, `-O` and
+`-Osize` for ABI changes. The same source can lower differently at each level.
 
 **Explain every changed line of output.** `Tools/blast-radius.sh` renders
 every fixture with two swiftdc binaries and diffs the results:
@@ -140,7 +158,8 @@ every fixture with two swiftdc binaries and diffs the results:
 Tools/blast-radius.sh <old-swiftdc> <new-swiftdc> <outdir>
 ```
 
-Copy each binary out of `.build` before running it. Every line that changes
+Build releases with `--scratch-path .build-release` and copy both binaries
+out before running the comparison. Every line that changes
 belongs in your commit message, whether you meant to change it or not.
 
 **Fix stale docs in the same change.** `docs/PRODUCTION-READINESS.md` tracks
@@ -190,8 +209,10 @@ person from retrying it.
 
 - Push your branch to your fork and open the pull request against `dev`.
   That's where development happens; `master` is a periodic snapshot of it.
-- There's no CI yet, so nothing checks a pull request automatically. Run
-  `Tools/test.sh full` yourself before you open one.
+- GitHub Actions runs the fixture-enforced suite on pull requests and
+  pushes to `dev`. Fork pull requests can require a maintainer's approval
+  before running. Run `Tools/test.sh full` locally before opening a pull
+  request. [CI workflow and runner setup](docs/CI.md)
 - Include what you ran: the test tier, and the blast-radius counts if output
   changed.
 - Before merging, the maintainer runs `Tools/integration-gate.sh`: the full
@@ -202,6 +223,14 @@ person from retrying it.
   `Perf-cost: <reason>` line in the commit message.
 
 ## Reporting a bug
+
+Use the [bug report fields](.github/ISSUE_TEMPLATE/bug.yml) to collect the
+command, revision and evidence when [opening an issue](https://github.com/CamdenBopp/swiftdc/issues/new).
+Unknown environment details are accepted; a shareable binary upload is optional.
+The guided form becomes available on GitHub when it reaches the default branch.
+
+For a wrong body, see [Debug a wrong pseudocode render](docs/DEBUGGING-PSEUDOCODE.md)
+for a fixture walkthrough and a focused regression test.
 
 Include the binary or the source that produces it, how you built it (compiler
 version and optimization level), the exact swiftdc command, what it printed,

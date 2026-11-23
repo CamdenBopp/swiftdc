@@ -57,7 +57,9 @@ private func importStatements(_ name: String) async throws -> [String]? {
     #expect(t1 == ["g0(…)", "h0(…)"])
     #expect(c2 == ["extd(…)", "sinkD(…)"])
     #expect(t4 == ["ext(…)"])
-    #expect(d4 == ["ext(…)"])
+    // `add x0, x0, x19` after the call: what x0 holds at the return, with
+    // the call bound so it is spelled once.
+    #expect(d4 == ["let r0 = ext(…)", "return // x0 = (r0 + arg1)"])
 }
 
 /// The same through `@_silgen_name`: `ext_h0(ext_g0())` and

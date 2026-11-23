@@ -23,14 +23,15 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
 /// `ordinary_noop`, which is `ret`) and `epilogue_fragment(setup_fragment())`
 /// (it tail-branches to `stack_sink`, also `ret`). A call now reads what its
 /// target reads, so those take nothing, and `epilogue_helper`, whose only
-/// reads are its call to `setup_fragment` (x0 and x1), still takes two.
+/// reads are its call to `setup_fragment` (x0 and x1), retains those possible
+/// machine reads without claiming a source parameter count from them.
 @Test func aCallReadsOnlyWhatItsInImageTargetReadsIfPresent() async throws {
     let saves = "Fixtures/Sample/libABIEscapedSaves.dylib"
     let preserve = "Fixtures/Sample/libPreserveCalls.dylib"
     guard FileManager.default.fileExists(atPath: saves), FileManager.default.fileExists(atPath: preserve)
     else { return }
     for (path, lines) in [(saves, ["control_save_fragment()"]),
-                          (preserve, ["epilogue_fragment()", "epilogue_helper(arg0, arg1)"])] {
+                          (preserve, ["epilogue_fragment()", "epilogue_helper(…)"])] {
         let (array, streamed) = try await pseudo(path)
         for line in lines {
             #expect(array.contains(line), "array path \(path): \(line)")
@@ -57,12 +58,13 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
     let summary = try #require(CalleeRegisterSummary.of(function, isFunction: { $0 == 0x1104 }))
     #expect(summary.argumentReads.isEmpty)
     // x29, x22 and x20 are unwritten there too.
-    #expect(summary.pendingReads == [.init(target: 0x1104, unwritten: 0b1111_1110 | 1 << 29 | 1 << 22 | 1 << 20)])
+    #expect(summary.pendingReads.map(\.target) == [0x1104])
+    #expect(summary.pendingReads.map(\.unwritten) == [0b1111_1110 | 1 << 29 | 1 << 22 | 1 << 20])
     #expect(!summary.readsSelfRegister)
     // Not an in-image function: the call may read every unwritten register,
     // x20 as a Swift method's `self` among them.
     let unknown = try #require(CalleeRegisterSummary.of(function))
-    #expect(unknown.argumentReads == Set(1...7))
+    #expect(unknown.argumentReads == RegisterSet(1...7))
     #expect(unknown.readsSelfRegister)
 }
 
@@ -70,7 +72,7 @@ private func pseudo(_ path: String) async throws -> (array: String, streamed: St
 /// target's reads among the registers unwritten at it, through any depth and
 /// around a cycle, and every register of a target with no summary.
 @Test func pendingReadsCloseToTheLeastFixpoint() {
-    func summary(_ reads: Set<Int>, _ pending: [(UInt64, UInt32)] = []) -> CalleeRegisterSummary {
+    func summary(_ reads: RegisterSet, _ pending: [(UInt64, UInt32)] = []) -> CalleeRegisterSummary {
         CalleeRegisterSummary(argumentReads: reads, pendingReads: pending.map { .init(target: $0.0, unwritten: $0.1) },
                               clobberedCalleeSaved: [])
     }

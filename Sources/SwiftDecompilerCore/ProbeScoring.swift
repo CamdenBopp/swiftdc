@@ -360,7 +360,7 @@ public final class ProbeScore: Sendable {
             } else if let record = line.record { observe(record) }
             else { throw ProbeScoreError.invalid("malformed trace record") }
         }
-        while let data = try file.read(upToCount: 65536), !data.isEmpty {
+        while let data = try file.readDrained(upToCount: 65536), !data.isEmpty {
             pending.append(data)
             while let newline = pending.firstIndex(of: 10) {
                 try consume(Data(pending[..<newline])); pending.removeSubrange(...newline)

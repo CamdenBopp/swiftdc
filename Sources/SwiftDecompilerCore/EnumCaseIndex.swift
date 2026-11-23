@@ -31,12 +31,22 @@ public struct EnumCaseIndex: Sendable {
     /// the loader binds to a builtin integer's (`$sBi64_WV`), by qualified
     /// name: each is that integer, in one register.
     private let importedIntegerBits: [String: Int]
+    /// The image's resilient enums, by qualified name
+    /// (`LibraryEvolutionEvidence.resilientEnums`). One is passed by
+    /// address at every function boundary, so it travels neither in one
+    /// register nor in none. Its cases still name a tag read from memory,
+    /// which is how its own members see it through x20.
+    private let resilientEnums: Set<String>
+
+    /// Whether `typeName` is passed by address whatever its cases.
+    func isResilient(_ typeName: String) -> Bool { resilientEnums.contains(typeName) }
 
     public init(byName: [String: [String]?] = [:], byQualifiedName: [String: [String]] = [:],
-                importedIntegerBits: [String: Int] = [:]) {
+                importedIntegerBits: [String: Int] = [:], resilientEnums: Set<String> = []) {
         self.byName = byName
         self.byQualifiedName = byQualifiedName
         self.importedIntegerBits = importedIntegerBits
+        self.resilientEnums = resilientEnums
     }
 
     /// Whether `typeName` is an imported C type this image proves an integer
@@ -134,7 +144,8 @@ public struct EnumCaseIndex: Sendable {
         }
         for name in ambiguousQualifiedNames { byQualifiedName.removeValue(forKey: name) }
         return EnumCaseIndex(byName: byName, byQualifiedName: byQualifiedName,
-                             importedIntegerBits: importedIntegerBits(in: machO))
+                             importedIntegerBits: importedIntegerBits(in: machO),
+                             resilientEnums: LibraryEvolutionEvidence.resilientEnums(in: machO))
     }
 
     /// Imported types the image's foreign metadata proves integers. A foreign

@@ -133,6 +133,7 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
 /// parameters, take nothing in x0–x7, but their names kept them out of the
 /// signature layout, so whatever x0 held printed as an argument:
 /// `Gauge.(tick in _…)(r0)`, `Units.scale.getter(r0)`, `reading.getter(r1)`.
+/// A final class's own members take self in x20, which still holds it.
 @Test func calleesWithoutParametersShowNoArgumentsIfPresent() async throws {
     let path = "Fixtures/Sample/libAuditSemantics.opt.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
@@ -141,9 +142,9 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
     }
     let text = functions.filter { $0.displayName.hasPrefix("AuditSemantics.Gauge.run(") || $0.displayName.hasPrefix("AuditSemantics.scaled(") }
         .map { $0.renderStructured() }.joined(separator: "\n")
-    #expect(text.range(of: #"\(tick in _[0-9A-F]+\)\(\)"#, options: .regularExpression) != nil, Comment(rawValue: text))
+    #expect(text.range(of: #"\(tick in _[0-9A-F]+\)\(self: self\)"#, options: .regularExpression) != nil, Comment(rawValue: text))
     #expect(text.contains("Units.scale.getter()"), Comment(rawValue: text))
-    #expect(text.contains("Gauge.reading.getter()"), Comment(rawValue: text))
+    #expect(text.contains("Gauge.reading.getter(self: self)"), Comment(rawValue: text))
     #expect(Disassembler.withoutPrivateDiscriminators("M.(tick in _0A1B)") == "M.tick")
 }
 
@@ -235,7 +236,7 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
         try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "TypedThrowsAwait.useCode")
     }
     let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
-    #expect(text.contains("await TypedThrowsAwait.codeAsync(arg0)"), Comment(rawValue: text))
+    #expect(text.contains("await TypedThrowsAwait.codeAsync(?)"), Comment(rawValue: text))
     #expect(!text.contains("awaited1"), Comment(rawValue: text))
 }
 
@@ -248,7 +249,7 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
         try await Disassembler(preset: .default).disassemble(path: path, functionFilter: "awaitThrowing")
     }
     let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
-    #expect(text.contains("let awaited1 = await AsyncFns.fetchOrThrow(arg0)"), Comment(rawValue: text))
+    #expect(text.contains("let awaited1 = await AsyncFns.fetchOrThrow(?)"), Comment(rawValue: text))
 }
 
 /// An await names its result only when the callee returns it in x0 (or v0)
@@ -287,7 +288,7 @@ func structuredLoops(_ text: String) -> [(header: String, body: [String], after:
             let where_ = "\(path), filter \(filter ?? "none")"
             let control = renders(of: "useInt")
             #expect(control.count >= 4, "\(where_): useInt not found")
-            #expect(control.contains { $0.contains("let awaited1 = await AwaitResults.intResult(arg0)") },
+            #expect(control.contains { $0.contains("let awaited1 = await AwaitResults.intResult(?)") },
                     "\(where_): \(control.joined(separator: "\n"))")
             for (name, awaitText) in declined {
                 let texts = renders(of: name)

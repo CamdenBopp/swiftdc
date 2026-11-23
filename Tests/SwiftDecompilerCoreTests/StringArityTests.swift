@@ -57,7 +57,7 @@ private let fixture = "Fixtures/Sample/libStringArity.dylib"
     #expect(none.contains("StringArity.takeOptString(?, 7)"), "\(none)")
     // A class method's self is x20, so its formals start at x0.
     let box = try pseudo("callBox")
-    #expect(box.contains("StringArity.Box.put(?, 7)"), "\(box)")
+    #expect(box.contains("StringArity.Box.put(self: arg0, ?, 7)"), "\(box)")
 }
 
 /// Unit view of the footprints.

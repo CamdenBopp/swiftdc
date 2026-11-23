@@ -25,7 +25,9 @@ private let frameEscapeCases: [(member: String, rendered: String)] = [
     ("unknownLoad", "return 7"),
     ("noEscape", "return 7"),
     ("argumentStore", "return 7"),
-    ("dynamicAllocation", "return 7"),
+    // A signed subtraction does not prove the call-time stack boundary.
+    // Native nonnegative inputs still return7, but that alone is no bound.
+    ("dynamicAllocation", "return ?"),
     ("arityBound", "return 7"),
     ("outgoingGap", "return 7"),
     ("stackPrefixNoArgs", "return 7"),
@@ -173,11 +175,10 @@ private let compiledCallEffectFixtures = [
     #expect(text.contains("frame_escape_fill((local_30 - ((arg0 + 1) << 4)))"), Comment(rawValue: text))
 }
 
-/// A dynamic allocation whose size the tracer does not know still hangs
-/// below the frame: a local stored before it survives a later call, and a
-/// write through the allocation at an unknown index still forgets it
-/// (unknownalloca.s).
-@Test func anUnknownSizeAllocationKeepsTheFrameIfPresent() async throws {
+/// The loaded size has no proven sign or bound. A subtraction shape alone
+/// cannot locate call-time sp, so neither pre-call local is preserved by an
+/// unproved callee. Known native inputs remain valid independent controls.
+@Test func anUnknownStackBoundaryDeclinesUnprovedPreservationIfPresent() async throws {
     let path = "Fixtures/Sample/libUnknownAlloca.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
@@ -185,7 +186,27 @@ private let compiledCallEffectFixtures = [
         try #require(functions.first { $0.displayName.hasPrefix("UnknownAlloca.\(name)(") }).renderStructured()
     }
     let kept = try text("keptLocal")
-    #expect(kept.contains("return 5"), Comment(rawValue: kept))
+    #expect(kept.contains("getpid()"), Comment(rawValue: kept))
+    #expect(kept.contains("return ?"), Comment(rawValue: kept))
     let clobbered = try text("clobberedLocal")
     #expect(clobbered.contains("return ?"), Comment(rawValue: clobbered))
+}
+
+@Test func unknownAllocationNativeControlsStillReturnTheirActualValuesIfPresent() throws {
+    let path = "Fixtures/Sample/libUnknownAlloca.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let library = try #require(dlopen(path, RTLD_NOW | RTLD_LOCAL))
+    defer { dlclose(library) }
+    typealias Entry = @convention(c) (Int64) -> Int64
+    let kept = unsafeBitCast(try #require(dlsym(library, "$s13UnknownAlloca9keptLocalyS2iF")), to: Entry.self)
+    let clobbered = unsafeBitCast(try #require(dlsym(library, "$s13UnknownAlloca14clobberedLocalyS2iF")), to: Entry.self)
+    for size: UInt64 in [0, 16] {
+        let words = [size, size + 8]
+        try words.withUnsafeBufferPointer { buffer in
+            let base = try #require(buffer.baseAddress)
+            let address = Int64(Int(bitPattern: base))
+            #expect(kept(address) == 5)
+            #expect(clobbered(address) == 0)
+        }
+    }
 }

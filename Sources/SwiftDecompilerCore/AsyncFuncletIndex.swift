@@ -109,6 +109,33 @@ struct AsyncFuncletIndex: Sendable {
         let isExecutorHop: Bool
     }
 
+    /// A recovered resume handoff. Several edges can leave through the same
+    /// instruction, and a continuation init can establish ownership before
+    /// the instruction that actually suspends. A handoff is control-flow
+    /// evidence and does not prove that context storage survives the transfer.
+    struct TransferEdge: Sendable, Equatable {
+        enum Kind: Sendable, Equatable {
+            case awaitCall
+            case executorHop
+            case runtimeWait(String)
+            case ownershipOnly
+        }
+
+        let source: UInt64
+        let site: UInt64
+        let resume: UInt64
+        let kind: Kind
+        let callee: UInt64?
+        let calleeName: String?
+        /// The destination ABI according to this specific handoff and the hints.
+        let resumeKind: AsyncResumeKind
+
+        var runtimeWait: String? {
+            if case .runtimeWait(let name) = kind { return name }
+            return nil
+        }
+    }
+
     struct Funclet: Sendable, Equatable {
         let parent: UInt64?
         let ordinal: Int
@@ -124,6 +151,11 @@ struct AsyncFuncletIndex: Sendable {
     private(set) var chains: [UInt64: [UInt64]] = [:]
     /// Suspension instruction address → what it suspends into.
     private(set) var suspensions: [UInt64: Suspension] = [:]
+    /// Source funclet → recovered handoffs, including ambiguous sites and
+    /// destinations that have no unique owner. The bounded scan does not
+    /// establish a complete predecessor set and excludes self-handoffs.
+    /// `suspensions` is for rendering.
+    private(set) var transfers: [UInt64: [TransferEdge]] = [:]
     /// Declared resume funclets no predecessor was found for, sorted.
     private(set) var orphans: [UInt64] = []
     /// Whether the hint sections were present (the oracle), as opposed to the
@@ -173,14 +205,108 @@ struct AsyncFuncletIndex: Sendable {
         }
     }
 
+    /// A complete leaf path that writes both context-header words and hands
+    /// that same pointer to x22. Its name establishes no calling convention.
+    private struct ContextHeaderHelper {
+        let context: String
+        let resume: String
+
+        init?(_ fragment: OutlinedFragment) {
+            guard !fragment.isTailCall, fragment.body.count == 2,
+                  let store = fragment.body[0].detail,
+                  store.id == AARCH64_INS_STP, !store.writeback,
+                  store.operands.count == 3,
+                  let parent = store.operands[0].operand.register,
+                  parent.kind == .gpr, parent.widthBits == 64,
+                  let resume = store.operands[1].operand.register,
+                  resume.kind == .gpr, resume.widthBits == 64, resume.number < 30,
+                  case .memory(let context?, nil, 0) = store.operands[2].operand,
+                  context.kind == .gpr, context.widthBits == 64, context.number < 30,
+                  let move = fragment.body[1].detail,
+                  move.id == AARCH64_INS_MOV, move.operands.count == 2,
+                  let destination = move.operands[0].operand.register,
+                  destination.kind == .gpr, destination.widthBits == 64, destination.number == 22,
+                  let source = move.operands[1].operand.register,
+                  source.kind == .gpr, source.widthBits == 64, source.key == context.key
+            else { return nil }
+            self.context = context.key
+            self.resume = resume.key
+        }
+    }
+
+    /// A complete default-Osize allocator prefix. Its only memory write is
+    /// a direct caller-stack spill; its only nonvolatile register output is
+    /// the native frame pointer. The tail's binding proves the allocation.
+    private struct ContextAllocatorHelper {
+        let prefix: [Instruction]
+
+        init?(_ fragment: OutlinedFragment, targetName: String?) {
+            guard fragment.isTailCall, AsyncFuncletIndex.isTaskAlloc(targetName), fragment.body.count == 5 else { return nil }
+            let details = fragment.body.compactMap(\.detail)
+            guard details.count == 5, details.allSatisfy({ !$0.writeback }) else { return nil }
+            func register(_ instruction: Int, _ operand: Int, _ number: Int, _ width: Int = 64) -> Bool {
+                guard details[instruction].operands.indices.contains(operand),
+                      let reg = details[instruction].operands[operand].operand.register else { return false }
+                return reg.kind == .gpr && reg.number == number && reg.widthBits == width
+            }
+            guard details[0].id == AARCH64_INS_STR, details[0].operands.count == 2,
+                  register(0, 0, 22),
+                  case .memory(let stack?, nil, 8) = details[0].operands[1].operand,
+                  stack.kind == .stackPointer, stack.widthBits == 64,
+                  details[1].id == AARCH64_INS_ADD, details[1].operands.count == 3,
+                  register(1, 0, 29),
+                  let source = details[1].operands[1].operand.register,
+                  source.kind == .stackPointer, source.widthBits == 64,
+                  details[1].operands[2].shiftedImmediate == 16,
+                  details[2].id == AARCH64_INS_ADRP, details[2].operands.count == 2,
+                  register(2, 0, 8), details[2].operands[1].operand.immediateValue != nil,
+                  details[3].id == AARCH64_INS_LDR, details[3].operands.count == 2,
+                  register(3, 0, 8),
+                  case .memory(let descriptor?, nil, _) = details[3].operands[1].operand,
+                  descriptor.kind == .gpr, descriptor.number == 8, descriptor.widthBits == 64,
+                  details[4].id == AARCH64_INS_LDR, details[4].operands.count == 2,
+                  register(4, 0, 0, 32),
+                  case .memory(let size?, nil, 4) = details[4].operands[1].operand,
+                  size.kind == .gpr, size.number == 8, size.widthBits == 64
+            else { return nil }
+            prefix = fragment.body
+        }
+    }
+
     /// The identity of a funclet's own incoming context (x22 at its entry).
     static let ownContext = UInt64.max
 
-    /// A memory operand based on sp, or on x29, which the Apple arm64 ABI
-    /// keeps as the frame pointer.
-    static func addressesFrame(_ operand: StructuredOperand) -> Bool {
-        guard case .memory(let base?, _, _) = operand else { return false }
-        return base.kind == .stackPointer || base.key == "x29"
+    /// The caller has restored its frame record before branching here. This
+    /// complete epilogue clears the Swift async-frame tag and pops SP; it
+    /// changes no context, resume argument or memory before the final tail.
+    private static func contextPreservingTail(_ fragment: OutlinedFragment) -> UInt64? {
+        guard fragment.isTailCall, fragment.body.count == 2,
+              let target = fragment.terminator.branchTarget,
+              let strip = fragment.body[0].detail, !strip.writeback,
+              strip.id == AARCH64_INS_AND, strip.operands.count == 3,
+              let destination = strip.operands[0].operand.register,
+              destination.kind == .gpr, destination.number == 29, destination.widthBits == 64,
+              let source = strip.operands[1].operand.register,
+              source.kind == .gpr, source.number == 29, source.widthBits == 64,
+              let mask = strip.operands[2].operand.immediateValue,
+              UInt64(bitPattern: mask) == 0xefffffffffffffff,
+              let pop = fragment.body[1].detail, !pop.writeback,
+              pop.id == AARCH64_INS_ADD, pop.operands.count == 3,
+              let stack = pop.operands[0].operand.register,
+              stack.kind == .stackPointer, stack.widthBits == 64,
+              let oldStack = pop.operands[1].operand.register,
+              oldStack.kind == .stackPointer, oldStack.widthBits == 64,
+              let bytes = pop.operands[2].shiftedImmediate, bytes >= 0, bytes % 16 == 0
+        else { return nil }
+        return target
+    }
+
+    /// x29 addresses the hardware stack only while its provenance proves it.
+    /// Losing an async-context fact does not restore the frame-pointer role.
+    static func addressesFrame(_ operand: StructuredOperand, framePointerIsHardwareFrame: Bool) -> Bool {
+        guard case .memory(let base?, let index, _) = operand,
+              index == nil || index?.kind == .zero else { return false }
+        return base.kind == .stackPointer || (base.key == "x29" && framePointerIsHardwareFrame)
     }
 
     /// Runtime suspensions that take the resume function as an explicit
@@ -384,6 +510,7 @@ struct AsyncFuncletIndex: Sendable {
             scanSet = functionStarts.sorted()
         }
         guard !scanSet.isEmpty else { return index }
+        let declaredAsyncEntries = Set(entries)
 
         // Per funclet: the resume pointers it materialises, in instruction order,
         // each with the suspension that hands it over.
@@ -405,6 +532,72 @@ struct AsyncFuncletIndex: Sendable {
         }
         var materialisations: [UInt64: [Materialisation]] = [:]
         var allocatesContext: Set<UInt64> = []
+        var checkedHeaderHelpers: Set<UInt64> = []
+        var headerHelpers: [UInt64: ContextHeaderHelper] = [:]
+        var checkedTerminalFragments: Set<UInt64> = []
+        var terminalFragments: [UInt64: OutlinedFragment] = [:]
+        func terminalFragment(at address: UInt64) -> OutlinedFragment? {
+            guard functionStarts.contains(address) else { return nil }
+            if checkedTerminalFragments.insert(address).inserted,
+               let fragment = OutlinedFragment(start: address, instructions: instructions(address)) {
+                terminalFragments[address] = fragment
+            }
+            return terminalFragments[address]
+        }
+        func terminalTarget(from target: UInt64) -> UInt64? {
+            var current = target
+            var seen: Set<UInt64> = []
+            var followed = 0
+            while seen.insert(current).inserted {
+                // Swift async entries may read and pop incoming stack
+                // arguments. Their declared function boundary is not an
+                // outlining fragment's caller-frame access.
+                if declaredAsyncEntries.contains(current) { return current }
+                let name = nameOf(current)
+                let marked = name?.hasPrefix("OUTLINED_FUNCTION_") == true
+                    || name?.hasPrefix("_OUTLINED_FUNCTION_") == true
+                guard let fragment = terminalFragment(at: current) else {
+                    return marked ? nil : current
+                }
+                if let next = Self.contextPreservingTail(fragment) {
+                    // A bounded proof must reach an independently known entry
+                    // or binding, never treat its last partial target as one.
+                    guard followed < 8,
+                          !fragment.body.contains(where: { $0.address == next }),
+                          fragment.terminator.address != next,
+                          functionStarts.contains(next) || nameOf(next) != nil else { return nil }
+                    followed += 1
+                    current = next
+                    continue
+                }
+                // An ordinary callee keeps its own entry contract. A named
+                // fragment or a body that violates that convention needs a
+                // whole-prefix proof before the caller's snapshot can cross it.
+                return marked || fragment.breaksCallingConvention ? nil : current
+            }
+            return nil
+        }
+        var checkedAllocatorHelpers: Set<UInt64> = []
+        var allocatorHelpers: [UInt64: ContextAllocatorHelper] = [:]
+        func allocatorHelper(at address: UInt64) -> ContextAllocatorHelper? {
+            guard functionStarts.contains(address) else { return nil }
+            if checkedAllocatorHelpers.insert(address).inserted,
+               let fragment = OutlinedFragment(start: address, instructions: instructions(address)),
+               let target = fragment.terminator.branchTarget,
+               let helper = ContextAllocatorHelper(fragment, targetName: nameOf(target)) {
+                allocatorHelpers[address] = helper
+            }
+            return allocatorHelpers[address]
+        }
+        func headerHelper(at address: UInt64) -> ContextHeaderHelper? {
+            guard functionStarts.contains(address) else { return nil }
+            if checkedHeaderHelpers.insert(address).inserted,
+               let fragment = OutlinedFragment(start: address, instructions: instructions(address)),
+               let helper = ContextHeaderHelper(fragment) {
+                headerHelpers[address] = helper
+            }
+            return headerHelpers[address]
+        }
 
         for start in scanSet {
             let body = instructions(start)
@@ -421,6 +614,10 @@ struct AsyncFuncletIndex: Sendable {
             for run in runs {
                 for successor in Set(run.successors) { predecessors[successor, default: []].append(run.startAddress) }
             }
+            let hardwareFrameInputs = AsyncHardwareFrames.inputs(in: runs, entry: start,
+                allocatorPrefix: { allocatorHelper(at: $0)?.prefix }) {
+                headerHelper(at: $0) != nil
+            }
             for run in runs {
                 let path = Self.straightLinePath(from: run, runAt: runAt, predecessors: predecessors)
                 var pages: [String: UInt64] = [:]
@@ -431,6 +628,7 @@ struct AsyncFuncletIndex: Sendable {
                 // context may live inside another's frame: `sleep(nanoseconds:)`
                 // builds its continuation context at `x22 + 0x10`.
                 var contexts: [String: ContextAddress] = [:]
+                var hardwareFrames = path.first.flatMap { hardwareFrameInputs[$0.address] } ?? []
                 if path.first?.address == start {
                     contexts["x22"] = ContextAddress(identity: Self.ownContext, offset: 0)
                 }
@@ -441,23 +639,60 @@ struct AsyncFuncletIndex: Sendable {
                 let terminator = path.last
                 let terminatorIsBranch = terminator?.controlFlow == .branch
                     && terminator?.branchTarget.map(internalAddresses.contains) != true
-                let terminatorTarget = terminator?.branchTarget
+                var terminatorTarget = terminator?.branchTarget
+                var terminalProved = true
+                if terminatorIsBranch, let target = terminatorTarget {
+                    if let forwarded = terminalTarget(from: target) { terminatorTarget = forwarded }
+                    else { terminalProved = false }
+                }
                 let terminatorName = terminatorTarget.flatMap(nameOf)
                     ?? terminator.flatMap { DisassembledFunction.calleeName(of: $0) }
-                let hop = terminatorIsBranch && Self.isTaskSwitch(terminatorName)
-                let wait = terminatorIsBranch ? Self.runtimeWait(terminatorName) : nil
+                let hop = terminalProved && terminatorIsBranch && Self.isTaskSwitch(terminatorName)
+                let wait = terminalProved && terminatorIsBranch ? Self.runtimeWait(terminatorName) : nil
                 if hop || wait != nil { allocatesContext.insert(start) }
 
                 for insn in path {
+                    let framePointerIsHardwareFrame = hardwareFrames.contains("x29")
+                    AsyncHardwareFrames.advance(&hardwareFrames, by: insn,
+                        allocatorPrefix: { allocatorHelper(at: $0)?.prefix }) { headerHelper(at: $0) != nil }
                     guard let detail = insn.detail else {
-                        pages.removeAll(); held.removeAll(); contexts.removeAll(); resumeFields.removeAll(); continue
+                        pages.removeAll(); held.removeAll(); contexts.removeAll(); resumeFields.removeAll()
+                        continue
                     }
                     if insn.controlFlow == .call {
                         // Named only here: for any other instruction the
                         // name was parsed from its text and never read.
                         let name = insn.branchTarget.flatMap(nameOf)
                             ?? DisassembledFunction.calleeName(of: insn)
-                        if Self.isTaskAlloc(name) || Self.isTaskSwitch(name) || Self.isContinuationInit(name) {
+                        let allocator = insn.branchTarget.flatMap { allocatorHelper(at: $0) }
+                        let allocates = Self.isTaskAlloc(name) || allocator != nil
+                        if !Self.isTaskAlloc(name), !Self.isTaskSwitch(name), !Self.isContinuationInit(name),
+                           !pending.isEmpty,
+                           contexts.values.contains(where: {
+                               $0 != ContextAddress(identity: Self.ownContext, offset: 0)
+                           }),
+                           let target = insn.branchTarget, let helper = headerHelper(at: target),
+                           let context = contexts[helper.context], let resume = held[helper.resume],
+                           pending.contains(where: { $0.address == resume }) {
+                            // BL changes x30 before the helper runs. Its other
+                            // inputs and writes are proved by the whole leaf.
+                            for offset in [Int64(0), Int64(8)] {
+                                let field = context.advanced(by: offset)
+                                resumeFields = resumeFields.filter { known, _ in
+                                    known.identity != field.identity
+                                        || known.offset + 8 <= field.offset || field.offset + 8 <= known.offset
+                                }
+                            }
+                            // Parent is data, not a proved resume pointer.
+                            resumeFields[context.advanced(by: 8)] = resume
+                            contexts["x22"] = context
+                            held["x22"] = nil; pages["x22"] = nil
+                            held["x30"] = nil; pages["x30"] = nil; contexts["x30"] = nil
+                            // The normal terminal check establishes handover.
+                            // A later overwrite or call can still invalidate it.
+                            continue
+                        }
+                        if allocates || Self.isTaskSwitch(name) || Self.isContinuationInit(name) {
                             allocatesContext.insert(start)
                         }
                         // `swift_continuation_init(context, flags)`: the resume
@@ -472,8 +707,16 @@ struct AsyncFuncletIndex: Sendable {
                         for n in 0...17 {
                             pages["x\(n)"] = nil; held["x\(n)"] = nil; contexts["x\(n)"] = nil
                         }
+                        if allocator != nil {
+                            // The proved prefix replaces x29 with SP+16; it
+                            // cannot retain an older context/address alias.
+                            pages["x29"] = nil; held["x29"] = nil; contexts["x29"] = nil
+                        }
+                        // BL/BLR replace LR even when the callee preserves
+                        // every other register holding a context or address.
+                        pages["x30"] = nil; held["x30"] = nil; contexts["x30"] = nil
                         resumeFields.removeAll()
-                        if Self.isTaskAlloc(name) {
+                        if allocates {
                             contexts["x0"] = ContextAddress(identity: insn.address, offset: 0)
                         }
                         continue
@@ -543,7 +786,7 @@ struct AsyncFuncletIndex: Sendable {
                         // is a handoff. An arbitrary memory store proves nothing.
                         let count = detail.id == AARCH64_INS_STP ? 2 : 1
                         let memory = operands.first(where: { $0.operand.isMemory })?.operand
-                        if let memory, Self.addressesFrame(memory) {
+                        if let memory, Self.addressesFrame(memory, framePointerIsHardwareFrame: framePointerIsHardwareFrame) {
                             // The C stack holds no async context: one lives in
                             // the task allocator or inside another context.
                         } else if case .memory(let base?, nil, let displacement)? = memory, !detail.writeback,
@@ -576,7 +819,7 @@ struct AsyncFuncletIndex: Sendable {
                         // field, unless it is to the C stack.
                         if let memory = operands.first(where: { $0.operand.isMemory })?.operand,
                            !Self.readsMemoryOnly.contains(detail.id),
-                           !Self.addressesFrame(memory) {
+                           !Self.addressesFrame(memory, framePointerIsHardwareFrame: framePointerIsHardwareFrame) {
                             resumeFields.removeAll()
                         }
                         if let dst = operands.first?.operand.register {
@@ -622,6 +865,7 @@ struct AsyncFuncletIndex: Sendable {
                         ))
                         continue
                     }
+                    guard terminalProved else { continue }
                     found.append(Materialisation(
                         resume: item.address,
                         suspensionAddress: terminatorIsBranch ? terminator?.address : nil,
@@ -685,6 +929,20 @@ struct AsyncFuncletIndex: Sendable {
         // `AsyncCompactMapSequence.Iterator.next()` re-awaits into resume #1
         // from resume #4): the owner holds, but no single predecessor does.
         edges = edges.mapValues { items in items.filter { $0.suspensionAddress != nil } }
+        for source in edges.keys.sorted() {
+            guard let items = edges[source], !items.isEmpty else { continue }
+            index.transfers[source] = items.compactMap { item in
+                guard let site = item.suspensionAddress else { return nil }
+                let kind: TransferEdge.Kind
+                if !item.recordsSuspension { kind = .ownershipOnly }
+                else if item.isExecutorHop { kind = .executorHop }
+                else if let wait = item.runtimeWait { kind = .runtimeWait(wait) }
+                else { kind = .awaitCall }
+                return TransferEdge(source: source, site: site, resume: item.resume,
+                                    kind: kind, callee: item.callee, calleeName: item.callee.flatMap(nameOf),
+                                    resumeKind: resumeKind(item.resume, item))
+            }
+        }
         // Paths that share a tail share its suspension instruction: two awaits
         // built in different blocks of `AsyncFlatMapSequence.Iterator.next()`'s
         // resume #1 both leave through one `braa`. That instruction resumes

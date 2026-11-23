@@ -3,10 +3,14 @@ import Foundation
 import Testing
 @testable import SwiftDecompilerCore
 
-private func ownershipSummary(saveOffset: Int64, store: UInt32) throws -> CalleeRegisterSummary {
-    let displacement = UInt32(truncatingIfNeeded: saveOffset) & 0x1ff
-    let words: [UInt32] = [0xf80003f3 | (displacement << 12), 0xaa1f03f3,
-                           store, 0xf84003f3 | (displacement << 12), 0xd65f03c0]
+private func ownershipSummary(saveOffset: Int64, store: UInt32, allocatesFrame: Bool = false) throws -> CalleeRegisterSummary {
+    let displacement = UInt32(truncatingIfNeeded: saveOffset + (allocatesFrame ? 32 : 0)) & 0x1ff
+    var words: [UInt32] = []
+    if allocatesFrame { words.append(0xd10083ff) } // sub sp,sp,#32
+    words += [0xf80003f3 | (displacement << 12), 0xaa1f03f3,
+              store, 0xf84003f3 | (displacement << 12)]
+    if allocatesFrame { words.append(0x910083ff) } // add sp,sp,#32
+    words.append(0xd65f03c0)
     let engine = try #require(CapstoneEngine())
     let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
     let decoded = engine.disassemble(Data(bytes), address: 0x1000)
@@ -19,14 +23,17 @@ private func ownershipSummary(saveOffset: Int64, store: UInt32) throws -> Callee
     return try #require(CalleeRegisterSummary.of(function))
 }
 
-@Test func abiUnknownCallsCannotPreserveCallerOwnedSaves() throws {
-    // The incoming pointer can already address caller-owned memory. An
-    // unknown helper may write through it without a new local pointer escape.
-    for offset: Int64 in [0, 16, -4, -7] {
+@Test func abiUnknownCallsRespectTheCallTimeStackBoundary() throws {
+    // These are caller-owned or below call-time sp when no frame was
+    // allocated. An unknown callee may overwrite either category.
+    for offset: Int64 in [0, 16, -4, -7, -8, -16] {
         #expect(try ownershipSummary(saveOffset: offset, store: 0x94000010).clobberedCalleeSaved == ["x19"])
     }
+    // Allocating32bytes puts the same negative entry-relative saves above
+    // call-time sp. No pointer to them escapes, so they remain preserved.
     for offset: Int64 in [-8, -16] {
-        #expect(try ownershipSummary(saveOffset: offset, store: 0x94000010).clobberedCalleeSaved.isEmpty)
+        #expect(try ownershipSummary(saveOffset: offset, store: 0x94000010,
+                                     allocatesFrame: true).clobberedCalleeSaved.isEmpty)
     }
 }
 

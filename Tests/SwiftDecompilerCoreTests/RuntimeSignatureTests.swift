@@ -11,12 +11,16 @@ import Testing
     #expect(DisassembledFunction.knownCArity(of: "swift_arrayDestroy") == 3)
     // RuntimeFunctions.def: swift_deallocClassInstance returns nothing, and
     // x0 after one read `let r8 = swift_deallocClassInstance(r7, 32, 7)`.
-    #expect(ValueTracer.CallFacts(callee: "swift_deallocClassInstance").cResult == "v")
+    // The declaration controls model a bound runtime entry. Neither a name
+    // nor a separate error-register proof supplies this result contract.
+    #expect(ValueTracer.CallFacts(callee: "swift_deallocClassInstance", namedABIContract: true).cResult == "v")
+    #expect(ValueTracer.CallFacts(callee: "swift_deallocClassInstance",
+        bodyPreservesSwiftError: true, nonThrowingABIContract: true).cResult == nil)
     // Error.h: a BoxPair comes back in x0 and x1. `x` claims nothing about x0.
-    #expect(ValueTracer.CallFacts(callee: "swift_allocError").cResult == nil)
+    #expect(ValueTracer.CallFacts(callee: "swift_allocError", namedABIContract: true).cResult == nil)
     #expect(DisassembledFunction.knownCArity(of: "swift_allocError") == 4)
     // The MetadataResponse's x0 is the metadata, read as a value.
-    #expect(ValueTracer.CallFacts(callee: "swift_getGenericMetadata").cResult == nil)
+    #expect(ValueTracer.CallFacts(callee: "swift_getGenericMetadata", namedABIContract: true).cResult == nil)
 }
 
 /// Not everything the table's source lists has a fixed register signature.
@@ -26,8 +30,10 @@ import Testing
     // A context in x22, formals by the async convention.
     #expect(DisassembledFunction.cPrototype(of: "swift_task_switch") == nil)
     #expect(DisassembledFunction.cPrototype(of: "swift_task_future_wait") == nil)
-    // A generic Swift function under a C name: its result goes through x8.
-    #expect(DisassembledFunction.cPrototype(of: "swift_getAtKeyPath") == nil)
+    // A generic Swift function under a C name, unless checked by hand
+    // (SwiftIntrinsicSignatures): its result goes through x8.
+    #expect(DisassembledFunction.cPrototype(of: "swift_getAtKeyPath")?.parameters.count == 2)
+    #expect(ValueTracer.CallFacts(callee: "swift_getAtKeyPath", namedABIContract: true).passedRegisters.contains(.x(8)))
     // RuntimeFunctions.def says one argument; Error.h and the stdlib say five.
     #expect(DisassembledFunction.cPrototype(of: "swift_unexpectedError") == nil)
 }

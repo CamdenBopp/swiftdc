@@ -155,10 +155,13 @@ the gate enforces it. Tiers 1-3 are what an agent runs while it iterates.
 `Tools/test.sh` runs each tier:
 - `file <NameTests>…`
 - `<subsystem>…`
-- `affected`, which maps the files changed against origin/dev to subsystems.
+- `affected`, which includes mapped changes against origin/dev and staged,
+  unstaged and untracked changes. It also includes changed test files,
+  Determinism and FixturePresence. Unmapped source and shared test/build
+  inputs trigger the full suite.
 - `full`
-- `quick`, which is tier 4 without the dyld-cache memory test and the Go
-  tests. It is for iterating, never for a push.
+- `quick`, which skips the dyld-cache memory test and selected Go tests for
+  iteration. The script prints the exclusion regex and the full-suite command.
 
 A `--filter` regex matches a test's file name as well as its name, so
 `'SmokeTests\.swift'` runs exactly that file. Measured 2026-11-02 at load

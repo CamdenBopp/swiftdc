@@ -131,22 +131,75 @@ private func symbols() -> [UInt64: String]? {
 /// agreeing, the span is data: whole and filtered, it keeps its name and has
 /// no instruction, and streaming still lists it as a function.
 @Test func theGoBuildIDIsDataNotCodeIfPresent() async throws {
-    for path in [full, stripped] {
-        guard FileManager.default.fileExists(atPath: path) else { continue }
+    let variants = [full, stripped, "Fixtures/Sample/x8-entry-go-oracle", "Fixtures/Sample/x8-entry-go-stripped-oracle"]
+    for path in variants {
+        guard FileManager.default.fileExists(atPath: path) else {
+            #expect(!FixturePresenceTests.enforcingFixturePresence, "Build \(path) before testing.")
+            continue
+        }
         let machO = try BinaryLoader.load(path: path)
         let disassembler = Disassembler(preset: .default)
         let table = try #require(disassembler.goFunctions(in: machO))
-        let start = try #require(table.entries.first { $0.name == "go:buildid" }?.address)
-        #expect(table.dataSpans[start] != nil, "\(path)")
+        let index = try #require(table.entries.firstIndex { $0.name == "go:buildid" })
+        let start = table.entries[index].address
+        try #require(index + 1 < table.entries.count)
+        let next = table.entries[index + 1].address
+        try #require(table.dataSpans[start]?.end == next, "\(path)")
         let whole = try await withStableDependencies { try await disassembler.disassemble(path: path) }
-        let buildID = try #require(whole.first { $0.startAddress == start }, "\(path)")
-        #expect(buildID.symbol == "_go:buildid" && buildID.instructions.isEmpty && buildID.foldedCandidates == nil, "\(path)")
-        #expect(whole.contains { $0.startAddress > start && !$0.instructions.isEmpty })
+        let array = await withStableDependencies { await disassembler.disassemble(machO: machO) }
+        let streamed: [DisassembledFunction?] = await withStableDependencies {
+            await disassembler.disassembleStreaming(machO: machO, transform: { function in
+                function.startAddress == start || function.startAddress == next ? function : nil
+            })
+        }
         let filtered = try await withStableDependencies {
             try await disassembler.disassemble(path: path, functionFilter: "go:buildid")
         }
-        #expect(filtered.count == 1 && filtered[0].instructions.isEmpty, "\(path)")
+        #expect(filtered.count == 1 && filtered.first?.startAddress == start, "\(path)")
+        for (route, functions) in [("listing", whole), ("array", array),
+                                   ("streaming", streamed.compactMap { $0 }), ("filtered", filtered)] {
+            let comment = Comment(rawValue: "\(path) \(route)")
+            let rows = functions.filter { $0.startAddress == start }
+            try #require(rows.count == 1, comment)
+            let buildID = rows[0]
+            #expect(buildID.symbol == "_go:buildid" && buildID.instructions.isEmpty, comment)
+            #expect(buildID.foldedCandidates == nil, comment)
+            if route != "filtered" {
+                #expect(functions.contains { $0.startAddress == next && !$0.instructions.isEmpty }, comment)
+            }
+        }
     }
+}
+
+/// A readable code boundary can supply a caller's result-read evidence. A
+/// validated Go data boundary only supplies a label, even if a bad BL names it.
+@Test func goBuildIDIsNotACallableStreamingEntry() throws {
+    let dataStart: UInt64 = 0x1000
+    let neighbor: UInt64 = 0x1070
+    let dataSpans = [dataStart: (end: neighbor, name: "go:buildid")]
+    let boundary = Disassembler.streamingGoBoundaries([dataStart, neighbor], dataSpans: dataSpans)
+    try #require(boundary.data[dataStart]?.end == neighbor)
+    let engine = try #require(CapstoneEngine())
+    // mov x1, x0 is a real observed X0 use after each synthetic call.
+    let mov = try #require(engine.disassemble(Data([0xe1, 0x03, 0x00, 0xaa]), address: 0x2004).first)
+    let use = Disassembler.instruction(decoded: mov)
+    try #require(use.detail?.readRegisterKeys.contains("x0") == true)
+    func resultReads(afterCallTo target: UInt64) -> [UInt64: CalleeRegisterSummary.ResultRead] {
+        let call = Instruction(address: 0x2000, text: "bl", controlFlow: .call, branchTarget: target)
+        return CalleeRegisterSummary.resultReads([call, use], blockStarts: [],
+            isFunction: { boundary.callable.contains($0) }, provenNonThrowing: true)
+    }
+    #expect(resultReads(afterCallTo: dataStart)[dataStart] == nil)
+    #expect(resultReads(afterCallTo: neighbor)[neighbor] == .x0)
+
+    // An independent interior boundary conflicts with the Go span. Retain
+    // the old streaming treatment instead of adopting a new precedence rule.
+    let interior: UInt64 = 0x1040
+    let conflict = Disassembler.streamingGoBoundaries([dataStart, interior, neighbor], dataSpans: dataSpans)
+    #expect(conflict.data.isEmpty)
+    #expect(conflict.callable == Set([dataStart, interior, neighbor]))
+    let noNeighbor = Disassembler.streamingGoBoundaries([dataStart], dataSpans: dataSpans)
+    #expect(noNeighbor.data.isEmpty && noNeighbor.callable == [dataStart])
 }
 
 /// Both halves of the evidence: the name and the bytes.
@@ -161,4 +214,38 @@ private func symbols() -> [UInt64: String]? {
     #expect(spans("go:buildid", prefix)[0x1000]?.end == 0x1080)
     #expect(spans("go:buildid", code).isEmpty)
     #expect(spans("runtime.text", prefix).isEmpty)
+}
+
+/// Go's linker writes 6 as the size of its 12-byte import stubs
+/// (`__symbol_stub1`, reserved2), and stubs numbered by it were named from
+/// the eleventh on after another stub's import, by swiftdc's table and by
+/// objdump's `symbol stub for:` alike: `runtime.walltime_trampoline` read
+/// `fcntl(…)` for the `clock_gettime` its stub's GOT slot is bound to. The
+/// stride now comes from the stubs (`adrp; ldr; br`), and each runtime
+/// trampoline calls the libc function it is named for.
+@Test func goImportStubsAreNamedByTheirOwnStrideIfPresent() async throws {
+    guard FileManager.default.fileExists(atPath: full) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: full) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name }, "no \(name)").renderStructured()
+    }
+    // The internal linker supplies names but no two-level provider binding.
+    // Keep the exact import target and raw input values without borrowing
+    // clock_gettime's SDK source prototype from its spelling.
+    let image = try BinaryLoader.load(path: full)
+    #expect(!image.header.flags.contains(.twolevel))
+    let clock = try #require(functions.first { $0.displayName == "_runtime.walltime_trampoline.abi0" })
+    let calls = clock.instructions.filter { $0.controlFlow == .call }
+    let call = try #require(calls.first)
+    #expect(calls.count == 1)
+    #expect(DisassembledFunction.calleeName(of: call) == "clock_gettime")
+    #expect(!call.facts.namedABIContract)
+    let analysis = ValueTracer().analyze(clock, entry: .swiftFunction(scalarArguments: ["x0": 0]))
+    let site = try #require(analysis.callSites[call.address])
+    #expect(Array(site.arguments.prefix(2)) == [.immediate(0), .argument(0)])
+    #expect(try text("_runtime.walltime_trampoline.abi0").contains("clock_gettime(…)"))
+    #expect(try text("_runtime.exit_trampoline.abi0").contains("_exit("))
+    #expect(try text("_runtime.mmap_trampoline.abi0").contains("mmap("))
+    #expect(try text("_runtime.usleep_trampoline.abi0").contains("usleep("))
+    #expect(try text("_runtime.open_trampoline.abi0").contains("open("))
 }

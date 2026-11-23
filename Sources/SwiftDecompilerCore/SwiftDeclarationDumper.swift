@@ -70,7 +70,7 @@ public struct SwiftDeclarationDumper: Sendable {
         })
         var blocks: [String] = []
 
-        if sections.contains(.types), let recorded = try? machO.swift.types {
+        if sections.contains(.types), let recorded = UnrecordedTypes.ownRecords(in: machO) {
             let types = recorded + UnrecordedTypes.types(in: machO, recorded: recorded)
             let descriptorSymbols = Self.descriptorSymbols(in: machO)
             for type in types {
@@ -91,8 +91,10 @@ public struct SwiftDeclarationDumper: Sendable {
         }
 
         if sections.contains(.conformances), let conformances = try? machO.swift.protocolConformances {
+            let foreign = ForeignRequirementNames(machO, options: preset.options)
             for conformance in conformances {
-                blocks.append(await render("protocol conformance") { try await conformance.dump(using: configuration, in: machO) })
+                let text = await render("protocol conformance") { try await conformance.dump(using: configuration, in: machO) }
+                blocks.append(foreign?.naming(in: text, conformance) ?? text)
             }
         }
 
@@ -141,7 +143,7 @@ public struct SwiftDeclarationDumper: Sendable {
         guard var header = lines.first,
               let keyword = header.firstMatch(of: #/^(?:[a-z@]+ )*?(?:struct|class|enum|actor) /#)
         else { return text }
-        let address = machO.address(forOffset: Self.descriptorOffset(of: type))
+        guard let address = machO.imageAddress(ofOffset: Self.descriptorOffset(of: type)) else { return text }
         guard !anonymous.isEmpty else {
             // A private type IRGen did not wrap in an anonymous context (one
             // that is usable from inline, `getAddrOfParentContextDescriptor`)
@@ -202,7 +204,8 @@ public struct SwiftDeclarationDumper: Sendable {
             guard case .element(let wrapper) = link else { break }
             switch wrapper {
             case .anonymous(let context):
-                anonymous.append((machO.address(forOffset: context.descriptor.offset), chain))
+                guard let address = machO.imageAddress(ofOffset: context.descriptor.offset) else { return nil }
+                anonymous.append((address, chain))
             case .type(let parentType):
                 let name: String?
                 switch parentType {

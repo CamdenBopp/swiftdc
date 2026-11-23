@@ -123,25 +123,31 @@ func aFailedForcedTryPassesItsFiveArgumentsIfPresent(path: String) async throws 
     let frame = try text("_useTwinFrame")
     #expect(argumentLists(of: "arc4random", in: frame) == [["local_18", "7"]], Comment(rawValue: frame))
     #expect(!frame.contains("sink(5)"), Comment(rawValue: frame))
-    // Its body bounds a stale x2 out, and a relay reads x0 and x1 through it.
+    // Its own body bounds a stale x2 out.
     let stale = try text("_useTwinStale")
     #expect(argumentLists(of: "arc4random", in: stale) == [["?", "7"]], Comment(rawValue: stale))
     let relayed = try text("_useRelay")
-    #expect(argumentLists(of: "relay", in: relayed) == [["?", "5"]], Comment(rawValue: relayed))
+    // This build makes an ordinary call, not an exact branch alias. Its
+    // possible forwarded reads cannot turn the caller's 5 into a formal.
+    let relay = try #require(functions.first { $0.displayName == "_relay" })
+    #expect(relay.instructions.contains { $0.controlFlow == .call })
+    #expect(argumentLists(of: "relay", in: relayed) == [["…"]], Comment(rawValue: relayed))
 }
 
 /// The value tracker modelled any callee named `memset` or `memcpy` as the
 /// stores it performs, so an in-image `memset` whose body writes nothing
 /// made `useFill` render `sink(0)`, the fill byte, for a local that still
-/// holds 1 (`libc_twins.c`, -O2 -fno-builtin). The call is now an ordinary
-/// one that may write the local it receives.
+/// holds 1 (`libc_twins.c`, -O2 -fno-builtin). The call is an ordinary one,
+/// and its body never reads the address it is passed (memset reads only
+/// x1 and x2, memcpy reads x1 and x2 as numbers), so the local still holds
+/// 1 after it: `sink(1)`, true of the source.
 @Test func anInImageMemoryHelperTwinIsAnOrdinaryCallIfPresent() async throws {
     let path = "Fixtures/Sample/libLibcTwins.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
     for name in ["_useFill", "_useCopy"] {
         let text = try #require(functions.first { $0.displayName == name }, "no \(name)").renderPseudo()
-        #expect(argumentLists(of: "sink", in: text) == [["?"]], Comment(rawValue: text))
+        #expect(argumentLists(of: "sink", in: text) == [["1"]], Comment(rawValue: text))
     }
 }
 
@@ -187,4 +193,82 @@ func aFailedForcedTryPassesItsFiveArgumentsIfPresent(path: String) async throws 
     #expect(!sample.contains("→ swift_endAccess\n"))
     #expect(landing.contains("_Unwind_Resume(?)"))
     #expect(probe.contains("→ __chkstk_darwin\n") && !probe.contains("__chkstk_darwin  args("))
+}
+
+/// A C function the SDK declares variadic with a fixed part and no format
+/// (`int open(const char *, int, ...)`, `int fcntl(int, int, ...)`) read
+/// `open(…)` with x0 and w1 set just before the call. Apple arm64 passes the
+/// fixed arguments in registers and every variadic one on the stack, so the
+/// fixed ones render from their registers at their declared widths, and the
+/// uncounted rest is `…` (`variadic_calls.c`).
+@Test func aDeclaredVariadicRendersItsFixedArgumentsIfPresent() async throws {
+    let path = "Fixtures/Sample/libVariadicCalls.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func text(_ name: String) throws -> String {
+        try #require(functions.first { $0.displayName == name }, "no \(name)").renderStructured()
+    }
+    #expect(try text("_openReadOnly").contains("open(?, 0, …)"))
+    #expect(try text("_openCreate").contains("open(?, 513, …)"))
+    #expect(try text("_dupFrom").contains("fcntl(?, 0, …)"))
+    // The int at its declared width: -1, not 0xffffffff.
+    #expect(try text("_openNegative").contains("open(?, -1, …)"))
+}
+
+/// C library functions whose headers no translation unit of the prototype
+/// generator included (`sys/ioctl.h`, `dirent.h`, `sys/sysctl.h`) had no
+/// declaration: `ioctl(…)`, `closedir(…)` and `sysctl args(…)`. Every SDK
+/// header is now a unit of its own (`variadic_calls.c`).
+@Test func aLibraryCallOutsideTheUmbrellasRendersFromItsDeclarationIfPresent() async throws {
+    let path = "Fixtures/Sample/libVariadicCalls.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    func function(_ name: String) throws -> DisassembledFunction {
+        try #require(functions.first { $0.displayName == name }, "no \(name)")
+    }
+    // The request is the fixed unsigned long; `&on` is the variadic part.
+    #expect(try function("_setNonBlocking").renderStructured().contains("ioctl(?, 0x8004667e, …)"))
+    #expect(try function("_closeAfterUse").renderStructured().contains("closedir(arg0)"))
+    let sysctl = try function("_cpuCount").instructions.compactMap(\.annotation).first { $0.contains("→ sysctl") }
+    #expect(sysctl?.contains("args(local_20, 2, local_24, local_30, 0, 0)") == true,
+            Comment(rawValue: sysctl ?? "no sysctl call"))
+}
+
+/// The Itanium C++ ABI runtime is declared `extern "C"` in `cxxabi.h`, a
+/// C++ header no C translation unit reads, so `__cxa_begin_catch(void *)`
+/// had no declaration, and its reserved name keeps the positional layout:
+/// `__cxa_begin_catch()`, the exception it is handed dropped
+/// (`libLandingPadLoop`).
+@Test func aCxxABIRuntimeCallTakesItsDeclaredParametersIfPresent() async throws {
+    let path = "Fixtures/Sample/libLandingPadLoop.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.render() + "\n" + $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains("→ __cxa_begin_catch  args(?)"))
+    #expect(text.contains("__cxa_begin_catch(?)"))
+    #expect(!text.contains("__cxa_begin_catch()"))
+    #expect(SDKCPrototypes.entry("__cxa_end_catch") == "v ")
+    #expect(SDKCPrototypes.entry("__cxa_throw") == "v iii")
+}
+
+/// An Itanium-mangled free function whose parameter list is `v` takes
+/// nothing: `_ZSt9terminatev` is `std::terminate()`, and read
+/// `_ZSt9terminatev(__cxa_begin_catch(?))` with a stale x0
+/// (`libLandingPadLoop`). A nested name is declined: `_ZN3Foo3barEv` is a
+/// static member taking nothing or an instance method taking `this`.
+@Test func anItaniumFreeFunctionOfVoidTakesNothingIfPresent() async throws {
+    for name in ["_ZSt9terminatev", "_Z3foov", "_ZL3foov", "_Z10long_name1v"] {
+        #expect(DisassembledFunction.isItaniumFreeFunctionTakingNothing(name), "\(name)")
+        #expect(DisassembledFunction.knownCArity(of: name) == 0, "\(name)")
+    }
+    for name in ["_ZN3Foo3barEv", "_Z3fooi", "_Z3foo", "_Z03foov", "_Z3foovv", "_Z3fooiv",
+                 "_Z1fIiEvv", "_ZSt9terminatevx", "_Z4foov", "Z3foov", "_Z", "_Zv", "_Z3a.bv"] {
+        #expect(!DisassembledFunction.isItaniumFreeFunctionTakingNothing(name), "\(name)")
+    }
+    let path = "Fixtures/Sample/libLandingPadLoop.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies { try await Disassembler().disassemble(path: path) }
+    let text = functions.map { $0.renderStructured() }.joined(separator: "\n")
+    #expect(text.contains("_ZSt9terminatev()"), Comment(rawValue: text))
+    #expect(!text.contains("_ZSt9terminatev(__cxa_begin_catch"), Comment(rawValue: text))
 }

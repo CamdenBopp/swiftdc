@@ -15,7 +15,7 @@ public enum TypeInference {
     public static func argumentTypes(
         of function: DisassembledFunction, classTypeIndex: ClassTypeIndex = ClassTypeIndex()
     ) -> [Int: ValueType] {
-        guard function.objcMethod == nil, let name = function.analysisName,
+        guard function.objcMethod == nil, let name = function.layoutName,
               Disassembler.isSwiftMangled(function.symbol),
               let signature = DisassembledFunction.splitSignature(name)?.head
         else { return [:] }
@@ -141,6 +141,7 @@ public enum TypeInference {
                 return .floating(nil)
             case .toFloat(let bits), .unsignedToFloat(let bits), .floatConstant(let bits), .floatFromBits(let bits):
                 return .floating(bits)
+            case .floatResult(let bits, _): return .floating(bits)
             case .toInteger(let signed, let bits):
                 return signed ? .signedInteger(bits) : .unsignedInteger(bits)
             case .bitPattern(let bits):

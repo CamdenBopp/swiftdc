@@ -252,7 +252,7 @@ func groupsFuncletsAsTheSymbolTableDoesIfPresent(path: String) async throws {
 @Test func rendersAsyncCalleesWithoutTheSpecifierIfPresent() async throws {
     guard let functions = try await disassemble(optFixture, filter: "oneAwait") else { return }
     let pseudo = functions.map { $0.renderPseudo() }.joined(separator: "\n")
-    #expect(pseudo.contains("AsyncFns.fetchValue(arg0)"))
+    #expect(pseudo.contains("AsyncFns.fetchValue(?)"))
     #expect(!pseudo.contains("async("))
 }
 
@@ -285,17 +285,18 @@ private func structured(_ path: String, _ filter: String) async throws -> String
 /// crosses the second suspension through a context slot. Its single store
 /// does not prove immutability after the parent pointer is exported into a
 /// callee context. Without interprocedural memory effects that reload declines;
-/// the direct awaited result and the next call's argument remain recovered.
+/// direct awaited results retain their bindings. Neither the parent's GP
+/// formal nor the next callee's GP location is fixed by its printed signature.
 @Test func rendersAwaitChainVerbatimIfPresent() async throws {
     guard let text = try await structured(strippedFixture, "twoAwaits") else { return }
     #expect(text == """
         AsyncFns.twoAwaits(Swift.Int) async -> Swift.Int {
             // async function: 2 resume funclet(s): resume #1 @0xa34, resume #2 @0xa98
-            let awaited1 = await AsyncFns.fetchValue(arg0)
+            let awaited1 = await AsyncFns.fetchValue(?)
         }
         resume #1 of AsyncFns.twoAwaits(Swift.Int) async -> Swift.Int {
             // resume #1 of the async function @0x9e8: entered when the await in 0x9e8 returns
-            let awaited2 = await AsyncFns.fetchOther(awaited1)
+            let awaited2 = await AsyncFns.fetchOther(?)
         }
         resume #2 of AsyncFns.twoAwaits(Swift.Int) async -> Swift.Int {
             // resume #2 of the async function @0x9e8: entered when the await in 0xa34 returns
@@ -305,10 +306,12 @@ private func structured(_ path: String, _ filter: String) async throws -> String
 }
 
 /// A suspension-free async function returns through the same ResumeParent
-/// branch; its value is recovered like a synchronous leaf's.
+/// branch. Its GP formal's location is ambiguous, so its value declines;
+/// source returns independent of GP formals have native positive controls.
 @Test func rendersAsyncLeafReturnIfPresent() async throws {
     guard let text = try await structured(strippedFixture, "fetchOther") else { return }
-    #expect(text.contains("return (arg0 + 7)"))
+    #expect(text.contains("return ?"), Comment(rawValue: text))
+    #expect(!text.contains("arg0"), Comment(rawValue: text))
 }
 
 /// An async `Int?` returns its payload in x0 and its nil tag in x1, so x0 at
@@ -350,7 +353,7 @@ private func structured(_ path: String, _ filter: String) async throws -> String
     // The await itself is still provable there: the resume pointer store and
     // the direct tail call do not depend on the stack.
     guard let entry = functions.first(where: { $0.asyncFunclet?.isEntry == true }) else { return }
-    #expect(entry.renderPseudo().contains("let awaited1 = await AsyncFns.fetchValue(arg0)"))
+    #expect(entry.renderPseudo().contains("let awaited1 = await AsyncFns.fetchValue(?)"))
 }
 
 /// Negative: the awaited result is seeded only from a callee whose signature
@@ -398,9 +401,11 @@ func resumeFuncletsDoNotInheritTheSignatureArgumentsIfPresent(path: String) asyn
         #expect(!pseudo.contains("arg0"), Comment(rawValue: pseudo))
         #expect(!pseudo.contains("self"), Comment(rawValue: pseudo))
     }
-    // The entry funclet keeps its arguments: they really are in x0 there.
+    // Source GP placement is also unproved at the entry; the await survives.
+    // AsyncIsolationArgumentTests separately checks that even the independent
+    // FP bank is not inherited by a resume funclet.
     guard let entry = functions.first(where: { $0.asyncFunclet?.isEntry == true }) else { return }
-    #expect(entry.renderPseudo().contains("(arg0)"))
+    #expect(entry.renderPseudo().contains("let awaited1 = await AsyncFns.fetchValue(?)"))
 }
 
 /// A slot whose address goes to a callee (`inout`) can be written by it, so a

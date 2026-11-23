@@ -59,6 +59,19 @@ private let uniquenessResultFixtures = [
                 let function = try #require(group.first { $0.displayName.hasPrefix(module + "." + name + "(") })
                 let queries = function.instructions.filter(isQueryProducer)
                 let query = try #require(queries.count == 1 ? queries.first : nil)
+                if query.binding == nil {
+                    // The snapshot lives in a frame slot (-Onone) or a
+                    // callee-saved register (-O) across calls whose bodies
+                    // pass a local's address on: that local's reach is their
+                    // whole frame, so neither the slot nor their saved
+                    // registers are proven, and the use declines rather than
+                    // claim the stale snapshot.
+                    let consumer = try #require(function.instructions.first {
+                        $0.callee?.hasPrefix(module + ".consumeUniqueSnapshot(") == true
+                    })
+                    #expect(consumer.callArguments == ["?"], Comment(rawValue: function.renderPseudo()))
+                    continue
+                }
                 let binding = try #require(query.binding)
                 let capture = try #require(function.instructions.first { $0.callee?.hasPrefix(module + ".captureUniqueBox(") == true })
                 let consumer = try #require(function.instructions.first { $0.callee?.hasPrefix(module + ".consumeUniqueSnapshot(") == true })

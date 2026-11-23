@@ -70,12 +70,12 @@ private func closeRecursive(_ body: DisassembledFunction, callbacks: inout Int) 
     var summaries = [body.startAddress: initial]
     CalleeRegisterSummary.closeOverReads(&summaries)
     let closedReads = try #require(summaries[body.startAddress])
-    CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, readFacts in
+    CalleeRegisterSummary.closeOverCalls(&summaries) { start, effects, readFacts, reusePreservation in
         callbacks += 1
         #expect(start == body.startAddress)
         expectSameClosedReads(readFacts, closedReads)
         return CalleeRegisterSummary.recomputingPreservation(body,
-            retainingReadsFrom: readFacts, calleeEffects: effects,
+            retainingReadsFrom: readFacts, reusingPreservation: reusePreservation, calleeEffects: effects,
             isFunction: { $0 == body.startAddress })
     }
     let result = try #require(summaries[body.startAddress])
@@ -164,14 +164,14 @@ private func closeRecursive(_ body: DisassembledFunction, callbacks: inout Int) 
         let body = try recursiveBody(test.words)
         let initial = try #require(CalleeRegisterSummary.of(body))
         var capped = [body.startAddress: initial]
-        CalleeRegisterSummary.closeOverCalls(&capped, cap: 0) { _, _, _ in
+        CalleeRegisterSummary.closeOverCalls(&capped, cap: 0) { _, _, _, _ in
             Issue.record("A zero-cap closure must decline before recomputation")
             return nil
         }
         #expect(capped[body.startAddress]?.clobberedCalleeSaved == bank)
         #expect(capped[body.startAddress]?.effect.clobbers == bank)
         var failed = [body.startAddress: initial]
-        CalleeRegisterSummary.closeOverCalls(&failed) { _, _, _ in nil }
+        CalleeRegisterSummary.closeOverCalls(&failed) { _, _, _, _ in nil }
         #expect(failed[body.startAddress]?.clobberedCalleeSaved == bank)
         #expect(failed[body.startAddress]?.effect.clobbers == bank)
     }

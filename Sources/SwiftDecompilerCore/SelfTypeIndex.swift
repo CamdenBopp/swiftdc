@@ -89,8 +89,8 @@ public struct SelfTypeIndex: Sendable {
                 // A null relative pointer means the slot has no implementation
                 // in this image (a resilient or externally-defined method).
                 guard relative != 0,
-                      let address = implementations.code(at: machO.address(forOffset: fieldOffset + relative),
-                                                         isData: method.layout.flags.isData)
+                      let target = machO.relativeAddress(fromOffset: fieldOffset, displacement: relative),
+                      let address = implementations.code(at: target, isData: method.layout.flags.isData)
                 else { continue }
                 if let first = binder[address] {
                     if first != model.descriptor.offset { shared.insert(address) }

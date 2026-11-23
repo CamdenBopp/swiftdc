@@ -77,3 +77,50 @@ struct CodeSection: Equatable, Sendable {
         sections.first { $0.range.contains(address) }
     }
 }
+
+/// `Disassembler.recordedStarts` by image.
+final class BoundaryCache: Sendable {
+    private let store = Mutex<[String: Set<UInt64>]>([:])
+
+    func value(for key: String, compute: () -> Set<UInt64>) -> Set<UInt64> {
+        if let hit = store.withLock({ $0[key] }) { return hit }
+        let result = compute()
+        store.withLock { $0[key] = result }
+        return result
+    }
+}
+
+/// `Disassembler.unmarkedEntry`'s walk, fed one decoded piece at a time.
+struct UnmarkedEntryScan {
+    let boundaries: Set<UInt64>
+    let sections: [CodeSection]
+    private var returned = false
+    private var branchTargets: Set<UInt64> = []
+    private var afterReturn: [UInt64] = []
+
+    init(boundaries: Set<UInt64>, sections: [CodeSection]) {
+        self.boundaries = boundaries
+        self.sections = sections
+    }
+
+    /// A direct call's target no boundary marks, which settles it at once.
+    mutating func read(_ instructions: [DecodedInstruction]) -> UInt64? {
+        for insn in instructions {
+            if returned, !["nop", "udf", "brk"].contains(insn.mnemonic), !boundaries.contains(insn.address) {
+                afterReturn.append(insn.address)
+            }
+            returned = insn.controlFlow == .return
+            guard let target = insn.branchTarget else { continue }
+            if insn.controlFlow != .call {
+                branchTargets.insert(target)
+            } else if !boundaries.contains(target), CodeSection.containing(target, in: sections) != nil {
+                return target
+            }
+        }
+        return nil
+    }
+
+    /// Code after a return that no branch in the image reaches.
+    func finish() -> UInt64? { afterReturn.first { !branchTargets.contains($0) } }
+}
+

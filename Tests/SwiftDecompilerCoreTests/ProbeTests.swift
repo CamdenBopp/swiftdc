@@ -127,6 +127,20 @@ private extension ProbeEvent {
     }
 }
 
+/// A word of the function's own frame that one state holds as `.unknown`
+/// and another lacks proves the same nothing, so the tracer's convergence
+/// test sees no change (GoodLinks 0x100a88730's slot at -256 alternated
+/// around a ten-block loop until the bound). An incoming slot reads the
+/// caller's bytes while absent, so there presence still counts, as it does
+/// for a known value.
+@Test func anOwnFrameWordUnknownOrAbsentIsTheSameFact() {
+    let unknown: ValueTracer.State = [.stack(-256): .unknown]
+    #expect(ValueTracer.sameFacts(unknown, [:]))
+    #expect(ValueTracer.sameFacts([:], unknown))
+    #expect(!ValueTracer.sameFacts([.stack(8): .unknown], [:]))
+    #expect(!ValueTracer.sameFacts([.stack(-256): .immediate(7)], [:]))
+}
+
 /// A register the tracer knows nothing about is sometimes `.unknown` and
 /// sometimes absent. Comparing block states literally saw a loop's x9 flip
 /// between the two, so the worklist never emptied: an app's grid sampler (20

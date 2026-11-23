@@ -16,8 +16,13 @@ Fixtures/Sample/sample.release
 Fixtures/Sample/sample.stripped
 Fixtures/Sample/goProgram
 Fixtures/Sample/goProgram.stripped
+Fixtures/Sample/mergedcalls.stripped
 Fixtures/Sample/slidsegments
 Fixtures/Sample/slidsegments_c
+Fixtures/Sample/slidsegments_flat
+Fixtures/Sample/slidsegments_c_flat
+Fixtures/Sample/slidsegments_stripped
+Fixtures/Sample/slidsegments_flat_stripped
 Fixtures/Sample/*.dylib
 Fixtures/Sample/*.dSYM/
 Fixtures/Sample/*.swiftmodule
@@ -26,9 +31,13 @@ Fixtures/Sample/*.swiftsourceinfo
 Fixtures/Sample/*.abi.json
 Fixtures/Sample/*.o
 Fixtures/Sample/*.a2s
+Fixtures/Sample/*.shape
 Fixtures/Sample/abi-source-oracle
 Fixtures/Sample/abi-source-resilient-oracle
 Fixtures/Sample/exception-cleanup-oracle
+Fixtures/Sample/async-fp-raw-oracle
+Fixtures/Sample/async-fp-control-oracle
+Fixtures/Sample/async-isolation-*-oracle
 
 # Benchmark harness output (regenerate with Benchmarks/benchmark.swift).
 # The curated samples in Benchmarks/samples/ and the report are tracked; the
@@ -44,3 +53,36 @@ Benchmarks/outputs/
 work/
 Tools/audit/apps.conf
 __pycache__/
+
+# Synthetic corpus products (regenerate with Tools/synthcorpus/build.sh)
+Tools/synthcorpus/out/
+
+Fixtures/Sample/outlined_results_native
+Fixtures/Sample/body-arity-*-oracle
+
+Fixtures/Sample/unknown-store-*-oracle
+
+Fixtures/Sample/x8-entry-*-oracle
+Fixtures/Sample/x8entry.abi.json
+
+Fixtures/Sample/bl-call-input-*-oracle
+
+Fixtures/Sample/plain-error-abi-*-oracle
+Fixtures/Sample/plain-error-abi-*.ll
+Fixtures/Sample/.plain-error-abi-*/
+
+Fixtures/Sample/compare-branch-width-*-oracle
+Fixtures/Sample/named-abi-*-oracle
+Fixtures/Sample/named-abi-*.ll
+Fixtures/Sample/.named-abi-contracts-*/
+Fixtures/Sample/named-buffer-*-oracle
+Fixtures/Sample/named-buffer-*.ll
+Fixtures/Sample/.named-buffer-*/
+Fixtures/Sample/boxed-projection-*-oracle
+Fixtures/Sample/projection-return-alias-*-oracle
+Fixtures/Sample/c-narrow-arguments-*-oracle
+Fixtures/Sample/narrow-integer-return-*-oracle
+
+Fixtures/Sample/async-outlined-context-*-oracle
+
+Fixtures/Sample/typed-error-inactive-*-oracle

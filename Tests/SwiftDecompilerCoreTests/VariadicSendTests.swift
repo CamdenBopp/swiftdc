@@ -69,7 +69,7 @@ import Foundation
     // A variadic send prints its arguments past the colons, so a call
     // there is printed once, inside it.
     let format = try #require(functions.first { $0.displayName == "_formatFirst" }).renderPseudo()
-    #expect(format.components(separatedBy: "firstValue()").count == 2, Comment(rawValue: format))
+    #expect(format.components(separatedBy: "firstValue(…)").count == 2, Comment(rawValue: format))
 }
 
 /// `objc_unsafeClaimAutoreleasedReturnValue`, which ARC wraps a discarded
@@ -103,7 +103,10 @@ import Foundation
 @Test func theAutoreleaseFamilyReturnsItsArgument() {
     for callee in ["objc_autorelease", "_objc_retainAutorelease", "objc_retainAutoreleaseReturnValue",
                    "objc_unsafeClaimAutoreleasedReturnValue", "objc_retain"] {
-        #expect(ValueTracer.CallFacts(callee: callee).returnsArgument, "\(callee)")
+        #expect(ValueTracer.CallFacts(callee: callee, arcIdentityContract: true).returnsArgument, "\(callee)")
+        #expect(!ValueTracer.CallFacts(callee: callee).returnsArgument, "unproved \(callee)")
+        #expect(!ValueTracer.CallFacts(callee: callee, knownArityApplies: false,
+                                      arcIdentityContract: true).returnsArgument, "local \(callee)")
     }
     #expect(!ValueTracer.CallFacts(callee: "objc_retainBlock").returnsArgument)
     #expect(!ValueTracer.CallFacts(callee: "objc_release").returnsArgument)

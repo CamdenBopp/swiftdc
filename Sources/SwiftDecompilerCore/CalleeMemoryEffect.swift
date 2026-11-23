@@ -14,7 +14,19 @@ enum CalleeMemoryEffect: Sendable, Equatable {
         let source: PhysReg
     }
     case unknown
-    case literalStores([LiteralStore], inputs: [PhysReg])
+    /// Final register expressions are rooted in call-entry values, not in
+    /// another output. Nil retains the older memory-only proof contract.
+    struct RegisterWrite: Sendable, Equatable {
+        let destination: PhysReg
+        let value: Value
+    }
+    enum Value: Sendable, Equatable {
+        case input(PhysReg, Int64)
+        case literal(UInt64)
+        case vector128(low: UInt64, high: UInt64)
+        case unknown
+    }
+    case literalStores([LiteralStore], inputs: [PhysReg], outputs: [RegisterWrite]? = nil)
 
     struct FrameStore: Sendable, Equatable {
         let start: Int64
@@ -42,7 +54,7 @@ enum CalleeMemoryEffect: Sendable, Equatable {
     /// Even non-address entry inputs must be proven frame coordinates here;
     /// this deliberately leaves other spaces and mixed provenance unknown.
     func framePlan(resolve: (PhysReg) -> Int64?) -> FramePlan? {
-        guard case .literalStores(let stores, let inputs) = self else { return nil }
+        guard case .literalStores(let stores, let inputs, _) = self else { return nil }
         var origins: [String: Int64] = [:]
         for input in inputs {
             // BL replaces x30 with the return address. Its entry value is
@@ -62,12 +74,6 @@ enum CalleeMemoryEffect: Sendable, Equatable {
         return FramePlan(stores: resolved, inputs: inputs)
     }
 
-    private enum Value: Equatable {
-        case input(PhysReg, Int64)
-        case literal(UInt64)
-        case unknown
-    }
-
     private static func unmodified(_ info: StructuredOperandInfo) -> Bool {
         info.vectorIndex == nil && info.vectorArrangement == AARCH64LAYOUT_INVALID
             && info.extender == AARCH64_EXT_INVALID
@@ -77,7 +83,7 @@ enum CalleeMemoryEffect: Sendable, Equatable {
 
     static func discover(in function: DisassembledFunction) -> Self {
         let instructions = function.instructions
-        guard let last = instructions.last, let end = last.detail,
+        guard instructions.count <= 256, let last = instructions.last, let end = last.detail,
               function.startAddress % 4 == 0,
               end.id == AARCH64_INS_RET,
               end.operands.isEmpty || end.operands.count == 1
@@ -87,7 +93,7 @@ enum CalleeMemoryEffect: Sendable, Equatable {
         let (lastAddress, addressOverflow) = function.startAddress.addingReportingOverflow(length)
         guard !lengthOverflow, !addressOverflow, last.address == lastAddress else { return .unknown }
         // Untouched registers are entry inputs; retain only actual writes.
-        var values: [String: Value] = [:]
+        var values: [String: RegisterWrite] = [:]
         let sp = PhysReg(kind: .stackPointer, number: 31, widthBits: 64)
         let lr = PhysReg(kind: .gpr, number: 30, widthBits: 64)
         var inputs: Set<PhysReg> = []
@@ -98,7 +104,7 @@ enum CalleeMemoryEffect: Sendable, Equatable {
                 || register.kind == .stackPointer && register.number == 31
             else { return .unknown }
             let root = PhysReg(kind: register.kind, number: register.number, widthBits: 64)
-            let value = values[register.key] ?? .input(root, 0)
+            let value = values[register.key]?.value ?? .input(root, 0)
             if case .input(let root, _) = value { inputs.insert(root) }
             if register.widthBits == 32 {
                 if case .literal(let bits) = value { return .literal(bits & 0xffff_ffff) }
@@ -130,12 +136,8 @@ enum CalleeMemoryEffect: Sendable, Equatable {
                     let bits = UInt64(bitPattern: immediate)
                     value = .literal(destination.widthBits == 32 ? bits & 0xffff_ffff : bits)
                 } else { return .unknown }
-                if destination.widthBits == 32 {
-                    if case .literal(let bits) = value { values[destination.key] = .literal(bits & 0xffff_ffff) }
-                    else { values[destination.key] = .unknown }
-                } else {
-                    values[destination.key] = value
-                }
+                let normalized = PhysReg(kind: destination.kind, number: destination.number, widthBits: 64)
+                values[destination.key] = RegisterWrite(destination: normalized, value: value)
             case AARCH64_INS_ADD, AARCH64_INS_SUB:
                 guard operands.count == 3, let destination = operands[0].operand.register,
                       let source = operands[1].operand.register,
@@ -152,7 +154,23 @@ enum CalleeMemoryEffect: Sendable, Equatable {
                 let (next, overflow) = detail.id == AARCH64_INS_SUB
                     ? offset.subtractingReportingOverflow(delta) : offset.addingReportingOverflow(delta)
                 guard !overflow else { return .unknown }
-                values[destination.key] = .input(root, next)
+                values[destination.key] = RegisterWrite(destination: destination, value: .input(root, next))
+            case AARCH64_INS_DUP:
+                guard operands.count == 2,
+                      let destination = operands[0].operand.register,
+                      destination.kind == .vector, destination.widthBits == 128,
+                      operands[0].vectorArrangement == AARCH64LAYOUT_VL_2D,
+                      operands[0].vectorIndex == nil,
+                      operands[0].extender == AARCH64_EXT_INVALID,
+                      operands[0].shift.amount == 0,
+                      operands[0].shift.type == AARCH64_SFT_INVALID || operands[0].shift.type == AARCH64_SFT_LSL,
+                      let source = operands[1].operand.register,
+                      source.kind == .gpr || source.kind == .zero,
+                      source.widthBits == 64, unmodified(operands[1]),
+                      case .literal(let bits) = read(source)
+                else { return .unknown }
+                values[destination.key] = RegisterWrite(destination: destination,
+                    value: .vector128(low: bits, high: bits))
             case AARCH64_INS_STR, AARCH64_INS_STUR, AARCH64_INS_STRB, AARCH64_INS_STURB,
                  AARCH64_INS_STRH, AARCH64_INS_STURH, AARCH64_INS_STP, AARCH64_INS_STNP:
                 let pair = detail.id == AARCH64_INS_STP || detail.id == AARCH64_INS_STNP
@@ -165,29 +183,47 @@ enum CalleeMemoryEffect: Sendable, Equatable {
                 else { return .unknown }
                 for index in 0..<count {
                     guard let source = operands[index].operand.register,
-                          source.kind == .gpr || source.kind == .zero,
-                          source.widthBits == 32 || source.widthBits == 64,
                           !pair || source.widthBits == operands[0].operand.register?.widthBits,
-                          case .literal(let bits) = read(source)
+                          !pair || (source.kind == .vector) == (operands[0].operand.register?.kind == .vector)
                     else { return .unknown }
                     let bytes: Int64 = switch detail.id {
                     case AARCH64_INS_STRB, AARCH64_INS_STURB: 1
                     case AARCH64_INS_STRH, AARCH64_INS_STURH: 2
                     default: Int64(source.widthBits / 8)
                     }
+                    let words: [UInt64]
+                    if source.kind == .vector, source.widthBits == 128, bytes == 16,
+                       case .vector128(let low, let high)? = values[source.key]?.value {
+                        words = [low, high]
+                    } else {
+                        guard source.kind == .gpr || source.kind == .zero,
+                              source.widthBits == 32 || source.widthBits == 64,
+                              case .literal(let bits) = read(source)
+                        else { return .unknown }
+                        words = [bytes == 8 ? bits : bits & ((UInt64(1) << (bytes * 8)) - 1)]
+                    }
                     let (at, overflow) = offset.addingReportingOverflow(displacement)
                     let (element, elementOverflow) = at.addingReportingOverflow(Int64(index) * bytes)
-                    guard !overflow, !elementOverflow else { return .unknown }
-                    let value = bytes == 8 ? bits : bits & ((UInt64(1) << (bytes * 8)) - 1)
-                    stores.append(LiteralStore(base: root, offset: element, bytes: bytes, value: value, source: source))
+                    let (_, endOverflow) = element.addingReportingOverflow(bytes)
+                    guard !overflow, !elementOverflow, !endOverflow else { return .unknown }
+                    for (word, bits) in words.enumerated() {
+                        stores.append(LiteralStore(base: root, offset: element + Int64(word * 8),
+                            bytes: min(bytes, 8), value: bits, source: source))
+                    }
+                    guard stores.count <= 1024 else { return .unknown }
                 }
             default:
                 return .unknown
             }
         }
-        guard (values[sp.key] ?? .input(sp, 0)) == .input(sp, 0),
-              (values[lr.key] ?? .input(lr, 0)) == .input(lr, 0)
+        guard (values[sp.key]?.value ?? .input(sp, 0)) == .input(sp, 0),
+              (values[lr.key]?.value ?? .input(lr, 0)) == .input(lr, 0)
         else { return .unknown }
-        return .literalStores(stores, inputs: inputs.sorted { $0.key < $1.key })
+        let outputs = values.keys.sorted().compactMap { key -> RegisterWrite? in
+            guard key != sp.key, key != lr.key else { return nil }
+            return values[key]
+        }
+        guard outputs.allSatisfy({ $0.value != .unknown }) else { return .unknown }
+        return .literalStores(stores, inputs: inputs.sorted { $0.key < $1.key }, outputs: outputs)
     }
 }

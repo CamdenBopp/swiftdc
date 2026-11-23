@@ -23,16 +23,21 @@ public struct PhysReg: Hashable, Sendable {
     }
 
     public let kind: Kind
+    // Stored narrow: a register sits up to three times in every operand
+    // of every decoded instruction. A number is a bank index or, for
+    // `.other`, a Capstone register id (under 1,000); a width is at most 128.
+    private let storedNumber: UInt16
+    private let storedWidthBits: UInt8
     /// Register number within its bank (0–30 for gpr, 0–31 for vector).
-    public let number: Int
+    public var number: Int { Int(storedNumber) }
     /// Access width. A 32-bit GPR write zeroes the upper half — callers that
     /// model values must account for that; this type only reports it.
-    public let widthBits: Int
+    public var widthBits: Int { Int(storedWidthBits) }
 
     public init(kind: Kind, number: Int, widthBits: Int) {
         self.kind = kind
-        self.number = number
-        self.widthBits = widthBits
+        self.storedNumber = UInt16(clamping: number)
+        self.storedWidthBits = UInt8(clamping: widthBits)
     }
 
     /// Stable key for dataflow maps: width-independent, so `w3` and `x3` agree.
@@ -145,10 +150,28 @@ public struct StructuredOperandInfo: Sendable {
     /// The lane a vector operand names (`v0.d[1]` is lane 1), or nil for a
     /// whole register. `ins`/`umov` canonicalize to `mov`, and only this
     /// tells `mov v0.d[1], x2` (one lane written) from a whole move.
-    public var vectorIndex: Int? = nil
+    public var vectorIndex: Int? {
+        get { storedVectorIndex.map(Int.init) }
+        set { storedVectorIndex = newValue.map { Int8(clamping: $0) } }
+    }
+    // A lane index is at most 15 (`.b[15]`).
+    private var storedVectorIndex: Int8? = nil
     /// Element width and count (`.4s`, `.8b`, `.2d`) of a vector operand, or
     /// the element size of a lane (`.d` in `v0.d[1]`).
     public var vectorArrangement: AArch64Layout_VectorLayout = AARCH64LAYOUT_INVALID
+
+    init(
+        operand: StructuredOperand, shift: (type: aarch64_shifter, amount: UInt32), extender: aarch64_extender,
+        access: UInt8 = 0, vectorIndex: Int? = nil,
+        vectorArrangement: AArch64Layout_VectorLayout = AARCH64LAYOUT_INVALID
+    ) {
+        self.operand = operand
+        self.shift = shift
+        self.extender = extender
+        self.access = access
+        self.vectorArrangement = vectorArrangement
+        self.vectorIndex = vectorIndex
+    }
 
     public var isRead: Bool { access & 1 != 0 }
     public var isWritten: Bool { access & 2 != 0 }

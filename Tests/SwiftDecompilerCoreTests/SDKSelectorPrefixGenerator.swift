@@ -114,13 +114,21 @@ import Testing
         if type == "d" || type == "f" {
             bank = "f"
         } else if type.hasPrefix("{") || type.hasPrefix("(") {
-            if case .composite? = ObjCArgumentABI.aggregate(type) { return }
-            if case .byReference? = ObjCArgumentABI.aggregate(type) { return }
-            bank = "h"
+            // An integer struct comes back in x0 and x1, or through x8: x0
+            // is then one word of it, never the whole (`rangeOfString:`'s
+            // NSRange read `return [s rangeOfString:@"x"]` for `.location`).
+            switch ObjCArgumentABI.aggregate(type) {
+            case .composite?, .byReference?: bank = "a"
+            default: bank = "h"
+            }
         } else {
             return
         }
-        returns[method.name] = returns[method.name] == "h" ? "h" : bank
+        // Any aggregate declaration outranks a scalar one; a float
+        // aggregate outranks an integer one.
+        let rank: [Character: Int] = ["f": 0, "a": 1, "h": 2]
+        if let earlier = returns[method.name], rank[earlier]! >= rank[bank]! { return }
+        returns[method.name] = bank
     }
     // Every image: a class the public headers declare can be implemented in
     // a private framework (NSFont's getters are UIFoundation's; AppKit
@@ -148,10 +156,12 @@ import Testing
     // \(version) shared cache \(cache.header.uuid.uuidString) (\(images) images).
     // Do not edit by hand.
 
-    /// For every Objective-C selector some public declaration returns in v
-    /// registers: `f` when each such declaration returns one float or
-    /// double, whole in v0; `h` when one returns a struct of floats (or one
-    /// that could not be classified), of which v0 is only the first field.
+    /// For every Objective-C selector some public declaration returns as
+    /// more or other than one integer register: `f` when each such
+    /// declaration returns one float or double, whole in v0; `h` when one
+    /// returns a struct of floats (or one that could not be classified), of
+    /// which v0 is only the first field; `a` when one returns an integer
+    /// struct, in x0 and x1 or through x8, of which x0 is at most one word.
     enum SDKSelectorReturns {
         static let table: [String: Character] = {
             var table: [String: Character] = [:]
@@ -169,7 +179,7 @@ import Testing
 
     """
     try source.write(toFile: output, atomically: true, encoding: .utf8)
-    print("SDK selector returns: \(returns.count) selectors from \(images) images, \(returns.values.filter { $0 == "h" }.count) aggregate")
+    print("SDK selector returns: \(returns.count) selectors from \(images) images, \(returns.values.filter { $0 == "h" }.count) float aggregate, \(returns.values.filter { $0 == "a" }.count) integer aggregate")
 }
 
 /// The macOS SDK this host's Xcode builds against.

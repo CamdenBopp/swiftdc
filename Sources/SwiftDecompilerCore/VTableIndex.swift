@@ -124,13 +124,19 @@ public struct VTableIndex: Sendable {
                   let typeName = try? model.descriptor.name(in: machO),
                   descriptorsByName[typeName, default: []].count == 1
             else { continue }
-            // A top-level generic class (a nested one's parameters include its
-            // parent's, which print at another depth), every parameter a key
-            // argument, and no resilient superclass, whose bounds only the
-            // runtime knows.
+            // The scalar metadata slots start at the immediate members only
+            // for plain type parameters. Pack lengths precede metadata, and
+            // the value parameter layout does not describe metadata pointers.
+            // Nested contexts and resilient superclass bounds also need a
+            // different layout proof. The only known generic header flags
+            // are packs, conditional inverted protocols and values.
             if let generic = model.genericContext, !generic.parameters.isEmpty,
                generic.currentParameters.count == generic.parameters.count,
-               generic.parameters.allSatisfy(\.hasKeyArgument), !model.descriptor.hasResilientSuperclass {
+               generic.header.layout.flags.rawValue & 0xFFF8 == 0,
+               generic.typePackHeader == nil, generic.valueHeader == nil,
+               generic.parameters.allSatisfy({ $0.kind == .type && $0.hasKeyArgument }),
+               Int(generic.header.layout.numKeyArguments) >= generic.parameters.count,
+               !model.descriptor.hasResilientSuperclass {
                 genericArguments[typeName] = (Int(model.descriptor.nonResilientImmediateMembersOffset) * pointerSize,
                                               generic.parameters.count)
                 if let tables = keyWitnessTables(of: generic, in: machO) { witnessTables[typeName] = tables }
@@ -149,9 +155,9 @@ public struct VTableIndex: Sendable {
                 // straight to the slot's value calls nothing this table can
                 // name, so the field is read as code, which the record is not,
                 // and the slot is left out.
-                guard let address = implementations.code(
-                    at: machO.address(forOffset: fieldOffset + relative), isData: false
-                ) else { continue }
+                guard let target = machO.relativeAddress(fromOffset: fieldOffset, displacement: relative),
+                      let address = implementations.code(at: target, isData: false)
+                else { continue }
                 let byteOffset = (base + slot) * pointerSize
                 if methods[typeName] == nil { methods[typeName] = [:] }
                 if methods[typeName]?[byteOffset] == nil {
@@ -200,7 +206,7 @@ public struct VTableIndex: Sendable {
               protocolRelative & 3 == 0, protocolRelative != 0
         else { return nil }
         var spelling: [UInt8] = []
-        let nameOffset = base + 4 + Int(paramRelative)
+        guard let nameOffset = machO.relativeOffset(fromOffset: base + 4, displacement: Int(paramRelative)) else { return nil }
         while spelling.count < 8 {
             guard let byte = UnrecordedTypes.read(nameOffset + spelling.count, as: UInt8.self, in: machO) else { return nil }
             if byte == 0 { break }
@@ -218,7 +224,7 @@ public struct VTableIndex: Sendable {
         } else {
             return nil
         }
-        let field = machO.address(forOffset: base + 8)
+        guard let field = machO.imageAddress(ofOffset: base + 8) else { return nil }
         return WitnessTableArgument(parameter: parameter, protocolDescriptor: UInt64(Int64(field) + Int64(protocolRelative)))
     }
 }

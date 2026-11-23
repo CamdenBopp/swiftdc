@@ -92,6 +92,10 @@ Probe.inFunction(start, name) { … }               // attribute events to a fun
   The structurer runs on its own large-stack `Thread`, so
   `ControlFlowStructure.onLargeStack` carries them across with
   `Probe.context`/`withContext`; task-locals do not cross a raw thread.
+- **A probe run analyses serially.** The streamed views analyse functions
+  across the cores only while no recorder is active, so a probe run keeps
+  its event order and loses no event to a worker thread. Its timing is the
+  serial loop's.
 - **Near-zero cost when off.** A call loads one relaxed atomic (the number of
   installed recorders anywhere in the process) and branches. The payload is
   an `@autoclosure` and is never built.
@@ -165,8 +169,7 @@ To reproduce, run the same command with and without `--probe <file>`
 | `values.unmodelled-write` | claim | register, instruction, kept | An instruction writes a register (Capstone access flags) whose proven value the tracer kept: a stale value that renders as a confident argument. |
 | `values.outlined-inlined` | decision | fragment, kind, instructions | A `bl`/`b` to an outlined fragment became what the fragment does there: `call`, `tail-call`, `value`, `store` or `return`. |
 | `values.outlined-declined` | decline | fragment, reason | A site kept its call to a fragment the model cannot carry exactly (`memory`, `result-register`, `callee-saved`, `stack-pointer`, `error-or-context-register`, `link-register`, `chained`, `float-argument`, `empty`, `terminator`, `undecoded`). |
-| `abi.argument-layout` | decision | strategy, callee, count | Which layout set a call's arguments. `positional` is where stale-register fabrications have come from. |
-| `abi.argument-layout` | decision | strategy, callee, count | Which layout set a call's arguments. `positional` is where stale-register fabrications have come from; `unproven-arity` is an undeclared C callee rendered `(…)`. |
+| `abi.argument-layout` | decision | strategy, callee, count | Which layout set a call's arguments. For `body-reads`, count is the represented proved prefix (including unknown holes and FP words), excluding any trailing `…`; it is not a complete source arity. `positional` can expose stale-register fabrications; `unproven-arity` is an undeclared C callee rendered `(…)`. `async-signature-consensus` keeps only GP facts common to zero- and two-word isolation prefixes, with the FP bank independent. `async-unplaced` uses trusted source arity or an unknown tail, never hidden-word body counts. |
 | `abi.summary-cap` | limit | pass | A callee summary gave up: it claims nothing (`argument-reads`), or that every written register is clobbered (`preservation`). For `call-clobbers` the closure over calls stopped, and each function still waiting and every caller of one claims every callee-saved register clobbered. |
 | `types.field-named` | claim | type, offset, bytes, field, fieldType, coverage | A field name at an offset, checkable against DWARF. |
 | `types.field-unnamed` | decline | type, offset, bytes, reason | Why an access stayed `+0x…`. |
@@ -214,6 +217,7 @@ now represented directly:
 | `analysis.function` | symbol, instructions, blocks, calls; one completed analysis |
 | `cfg.block` | successors, instructions; CFG evidence |
 | `values.exit-registers` | x0, v0, x20, x21, path; raw facts and branch predicates at ordinary/async returns, not source ABI claims |
+| `analysis.entry` | convention, selfType, seeds (register → value) |
 | `values.call` | arguments, floatingArguments, stackArguments, receiver, indirectResult |
 | `values.condition` | value; signed and unsigned operators stay distinct |
 | `values.loop-initialization` | name, value, stackOffset; proven constant entry binding, at the header branch |
@@ -235,6 +239,29 @@ exact `bits`. Unknown values, provenance requiring an external oracle, and
 export truncation remain explicit. The export is bounded to depth 32 / 1,024
 expanded nodes, with explicit truncation markers. It does not add missing machine widths or turn a register fact into a
 proven source ABI. Floating-point immediates are raw bit patterns.
+The `loaded-bits` provenance leaf retains `address` and `bytes` for a narrow
+absolute load. It is raw data, not a pointer slot or a proven FP value;
+an FP operation supplies the interpretation, and literal resolution reads
+only that recorded byte count.
+The unary `float-result` operator records a scalar FP value's `bits` and
+`upperZero` proof. The latter covers only the rest of the low 64-bit word,
+under every possible FPCR.NEP merging mode; it does not prove the high half
+of Vn or a source ABI. Its operand remains the semantic FP expression.
+Already-proven scalar FP entry seeds also carry this metadata, including
+trusted floating fields. Half/single entries leave unused bits unknown;
+the entry tag creates no register location. `analysis.entry` reports the
+same precision as the tracer. Whole-vector copies preserve these partial
+facts without interpreting them as wider scalar values.
+Exact synchronous Swift scalar call results and declared C `float`/`double`
+results carry the same precision on their existing `call-result` operand
+(`59db870`). Half/single results leave unused bits unknown. A wider read
+can decline without removing the producer call; typed argument and return
+projections run before producer-use collection. Aggregate floating banks,
+grouped selector returns and asynchronous callee contracts do not gain a
+scalar width from this rule. Rendering peels precision wrappers iteratively,
+so nested FP calls add no renderer frame for their metadata.
+This metadata does not consume the semantic expression-depth budget, while
+the bounded probe exporter still counts every exported node.
 
 ```json
 {"schema":"swiftdc-value/1","expression":{"kind":"binary","operator":"unsigned-less",
@@ -246,7 +273,11 @@ using `ValueTracer` directly. It records a completed snapshot, not worklist
 iterations. The main decompiler calls it after its final trace.
 `FunctionAnalysis.loopInitializations` exposes typed `LoopInitialization`
 records keyed by the loop header's branch address. Values are exact UInt64 bit
-patterns; stack offsets are relative to the function's entry frame. The
+patterns, or `argument` names the incoming argument the counter starts from
+(the `loopInitialization` event's `value` is then the label `argN`); stack
+offsets are relative to the function's entry frame (nil for a register
+counter). `loopEntryDeclarations` holds the same records keyed by the last
+instruction that enters the loop, for the flat view. The
 structured renderer declares these bindings before entering each loop, so a
 nested initializer runs on every entry from its outer loop. Unknown initial
 values do not acquire a default zero.
@@ -537,3 +568,41 @@ not emit a recovered return-value claim or a raw exit-register snapshot. The
 source view forwards the callee result, while default integer scoring keeps
 the opaque call result not-evaluated. The branch remains a branch for CFG
 and cross-reference analysis.
+
+Async ABI role hints used by `analyzeEachFunction` can identify entries and
+resumes without recovering suspension edges or grouping funclets. These
+metadata-only roles establish neither an awaited result nor its owner.
+`async-signature-consensus` compares both physical GP locations within x0–x7;
+missing or shifted stack words stay unknown. FP facts and the dedicated Swift
+self register are independent of that ambiguity. `async-unplaced` declines
+body-read arity inference when the hidden prefix cannot be placed.
+
+For an opaque in-image call, `lab` can retain an incoming x0 or v0 value when
+its decoded body proves that register unwritten (7311942). This is physical
+transport, not a new result from that helper. A declared Swift/C logical
+result keeps its contract, FP precision remains exact, and field aliases
+are invalidated before transport. A fragment can therefore remain a visible
+call after `values.outlined-declined` while its unchanged result register is
+known independently. No new event or schema field is needed.
+
+For `body-reads` (92e1007), a possible GP read through an opaque call does
+not place a source argument. Words beyond the proved prefix produce an
+unknown tail even when the caller has known values. Holes remain `?`;
+unresolved GP inputs also prevent positioning a floating formal. A single
+direct branch alias or the exact five-instruction FP/LR frame around a
+direct call can carry independently decoded GP/FP input proofs and widths.
+Unknown targets, incomplete entries, changed arguments and cycles add no
+proof. `lab` can therefore show a new entry seed for such a frame. Its
+`body-reads(0)` can coexist with rendered `(…)`: zero represented prefix
+words does not prove a zero-parameter declaration or a variadic function.
+
+A complete callee effect that cannot instantiate its register/value transaction
+still supplies possible writes (774ed56). Those writes invalidate the frame,
+async-context and result-buffer owners before the ordinary call fallback.
+`lab` therefore no longer reports a stale `exit x0=7` or `exit x0=arg0` after
+such a write. An unresolved ResumeParent removes the exit snapshot and keeps
+the BR as an indirect branch; this does not prove a new return. Known context
+coordinates preserve headers outside the affected extent. The existing
+unbounded-memory-write flag remains set when the write cannot be bounded;
+no new event or schema field is introduced, and failed transactions install
+no literal or register prefix.

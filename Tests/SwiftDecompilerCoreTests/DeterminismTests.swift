@@ -12,10 +12,11 @@ import Foundation
 /// reuse the same seed and reorder nothing. Verified on this toolchain — a
 /// 12-element `Set` prints in three different orders across three processes.
 ///
-/// What this actually guards. The decompiler has **no concurrent fan-out** (no
-/// task groups, no `async let`, no `Task {}`, no `concurrentPerform`; the one
-/// worker thread is joined before its result is read), so scheduling is not a
-/// source of variation. The real dependency is the ~16 explicit `.sorted()`
+/// What this actually guards. The one concurrent fan-out is pass 2 of a
+/// standalone image's streamed views, which analyses functions across the
+/// cores and hands them on in input order; `parallelAnalysisMatchesSerial`
+/// compares it with the serial loop (`SWIFTDC_SERIAL`). Otherwise scheduling
+/// is not a source of variation. The real dependency is the ~16 explicit `.sorted()`
 /// calls placed where an unordered collection reaches output. Nothing enforces
 /// them: emitting straight from a `Dictionary` or `Set` in a future change
 /// would reorder output silently, and only a cross-process comparison notices.
@@ -26,6 +27,42 @@ private let binary = URL(fileURLWithPath: ".build/debug/swiftdc")
 /// Swift metadata, the ObjC index, field layout, and the call graph. Each runs
 /// in well under a tenth of a second, so repeating them is cheap.
 private let cases: [(label: String, arguments: [String])] = [
+    ("disasm --structured interior async context reach", ["disasm", "Fixtures/Sample/libAsyncInteriorReach.dylib", "--structured"]),
+    ("disasm --pseudo interior async context reach", ["disasm", "Fixtures/Sample/libAsyncInteriorReach.dylib", "--pseudo"]),
+    ("disasm listing interior async context reach", ["disasm", "Fixtures/Sample/libAsyncInteriorReach.dylib"]),
+    ("disasm --json interior async context reach", ["disasm", "Fixtures/Sample/libAsyncInteriorReach.dylib", "--json"]),
+    ("disasm --structured callee stack lifetime", ["disasm", "Fixtures/Sample/libStackLifetime.dylib", "--structured"]),
+    ("disasm --pseudo callee stack lifetime", ["disasm", "Fixtures/Sample/libStackLifetime.dylib", "--pseudo"]),
+    ("disasm listing callee stack lifetime", ["disasm", "Fixtures/Sample/libStackLifetime.dylib"]),
+    ("disasm --json callee stack lifetime", ["disasm", "Fixtures/Sample/libStackLifetime.dylib", "--json"]),
+    ("disasm --structured possible FP reach", ["disasm", "Fixtures/Sample/libFrameMay.dylib", "--structured"]),
+    ("disasm --pseudo possible FP reach", ["disasm", "Fixtures/Sample/libFrameMay.dylib", "--pseudo"]),
+    ("disasm listing possible FP reach", ["disasm", "Fixtures/Sample/libFrameMay.dylib"]),
+    ("disasm --json possible FP reach", ["disasm", "Fixtures/Sample/libFrameMay.dylib", "--json"]),
+    ("disasm --structured indirect retained result identity", ["disasm", "Fixtures/Sample/libResultIdentity.indirect.dylib", "--structured"]),
+    ("disasm --pseudo indirect retained result identity", ["disasm", "Fixtures/Sample/libResultIdentity.indirect.dylib", "--pseudo"]),
+    ("disasm listing indirect retained result identity", ["disasm", "Fixtures/Sample/libResultIdentity.indirect.dylib"]),
+    ("disasm --json indirect retained result identity", ["disasm", "Fixtures/Sample/libResultIdentity.indirect.dylib", "--json"]),
+    ("disasm --structured legacy indirect retained result identity", ["disasm", "Fixtures/Sample/libResultIdentity.legacy.indirect.dylib", "--structured"]),
+    ("disasm --pseudo legacy indirect retained result identity", ["disasm", "Fixtures/Sample/libResultIdentity.legacy.indirect.dylib", "--pseudo"]),
+    ("disasm listing legacy indirect retained result identity", ["disasm", "Fixtures/Sample/libResultIdentity.legacy.indirect.dylib"]),
+    ("disasm --json legacy indirect retained result identity", ["disasm", "Fixtures/Sample/libResultIdentity.legacy.indirect.dylib", "--json"]),
+    ("disasm --structured legacy retained result identity", ["disasm", "Fixtures/Sample/libResultIdentity.legacy.dylib", "--structured"]),
+    ("disasm --pseudo legacy retained result identity", ["disasm", "Fixtures/Sample/libResultIdentity.legacy.dylib", "--pseudo"]),
+    ("disasm listing legacy retained result identity", ["disasm", "Fixtures/Sample/libResultIdentity.legacy.dylib"]),
+    ("disasm --json legacy retained result identity", ["disasm", "Fixtures/Sample/libResultIdentity.legacy.dylib", "--json"]),
+    ("disasm --structured retained result identity", ["disasm", "Fixtures/Sample/libResultIdentity.dylib", "--structured"]),
+    ("disasm --pseudo retained result identity", ["disasm", "Fixtures/Sample/libResultIdentity.dylib", "--pseudo"]),
+    ("disasm listing retained result identity", ["disasm", "Fixtures/Sample/libResultIdentity.dylib"]),
+    ("disasm --json retained result identity", ["disasm", "Fixtures/Sample/libResultIdentity.dylib", "--json"]),
+    ("disasm --structured local ARC twin", ["disasm", "Fixtures/Sample/libArcOriginLocal.O.dylib", "--structured"]),
+    ("disasm --pseudo local ARC twin", ["disasm", "Fixtures/Sample/libArcOriginLocal.O.dylib", "--pseudo"]),
+    ("disasm listing local ARC twin", ["disasm", "Fixtures/Sample/libArcOriginLocal.O.dylib"]),
+    ("disasm --json local ARC twin", ["disasm", "Fixtures/Sample/libArcOriginLocal.O.dylib", "--json"]),
+    ("disasm --structured foreign ARC twin", ["disasm", "Fixtures/Sample/libArcOriginImport.O.dylib", "--structured"]),
+    ("disasm --pseudo foreign ARC twin", ["disasm", "Fixtures/Sample/libArcOriginImport.O.dylib", "--pseudo"]),
+    ("disasm listing foreign ARC twin", ["disasm", "Fixtures/Sample/libArcOriginImport.O.dylib"]),
+    ("disasm --json foreign ARC twin", ["disasm", "Fixtures/Sample/libArcOriginImport.O.dylib", "--json"]),
     ("disasm --structured query identity", ["disasm", "Fixtures/Sample/libUniquenessResult.O.dylib", "--structured"]),
     ("disasm --pseudo query identity", ["disasm", "Fixtures/Sample/libUniquenessResult.O.dylib", "--pseudo"]),
     ("disasm listing query identity", ["disasm", "Fixtures/Sample/libUniquenessResult.O.dylib"]),
@@ -70,13 +107,38 @@ private let cases: [(label: String, arguments: [String])] = [
     ("disasm --pseudo MAY self slots", ["disasm", "Fixtures/Sample/libReconstruction.dylib", "--pseudo"]),
     ("disasm listing MAY self slots", ["disasm", "Fixtures/Sample/libReconstruction.dylib"]),
     ("disasm --json MAY self slots", ["disasm", "Fixtures/Sample/libReconstruction.dylib", "--json"]),
+    // Result bindings are assigned from producer PCs, including x20 uses and
+    // indirect returns whose consumers are separated by an effect.
+    ("disasm --structured context results", ["disasm", "Fixtures/Sample/libContextResultUse.opt.dylib", "--structured"]),
+    ("disasm --pseudo context results", ["disasm", "Fixtures/Sample/libContextResultUse.opt.dylib", "--pseudo"]),
+    ("disasm listing context results", ["disasm", "Fixtures/Sample/libContextResultUse.opt.dylib"]),
+    ("disasm --json context results", ["disasm", "Fixtures/Sample/libContextResultUse.opt.dylib", "--json"]),
+    ("disasm --structured indirect result order", ["disasm", "Fixtures/Sample/libIndirectResultOrder.opt.dylib", "--structured"]),
+    ("disasm --pseudo indirect result order", ["disasm", "Fixtures/Sample/libIndirectResultOrder.opt.dylib", "--pseudo"]),
+    ("disasm listing indirect result order", ["disasm", "Fixtures/Sample/libIndirectResultOrder.opt.dylib"]),
+    ("disasm --json indirect result order", ["disasm", "Fixtures/Sample/libIndirectResultOrder.opt.dylib", "--json"]),
+    ("disasm --structured complete body", ["disasm", "Fixtures/Sample/libCalleeBodyTransfer.opt.dylib", "--structured"]),
+    ("disasm --pseudo complete body", ["disasm", "Fixtures/Sample/libCalleeBodyTransfer.opt.dylib", "--pseudo"]),
+    ("disasm listing complete body", ["disasm", "Fixtures/Sample/libCalleeBodyTransfer.opt.dylib"]),
+    ("disasm --json complete body", ["disasm", "Fixtures/Sample/libCalleeBodyTransfer.opt.dylib", "--json"]),
+    ("disasm --structured caller frame aliases", ["disasm", "Fixtures/Sample/libCallerFrameAlias.opt.dylib", "--structured"]),
+    ("disasm --pseudo caller frame aliases", ["disasm", "Fixtures/Sample/libCallerFrameAlias.opt.dylib", "--pseudo"]),
+    ("disasm listing caller frame aliases", ["disasm", "Fixtures/Sample/libCallerFrameAlias.opt.dylib"]),
+    ("disasm --json caller frame aliases", ["disasm", "Fixtures/Sample/libCallerFrameAlias.opt.dylib", "--json"]),
+    ("disasm --structured imported receivers", ["disasm", "Fixtures/Sample/libImportedReceiver.opt.dylib", "--structured"]),
+    ("disasm --pseudo imported receivers", ["disasm", "Fixtures/Sample/libImportedReceiver.opt.dylib", "--pseudo"]),
+    ("disasm listing imported receivers", ["disasm", "Fixtures/Sample/libImportedReceiver.opt.dylib"]),
+    ("disasm --json imported receivers", ["disasm", "Fixtures/Sample/libImportedReceiver.opt.dylib", "--json"]),
 ]
 
-private func capture(_ arguments: [String]) throws -> Data {
+private func capture(_ arguments: [String], environment: [String: String] = [:]) throws -> Data {
     let output = Pipe()
     let process = Process()
     process.executableURL = binary
     process.arguments = arguments
+    if !environment.isEmpty {
+        process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+    }
     process.standardOutput = output
     process.standardError = FileHandle.nullDevice
     try process.run()
@@ -124,7 +186,28 @@ private func capture(_ arguments: [String]) throws -> Data {
     )
 }
 
-/// The premise the test above rests on: iteration order really does vary between
+/// Pass 2 analyses a standalone image's functions concurrently and must give
+/// exactly what the serial loop gives. Each case runs both ways in its own
+/// process; the fixtures here have from a dozen to a few hundred functions,
+/// so several chunks run at once.
+@Test func parallelAnalysisMatchesSerialIfPresent() throws {
+    guard FileManager.default.fileExists(atPath: binary.path) else { return }
+    var compared = 0
+    for path in ["Fixtures/Sample/libSample.dylib", "Fixtures/Sample/sample.debug", "Fixtures/Sample/libFieldVTable.dylib",
+                 "Fixtures/Sample/libImportedReceiver.opt.dylib", "Fixtures/Sample/libIndirect.dylib"]
+    where FileManager.default.fileExists(atPath: path) {
+        for view in ["--structured", "--pseudo"] {
+            let serial = try capture(["disasm", path, view], environment: ["SWIFTDC_SERIAL": "1"])
+            let parallel = try capture(["disasm", path, view])
+            #expect(!serial.isEmpty, "\(path) \(view): no output")
+            #expect(parallel == serial, "\(path) \(view): parallel pass 2 differs from serial (\(parallel.count) vs \(serial.count) bytes)")
+            compared += 1
+        }
+    }
+    #expect(compared == 0 || compared == 10, "compared \(compared) of 10")
+}
+
+/// The premise `outputIsIdenticalAcrossProcessesIfPresent` rests on: iteration order really does vary between
 /// processes on this toolchain. If a future toolchain made hashing deterministic
 /// by default, the guard would still pass while having lost its power, and that
 /// should be visible rather than silent.

@@ -18,13 +18,21 @@ it. Returns follow the same rule. `return ?` means the function returns
 something swiftdc couldn't recover. A bare `return` means it returns nothing,
 or that its signature wasn't recoverable enough to tell.
 
+**Development happens on [`dev`](https://github.com/CamdenBopp/swiftdc/blob/dev/README.md).**
+The default `master` branch contains the last `dev` snapshot judged stable.
+Newer work stays on `dev` until the next stable snapshot.
+[Contributing guide](https://github.com/CamdenBopp/swiftdc/blob/dev/CONTRIBUTING.md)
+· [CI status](https://github.com/CamdenBopp/swiftdc/actions/workflows/ci.yml?query=branch%3Adev)
+· [Issues](https://github.com/CamdenBopp/swiftdc/issues)
+
 ## Quickstart
 
-You need an Apple Silicon Mac with Xcode 26 ([requirements](#requirements-and-build)).
+Use an Apple Silicon Mac with the [tested toolchain](#requirements-and-build).
 Clone and build a release binary, then put it on your `PATH` for this shell:
 
 ```bash
-git clone https://github.com/CamdenBopp/swiftdc.git && cd swiftdc
+git clone --branch dev https://github.com/CamdenBopp/swiftdc.git
+cd swiftdc
 swift build -c release --scratch-path .build-release
 export PATH="$PWD/.build-release/release:$PATH"
 ```
@@ -41,10 +49,31 @@ swiftdc objc MyApp.app --methods         # ObjC headers and recovered bodies
 `swiftdc <path>` with no subcommand runs `analyze`.
 
 The examples below run on the test fixtures in `Fixtures/Sample/`, which
-aren't checked in. Build them with `Tools/fixtures.sh` to run the examples
-yourself.
+aren't checked in. Install Go if needed and run `Tools/fixtures.sh` from the
+repository root. See the [fixture prerequisites](CONTRIBUTING.md#setup).
 
 ### What the output looks like
+
+The [Swift fixture](Fixtures/Sample/sample.swift) defines `Point.distance(to:)`:
+
+```swift
+public func distance(to other: Point) -> Double {
+    let dx = x - other.x
+    let dy = y - other.y
+    return (dx * dx + dy * dy).squareRoot()
+}
+```
+
+The optimized binary still contains enough information to recover the receiver
+and argument fields. The structured view shows the arithmetic as it was
+compiled:
+
+```text
+$ swiftdc disasm Fixtures/Sample/sample.release --function 'Point.distance' --structured
+sample.Point.distance(to: sample.Point) -> Swift.Double {
+    return sqrt((((self.x - arg0.x) * (self.x - arg0.x)) + ((self.y - arg0.y) * (self.y - arg0.y))))
+}
+```
 
 Swift declarations, rebuilt from metadata alone:
 
@@ -350,11 +379,14 @@ instead of getting wrong ones.
 - **Original source.** You don't get local names, macros, comments, exact
   source types, arbitrary pointer aliasing, or every optimized expression.
   The annotated assembly stays the authority to fall back on.
-- **Other architectures.** x86_64 slices load, and their metadata,
-  declarations and interfaces work, but disassembly and annotation are tuned
-  for ARM64.
-- **All names on stripped binaries.** Function boundaries always recover.
-  Names come from ObjC method records and from Swift metadata for class
+- **Other architectures.** On an x86_64 slice, `dump`, `interface`,
+  `layout`, `objc` headers and `swift-version` work from metadata. Plain
+  `disasm` prints llvm-objdump's text with no analysis, `analyze` prints the
+  declarations and fails, and every other view of the code refuses.
+- **All names on stripped binaries.** Function boundaries come from
+  LC_FUNCTION_STARTS, which survives stripping. An image linked without it has
+  only its symbols, and `disasm` warns when functions may be merged. Names
+  come from ObjC method records and from Swift metadata for class
   vtable methods (`Type.method`) and protocol-conformance witnesses
   (`Type: Protocol.kind`). Free functions, closures, thunks, and struct or
   enum methods that aren't protocol requirements print as `sub_<addr>`: they
@@ -407,8 +439,9 @@ Treat that listing as a sample, not an inventory, and please report it.
 ## Requirements and build
 
 - macOS on Apple Silicon.
-- Xcode 26 with Swift 6.3, which supplies `swiftc`, `llvm-objdump` and
-  `swift-demangle`.
+- Xcode supplies `swiftc`, `llvm-objdump` and `swift-demangle`. The package
+  declares Swift tools version 6.2. The fixture-enforced suite requires Swift
+  6.4 or newer and is tested with Xcode 27.1.
 - Capstone 6, which SwiftPM builds from source. It's the same `capstone`
   package MachOSwiftSection links, and there's nothing to install. It's the
   decoder behind CFG recovery.
@@ -430,6 +463,10 @@ methods, properties, ivars and categories. `Tools/fixtures.sh` builds its
 debug, release and stripped variants, along with the other fixtures, and
 caches them. [CONTRIBUTING.md](CONTRIBUTING.md) covers running the tests
 properly.
+
+Continuous integration runs the fixture-enforced suite on GitHub's arm64
+Xcode 27 preview image. A fork can also configure an Apple Silicon runner.
+See [CI setup and toolchain checks](docs/CI.md).
 
 ## Architecture
 
@@ -484,7 +521,42 @@ isn't a dyld cache instead of re-checking on every access, which took one
 measured `layout` run from 69.9 s to 4.4 s. `Package.swift` records why each
 dependency is pinned where it is.
 
+## Samples
+
+[samples/](samples/README.md) shows swiftdc's output on two open-source
+projects, built from source at pinned commits: the swift-argument-parser
+examples and mas. Every function the source files declare is shown
+beside its source and Ghidra's output for the same address, chosen by
+rule rather than by hand.
+
+## Compared with Ghidra
+
+Both tools decompiled a pinned corpus of 173 builds (2,601 function
+builds, twelve Swift, Objective-C and C areas), scored per function
+against ground truth, swiftdc twice
+([details and method](docs/research/ghidra-comparison-2026-11-13.md)):
+
+| | swiftdc 3837ea3 | swiftdc 5f012f8 | Ghidra 12.2 |
+|---|---|---|---|
+| Swift areas: interface wrong | 1% | 1% | 12% |
+| Swift areas: body wrong | 14% | 13% | 35% |
+| Swift areas: body correct | 21% | 24% | 40% |
+| All areas: interface correct | 67% | 67% | 78% |
+| All areas: interface wrong | 14% | 10% | 10% |
+| All areas: body correct | 26% | 33% | 54% |
+| All areas: body wrong | 23% | 18% | 30% |
+| All areas: body partial or declined | 51% | 49% | 16% |
+
+On Swift, swiftdc is wrong far less often and leaves far more partial or
+declined; Ghidra recovers more and is confidently wrong more. On plain C
+Ghidra is clearly better. The corpus, rubric, scored tables and the
+script that totals them are in `Tools/ghidra-compare/`.
+
 ## Design notes and research
+
+Start with [current status](docs/STATUS.md#current-status) for the qualified
+code, published revision and next gate. The [ABI closure plan](docs/ABI-CLOSURE-PLAN.md)
+links the compiler evidence, reproductions and implementation order.
 
 [docs/PRODUCTION-READINESS.md](docs/PRODUCTION-READINESS.md) is the running
 list of what stands between swiftdc and a decompiler you can trust without
@@ -499,6 +571,8 @@ evidence showed.
 
 | Document | Subject |
 |---|---|
+| [ghidra-comparison-2026-11-13.md](docs/research/ghidra-comparison-2026-11-13.md) | swiftdc and Ghidra 12.2 scored against ground truth on 2,601 function builds: interface and body correct, wrong or declined, by ABI area |
+| [abi-probe-2026-11-13.md](docs/research/abi-probe-2026-11-13.md), [abi-probe-2-2026-11-13.md](docs/research/abi-probe-2-2026-11-13.md) | Two rounds of ABI gap probes, 32 areas, ranked by defect class |
 | [decompiler-comparison.md](docs/research/decompiler-comparison.md) | Ghidra, Malimite and LittleSwift compared: where swiftdc wins and loses, and the list of architectural debt |
 | [phase1-type-lattice.md](docs/research/phase1-type-lattice.md) | Per-value type lattice (width and signedness), which fixed the signed/unsigned comparison defect |
 | [phase2-flowing-types.md](docs/research/phase2-flowing-types.md) | Propagating types through the type state inside a body |

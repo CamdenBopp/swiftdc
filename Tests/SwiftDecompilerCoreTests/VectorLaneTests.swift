@@ -49,7 +49,7 @@ private func pseudo(_ fixture: String, _ name: String) async throws -> String? {
     #expect(ValueTracer.scalarView(constant, bits: 16) == .immediate(2))
     #expect(ValueTracer.scalarView(constant, bits: 128) == constant)
     let loaded = AbstractValue.aggregate([.loaded(0x4000), .loaded(0x4008)])
-    #expect(ValueTracer.scalarView(loaded, bits: 64) == .loaded(0x4000))
+    #expect(ValueTracer.scalarView(loaded, bits: 64) == .unary(.floatFromBits(bits: 64), .loaded(0x4000)))
     #expect(ValueTracer.scalarView(loaded, bits: 32) == .unknown)
     #expect(ValueTracer.scalarView(.aggregate([]), bits: 64) == .unknown)
     #expect(ValueTracer.scalarView(.immediate(5), bits: 32) == .immediate(5))

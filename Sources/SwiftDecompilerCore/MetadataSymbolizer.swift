@@ -94,17 +94,18 @@ struct MetadataSymbolizer: Sendable {
             let wrapper: TypeContextDescriptorWrapper
             let target: Int?
             switch type {
-            case .struct(let m): wrapper = .struct(m.descriptor); target = Self.accessorOffset(of: m.descriptor)
-            case .enum(let m): wrapper = .enum(m.descriptor); target = Self.accessorOffset(of: m.descriptor)
-            case .class(let m): wrapper = .class(m.descriptor); target = Self.accessorOffset(of: m.descriptor)
+            case .struct(let m): wrapper = .struct(m.descriptor); target = Self.accessorOffset(of: m.descriptor, in: machO)
+            case .enum(let m): wrapper = .enum(m.descriptor); target = Self.accessorOffset(of: m.descriptor, in: machO)
+            case .class(let m): wrapper = .class(m.descriptor); target = Self.accessorOffset(of: m.descriptor, in: machO)
             }
             // A local type's demangled context drops the function it is in:
             // `LocalTypes.Outer.LocalDouble` for `LocalDouble #1 in
             // LocalTypes.Outer.makeCounter()`. As in `contextName`, the
             // dropped context is marked, and a name it cannot be placed in
             // is declined.
-            guard let target, let typeName = accessorTypeName(of: type, wrapper: wrapper, in: machO) else { continue }
-            claims.append(Claim(address: machO.address(forOffset: target), name: "type metadata accessor for \(typeName)",
+            guard let target, let address = machO.imageAddress(ofOffset: target),
+                  let typeName = accessorTypeName(of: type, wrapper: wrapper, in: machO) else { continue }
+            claims.append(Claim(address: address, name: "type metadata accessor for \(typeName)",
                                 owner: typeName))
         }
         return claims
@@ -144,8 +145,10 @@ struct MetadataSymbolizer: Sendable {
             case .enum(let m): wrapper = .enum(m.descriptor); isEnum = true
             case .class: continue
             }
-            guard let name = accessorTypeName(of: type, wrapper: wrapper, in: machO) else { continue }
-            let runtime = machO.address(forOffset: SwiftDeclarationDumper.descriptorOffset(of: type)) - UInt64(base)
+            guard let name = accessorTypeName(of: type, wrapper: wrapper, in: machO),
+                  let descriptor = machO.imageAddress(ofOffset: SwiftDeclarationDumper.descriptorOffset(of: type))
+            else { continue }
+            let runtime = descriptor - UInt64(base)
             types[runtime] = (name, isEnum)
         }
         guard !types.isEmpty else { return [] }
@@ -305,11 +308,13 @@ struct MetadataSymbolizer: Sendable {
     }
 
     /// The offset the descriptor's relative accessor pointer leads to, or
-    /// nil when it is null.
-    private static func accessorOffset(of descriptor: some TypeContextDescriptorProtocol) -> Int? {
+    /// nil when it is null or leads to no file bytes.
+    private static func accessorOffset(of descriptor: some TypeContextDescriptorProtocol, in machO: MachOFile) -> Int? {
         let relative = descriptor.layout.accessFunctionPtr
         guard relative.isValid else { return nil }
-        return relative.resolveDirectOffset(from: descriptor.offset + descriptor.layout.offset(of: .accessFunctionPtr))
+        return relative.resolveDirectOffset(
+            from: descriptor.offset + descriptor.layout.offset(of: .accessFunctionPtr), in: machO.context
+        )
     }
 
     // MARK: - Class vtable methods (via method descriptors)
@@ -357,24 +362,27 @@ struct MetadataSymbolizer: Sendable {
                 let relative = Int(method.layout.implementation.relativeOffset)
                 // A null relative pointer is a resilient / externally-defined slot.
                 guard relative != 0 else { continue }
-                let address = machO.address(forOffset: method.offset + implementationDelta + relative)
+                guard let address = machO.relativeAddress(fromOffset: method.offset + implementationDelta, displacement: relative)
+                else { continue }
                 record(address, isData: method.layout.flags.isData,
                        Self.label(typeName, methodKindLabel(method.layout.flags.kind),
                                   isInstance: method.layout.flags.isInstance))
             }
             for override in model.methodOverrideDescriptors {
-                guard let offset = override.implementationOffset else { continue }
+                guard let offset = override.implementationOffset(in: machO.context),
+                      let address = machO.imageAddress(ofOffset: offset)
+                else { continue }
                 // The overridden method's kind is known when its descriptor is
                 // in this image; across images it is a symbol, and the slot is
                 // labelled only as the override it is. Its flags, which say
                 // whether the field is code, are then unknown too: the field
                 // is named only when it already lies in code.
                 if case .element(let base)? = try? override.methodDescriptor(in: machO.context) {
-                    record(machO.address(forOffset: offset), isData: base.layout.flags.isData,
+                    record(address, isData: base.layout.flags.isData,
                            Self.label(typeName, methodKindLabel(base.layout.flags.kind),
                                       isInstance: base.layout.flags.isInstance))
                 } else {
-                    record(machO.address(forOffset: offset), isData: false, "\(typeName).override")
+                    record(address, isData: false, "\(typeName).override")
                 }
             }
         }

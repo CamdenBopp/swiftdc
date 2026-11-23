@@ -24,17 +24,41 @@ import Testing
     let sdk = try #require(CPrototypeDump.sdkPath())
     let frameworks = (try? FileManager.default.contentsOfDirectory(atPath: sdk + "/System/Library/Frameworks")) ?? []
     var units = [CPrototypeDump.libraryUnit]
-    units += frameworks.filter { $0.hasSuffix(".framework") }.sorted().map {
-        let name = String($0.dropLast(".framework".count))
-        return "#import <\(name)/\(name).h>\n"
+    for framework in frameworks.filter({ $0.hasSuffix(".framework") }).sorted() {
+        let name = String(framework.dropLast(".framework".count))
+        let headers = sdk + "/System/Library/Frameworks/" + framework + "/Headers"
+        if FileManager.default.fileExists(atPath: headers + "/" + name + ".h") {
+            units.append("#import <\(name)/\(name).h>\n")
+        } else if !CPrototypeDump.kernelFrameworks.contains(name) {
+            // No umbrella (IOKit's is IOKitLib.h): each header is a unit.
+            units += CPrototypeDump.headers(under: headers).map { "#import <\(name)/\($0)>\n" }
+        }
     }
+    // Every C library header is a unit of its own, so one that does not
+    // compile alone costs only itself: `closedir`, `sysctl` and `ioctl`
+    // were missing because no unit included `dirent.h`, `sys/sysctl.h` or
+    // `sys/ioctl.h`.
+    units += CPrototypeDump.headers(under: sdk + "/usr/include")
+        .filter { header in !CPrototypeDump.skippedIncludeDirectories.contains { header.hasPrefix($0 + "/") } }
+        .map { "#include <\($0)>\n" }
     var prototypes: [String: String] = [:]
     var conflicting: Set<String> = []
+    var variadicSelectors: Set<String> = []
     var compiled = 0
     for unit in units {
         guard let lines = CPrototypeDump.astDump(of: unit) else { continue }
         compiled += 1
         CPrototypeDump.collect(lines, into: &prototypes, conflicting: &conflicting)
+        CPrototypeDump.collectVariadicSelectors(lines, into: &variadicSelectors)
+    }
+    // The Itanium C++ ABI runtime (`__cxa_begin_catch`, `__cxa_throw`, …)
+    // is declared `extern "C"` in a C++ header, so its names are the
+    // symbols. Only those declarations are kept: any other function there
+    // has C++ linkage, and a mangled symbol.
+    units.append(CPrototypeDump.cxxABIUnit)
+    if let lines = CPrototypeDump.astDump(of: CPrototypeDump.cxxABIUnit, cLinkageOnly: true) {
+        compiled += 1
+        CPrototypeDump.collect(lines, into: &prototypes, conflicting: &conflicting, emptyParenthesesTakeNothing: true)
     }
     for name in conflicting { prototypes[name] = nil }
     let settings = (try? String(contentsOfFile: sdk + "/SDKSettings.json", encoding: .utf8)) ?? ""
@@ -58,22 +82,67 @@ import Testing
     /// `H` unsigned short, `b` char (signed on arm64), `B` unsigned char,
     /// `z` bool.
     enum SDKCPrototypes {
-        static let table: [String: String] = {
-            var table: [String: String] = [:]
-            for line in data.split(separator: "\\n") {
-                guard let space = line.firstIndex(of: " ") else { continue }
-                table[String(line[..<space])] = String(line[line.index(after: space)...])
-            }
-            return table
-        }()
+        /// The declaration of `name`, by binary search over `data`'s lines,
+        /// which are sorted bytewise by name. A dictionary of every entry,
+        /// built in each process, cost about 2.5 MB of footprint per run.
+        static func entry(_ name: String) -> String? {
+            var name = name
+            return name.withUTF8 { key in data.withUTF8Buffer { lookup(key, in: $0) } }
+        }
 
-        private static let data = \"\"\"
+        static func lookup(_ key: UnsafeBufferPointer<UInt8>, in bytes: UnsafeBufferPointer<UInt8>) -> String? {
+            let newline = UInt8(ascii: "\\n"), space = UInt8(ascii: " ")
+            var low = 0, high = bytes.count
+            while low < high {
+                var start = low + (high - low) / 2
+                while start > low, bytes[start - 1] != newline { start -= 1 }
+                var end = start
+                while end < bytes.count, bytes[end] != newline { end += 1 }
+                var nameEnd = start
+                while nameEnd < end, bytes[nameEnd] != space { nameEnd += 1 }
+                var order = 0
+                var index = 0
+                while order == 0 {
+                    let a: Int = index < key.count ? Int(key[index]) : -1
+                    let b: Int = start + index < nameEnd ? Int(bytes[start + index]) : -1
+                    if a == -1, b == -1 { break }
+                    order = a < b ? -1 : (a > b ? 1 : 0)
+                    index += 1
+                }
+                if order == 0 {
+                    guard nameEnd < end else { return nil }
+                    return String(decoding: UnsafeBufferPointer(rebasing: bytes[(nameEnd + 1)..<end]), as: UTF8.self)
+                }
+                if order < 0 { high = start } else { low = end + 1 }
+            }
+            return nil
+        }
+
+        static let data: StaticString = \"\"\"
     \(lines.joined(separator: "\n"))
     \"\"\"
     }
 
     """
     try source.write(toFile: output, atomically: true, encoding: .utf8)
+    if let selectorsOutput = ProcessInfo.processInfo.environment["SWIFTDC_GENERATE_SDK_VARIADIC_SELECTORS"] {
+        let selectors = """
+        // Generated by Tests/SwiftDecompilerCoreTests/SDKCPrototypeGenerator.swift
+        // from the macOS \(sdkVersion) headers. Do not edit by hand.
+
+        /// Every Objective-C selector some public SDK header declares variadic
+        /// (`- (NSString *)stringByAppendingFormat:(NSString *)format, ...`).
+        /// A method's type encoding does not say so; the declaration does.
+        enum SDKVariadicSelectors {
+            static let all: Set<String> = [
+        \(variadicSelectors.sorted().map { "        \"\($0)\"," }.joined(separator: "\n"))
+            ]
+        }
+
+        """
+        try selectors.write(toFile: selectorsOutput, atomically: true, encoding: .utf8)
+        print("SDK variadic selectors: \(variadicSelectors.count)")
+    }
     print("SDK C prototypes: \(prototypes.count) functions from \(compiled) translation units, \(conflicting.count) declined for conflicting declarations")
 }
 
@@ -85,6 +154,34 @@ private enum CPrototypeDump {
     "mach/mach.h", "math.h", "unistd.h", "fcntl.h", "sys/stat.h", "xpc/xpc.h", "notify.h", "zlib.h",
     "libproc.h",
     ]
+
+    /// Kernel and driver frameworks: not user-space C.
+    static let kernelFrameworks: Set<String> = ["Kernel", "DriverKit"]
+
+    /// `usr/include` directories that are C++, another project's private
+    /// headers, or another architecture's.
+    static let skippedIncludeDirectories = ["c++", "apache2", "apr-1", "net-snmp", "_modules", "i386", "pexpert"]
+
+    /// The `.h` files under `root`, as paths relative to it, sorted.
+    static func headers(under root: String) -> [String] {
+        guard let enumerator = FileManager.default.enumerator(atPath: root) else { return [] }
+        return enumerator.compactMap { $0 as? String }.filter { $0.hasSuffix(".h") }.sorted()
+    }
+
+    static let cxxABIUnit = "#include <cxxabi.h>\n"
+
+    /// The selector of each variadic method line kept by `astDump`:
+    /// `… col:1 - stringByAppendingFormat: 'NSString *' variadic`.
+    static func collectVariadicSelectors(_ lines: [Substring], into selectors: inout Set<String>) {
+        for line in lines where line.contains("ObjCMethodDecl ") && line.hasSuffix(" variadic") {
+            guard let quote = line.range(of: " '") else { continue }
+            let head = line[..<quote.lowerBound]
+            guard let marker = head.range(of: " - ", options: .backwards) ?? head.range(of: " + ", options: .backwards)
+            else { continue }
+            let selector = String(head[marker.upperBound...])
+            if ObjCSelectors.isSelectorShaped(selector) { selectors.insert(selector) }
+        }
+    }
 
     static var libraryUnit: String { libraryHeaders.map { "#include <\($0)>\n" }.joined() }
 
@@ -106,11 +203,15 @@ private enum CPrototypeDump {
     /// typedefs, function declarations and their parameters) for one
     /// translation unit, or nil when it does not compile. The dump is read
     /// in chunks, never whole.
-    static func astDump(of unit: String) -> [Substring]? {
+    ///
+    /// With `cLinkageOnly` the unit is Objective-C++, and the functions kept
+    /// are those of an `extern "C"` block in a namespace, re-indented as
+    /// top-level ones; every other function is dropped.
+    static func astDump(of unit: String, cLinkageOnly: Bool = false) -> [Substring]? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-        process.arguments = ["clang", "-x", "objective-c", "-fsyntax-only", "-fno-color-diagnostics",
-                             "-Xclang", "-ast-dump", "-"]
+        process.arguments = ["clang", "-x", cLinkageOnly ? "objective-c++" : "objective-c", "-fsyntax-only",
+                             "-fno-color-diagnostics", "-Xclang", "-ast-dump", "-"]
         let input = Pipe(), output = Pipe()
         process.standardInput = input
         process.standardOutput = output
@@ -121,8 +222,33 @@ private enum CPrototypeDump {
         var kept: [Substring] = []
         var pending = Data()
         let handle = output.fileHandleForReading
+        // Inside `namespace … { extern "C" { … } }`, at depth two.
+        var inCLinkage = false
         func keep(_ line: Data) {
-            guard let text = String(data: line, encoding: .utf8) else { return }
+            guard var text = String(data: line, encoding: .utf8) else { return }
+            if cLinkageOnly {
+                if text.hasPrefix("| |-") || text.hasPrefix("| `-") || text.hasPrefix("|-") || text.hasPrefix("`-") {
+                    inCLinkage = (text.hasPrefix("| |-LinkageSpecDecl ") || text.hasPrefix("| `-LinkageSpecDecl "))
+                        && text.hasSuffix(" C")
+                }
+                if text.hasPrefix("|-FunctionDecl ") || text.hasPrefix("`-FunctionDecl ")
+                    || text.hasPrefix("| |-ParmVarDecl ") || text.hasPrefix("| `-ParmVarDecl ") {
+                    return
+                }
+                if inCLinkage, text.hasPrefix("|   |-") || text.hasPrefix("|   `-") || text.hasPrefix("|   | ") {
+                    text = String(text.dropFirst(4))
+                    guard text.hasPrefix("|-FunctionDecl ") || text.hasPrefix("`-FunctionDecl ")
+                        || text.hasPrefix("| |-ParmVarDecl ") || text.hasPrefix("| `-ParmVarDecl ")
+                    else { kept.append("|-Other"); return }
+                }
+            }
+            // An Objective-C method declared variadic, in an interface,
+            // category or protocol.
+            if (text.hasPrefix("| |-ObjCMethodDecl ") || text.hasPrefix("| `-ObjCMethodDecl ")),
+               text.hasSuffix(" variadic") {
+                kept.append(Substring(text))
+                return
+            }
             if text.hasPrefix("|-FunctionDecl ") || text.hasPrefix("`-FunctionDecl ")
                 || text.hasPrefix("| |-ParmVarDecl ") || text.hasPrefix("| `-ParmVarDecl ")
                 || text.hasPrefix("|-TypedefDecl ") || text.hasPrefix("`-TypedefDecl ")
@@ -167,7 +293,10 @@ private enum CPrototypeDump {
         return (name, type, desugared, String(tail))
     }
 
-    static func collect(_ lines: [Substring], into prototypes: inout [String: String], conflicting: inout Set<String>) {
+    /// `emptyParenthesesTakeNothing`: in C++ `f()` takes no parameters; in
+    /// C it declares none, which leaves them unknown.
+    static func collect(_ lines: [Substring], into prototypes: inout [String: String], conflicting: inout Set<String>,
+                        emptyParenthesesTakeNothing: Bool = false) {
         var typedefs: [String: String] = [:]
         for line in lines where line.hasPrefix("|-TypedefDecl ") || line.hasPrefix("`-TypedefDecl ") {
             // `typedef struct { … } CMTime` prints `'struct CMTime':'CMTime'`:
@@ -320,6 +449,7 @@ private enum CPrototypeDump {
             // clang prints one that takes nothing as `int (void)`.
             guard parsed, let open = decl.type.firstIndex(of: "("),
                   !parameters.isEmpty || decl.type.contains("(void)")
+                    || (emptyParenthesesTakeNothing && decl.type[open...].hasPrefix("()"))
             else { continue }
             // `void (*(int, void (*)(int)))(int)` is `signal`: the first
             // parenthesis opens the declarator of a function pointer it
