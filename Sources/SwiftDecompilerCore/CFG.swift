@@ -36,6 +36,7 @@ public extension DisassembledFunction {
     /// labels and successor edges.
     func renderCFG() -> String {
         var lines = ["\(displayName):  // \(symbol) @ 0x\(String(startAddress, radix: 16))"]
+        lines += foldedSymbolNote(indent: "  ")
         if let objcMethod { lines.append("  // \(objcMethod.signature)") }
         if instructions.isEmpty { lines.append("  \(Self.noDecodedInstructionNote)") }
         let cfg = controlFlowGraph

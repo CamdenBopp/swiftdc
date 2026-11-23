@@ -15491,3 +15491,48 @@ completed successfully at `409165d`: the rebuilt enforcing **2,060 tests /
 43 suites passed (1,925.295 s)**. Terminal run/head, job steps and decoded
 suite log were checked. This covers transfer-edge code `1167e83`, not the
 later witness code. No readiness percentage changes.
+
+## 2026-11-23: retain folded-symbol candidates in every text view
+
+**FIXED (completeness):** functions classified as `foldedSymbols` now show
+their existing candidate list in pseudocode, structured output and CFG output.
+The `sub_<address>` name remains declined. `foldedSymbolNote(indent:)` shares
+the plain listing's format with the other renderers; listing and JSON bytes
+are unchanged. Structured output covers both its single-block pseudocode
+fallback and its multi-block structurer path.
+
+Against `bee99a2`, the local `libReconstruction.opt.dylib` has **48** candidate
+notes in each newly covered view, and `sample.release` has **7**; those views
+previously omitted the notes. Across **794 fixture/toolchain inputs**, each
+newly covered view adds **1,050 notes / 5,538 lines in 179 outputs**. Every
+note's address, candidates and order match the baseline listing, with no
+missing or duplicate notes. Removing only those additions leaves identical
+output bytes; listing and JSON are identical without normalization. Existing
+one-candidate metadata-witness declines retain their existing format.
+
+The rebuilt enforcing suite passed **2,108 tests / 43 suites (1,364.173 s)**.
+The three new tests cover real folded functions, non-folded functions and a
+decoded conditional ARM64 body that exercises the multi-block structurer.
+Removing the pseudocode, CFG or multi-block structured insertion separately
+compiled and produced the expected test failures; the restored build passed
+all three tests. Reproduce the focused group with:
+
+```bash
+swift build --build-tests
+SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build --filter '(everyViewListsTheSymbolsAFoldedAddressDeclinesIfPresent|aFunctionWithOneNameCarriesNoFoldNoteIfPresent|multiBlockFoldedFunctionKeepsCandidatesInStructuredOutput)'
+```
+
+The default four-view corpus plus SDK workloads passed **3,180 cost rows**:
+instructions **−0.08357%**, summed peak footprints **−0.12445%**. The separate
+CFG sweep passed **794 cost rows**, with instructions **−0.04350%** and
+summed peaks **−0.19496%**. Default budgets were unchanged. The large SDK
+structured peaks measured **173 → 212 MB** and **74 → 92 MB**. Their retained
+outputs match the measured outputs exactly; the only additions are **1,436**
+and **107** candidate notes. Both SDK `xrefs` outputs are unchanged.
+
+**546 CLI, 8 serial and 5 original-app baseline/candidate pairs** completed
+successfully (**1,118 invocations**), preserving output after only the added
+notes are removed. App runs used the 2 GB footprint guard; the maximum sampled
+app peak was **218 MB**. Four additional guarded SDK captures account for the
+changed SDK structured outputs. These measurements qualify candidate visibility;
+they do not change ABI support or readiness estimates.

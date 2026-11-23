@@ -662,6 +662,17 @@ public struct DisassembledFunction: Sendable {
     static let noDecodedInstructionNote =
         "// no instruction decodes here: the image marks a function, but its bytes are not code"
 
+    /// The symbols a folded address declines to choose between, as comment
+    /// lines; empty for any other function. Every view prints them: without
+    /// them `sub_ba0` reads as a function no symbol names, when the image
+    /// names it twice.
+    func foldedSymbolNote(indent: String) -> [String] {
+        guard source == .foldedSymbols, let foldedCandidates else { return [] }
+        let address = String(startAddress, radix: 16)
+        return ["\(indent)// \(foldedCandidates.count) symbols folded onto 0x\(address) by identical code folding; none can be attributed"]
+            + foldedCandidates.map { "\(indent)//   \($0)" }
+    }
+
     public func render() -> String {
         var lines: [String] = []
         lines.append("\(displayName):")
@@ -677,9 +688,8 @@ public struct DisassembledFunction: Sendable {
             if source == .symbol { lines.append("  // \(symbol)") }
         } else if demangledName != nil {
             lines.append("  // \(symbol)  @ 0x\(String(startAddress, radix: 16))\(tag)")
-        } else if source == .foldedSymbols, let foldedCandidates {
-            lines.append("  // \(foldedCandidates.count) symbols folded onto 0x\(String(startAddress, radix: 16)) by identical code folding; none can be attributed")
-            for candidate in foldedCandidates { lines.append("  //   \(candidate)") }
+        } else if source == .foldedSymbols, foldedCandidates != nil {
+            lines += foldedSymbolNote(indent: "  ")
         } else if source == .address {
             lines.append("  // unnamed function  @ 0x\(String(startAddress, radix: 16))  [\(boundary.note)]")
         }

@@ -22,7 +22,7 @@ public extension DisassembledFunction {
     }
 
     private func renderPseudoBody(hideRuntime: Bool) -> String {
-        var lines = ["\(displayName) {"]
+        var lines = ["\(displayName) {"] + foldedSymbolNote(indent: "    ")
         if let objcMethod { lines.append("    // \(objcMethod.signature)") }
         if let asyncLine = asyncHeaderLine() { lines.append("    \(asyncLine)") }
         var statements: [String] = []
