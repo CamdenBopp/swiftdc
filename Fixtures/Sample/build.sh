@@ -365,6 +365,12 @@ echo "==> accessors of function-typed storage, and a subscript as the control (f
 $SWIFTC -parse-as-library -O -emit-library -module-name FunctionStorage functionstorage.swift -o libFunctionStorage.dylib
 $SWIFTC -parse-as-library -Onone -emit-library -module-name FunctionStorage functionstorage.swift -o libFunctionStorage.onone.dylib
 
+echo "==> a field read on both sides of an in-image twin of an access marker (accesstwin.swift + accesstwin.c, -O and -Onone)"
+$CLANG -O2 -c accesstwin.c -o accesstwin.o
+$SWIFTC -suppress-warnings -enforce-exclusivity=unchecked -parse-as-library -O -emit-library -module-name AccessTwin accesstwin.swift accesstwin.o -o libAccessTwin.dylib
+$SWIFTC -suppress-warnings -enforce-exclusivity=unchecked -parse-as-library -Onone -emit-library -module-name AccessTwin accesstwin.swift accesstwin.o -o libAccessTwin.onone.dylib
+rm -f accesstwin.o
+
 echo "==> throws(Never) specializations serialized by an -O library and emitted by an -Onone client (typedthrowsnever_lib.swift -O, typedthrowsnever.swift -Onone)"
 $SWIFTC -parse-as-library -O -emit-library -emit-module -module-name TypedThrowsNeverLib typedthrowsnever_lib.swift -o libTypedThrowsNeverLib.dylib
 $SWIFTC -parse-as-library -Onone -emit-library -module-name TypedThrowsNever typedthrowsnever.swift -I . -L . -lTypedThrowsNeverLib -o libTypedThrowsNever.dylib

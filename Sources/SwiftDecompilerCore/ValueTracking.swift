@@ -1158,8 +1158,12 @@ public struct ValueTracer: Sendable {
             let runtimeName = callee.hasPrefix("_") ? String(callee.dropFirst()) : callee
             returnsArgument = applies && arcIdentityContract && DisassembledFunction.returnsItsArgument(callee)
             retainedRegister = applies && arcIdentityContract ? ValueTracer.retainedRegister(runtimeName) : nil
+            // The name's contract is the library function's. A function
+            // that only shares the name (`swift_endAccess` defined in the
+            // image and writing a field) has none: across a call to one,
+            // `c.n &- old` read `(arg0.n - arg0.n)`.
             writesNoFields = readsOnly || (applies && (retainedRegister != nil
-                || ValueTracer.fieldPreservingRuntimeCalls.contains(runtimeName)))
+                || (namedABI && ValueTracer.fieldPreservingRuntimeCalls.contains(runtimeName))))
             allocatesArray = callee.contains("_allocateUninitializedArray")
             returnsVoidByName = DisassembledFunction.splitSignature(callee)?.result == "()"
                 || DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == false

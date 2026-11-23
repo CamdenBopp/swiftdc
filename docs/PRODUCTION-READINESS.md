@@ -61,6 +61,36 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: sprint O06-a, a field carried across an access marker's name twin
+
+**FIXED (soundness).** Seventh sprint of [ABI-SPRINTS.md](ABI-SPRINTS.md).
+The runtime's `swift_beginAccess`, `swift_endAccess` and
+`objc_retainBlock` write no field, so a field read before a call to one is
+the field after it. That was decided by the callee's name. With
+`swift_endAccess` defined in the image and setting `n` to 23,
+`let old = m.n; twinEnd(m); return m.n &- old` rendered
+`return (arg0.n - arg0.n)`.
+
+The contract now needs the call's library binding (`namedABIContract`), at
+a direct call and in the body summaries that close over field writes
+(`closeOverFieldWrites`), which take the proof from the resolver. Across a
+twin the field declines: `return ?`, `consume(?)`. Fixture
+`accesstwin.swift` with `accesstwin.c`; its build suppresses the
+compiler's warning that the names are reserved.
+
+Against `bf340f3`, the blast radius moves only the new fixture's two
+images (8 lines in each text view, 20 in JSON): no render of a real access
+marker changed. Over 3,236 renders, instructions retired moved -0.12% and
+summed peak footprint +0.41%.
+
+**OPEN:** the twin's call is still hidden as runtime noise (sprint O01-a),
+so the render declines the value without showing what changed it. A twin
+exported by another library under the same name is not distinguished from
+libswiftCore's unless its binding names a different library, which the
+provider table checks.
+
+`bf340f3` keeps an inlined fragment's library binding.
+
 ## 2026-11-23: an inlined fragment's call keeps its library binding
 
 **FIXED (completeness).** -Osize outlines the tail of a runtime call into

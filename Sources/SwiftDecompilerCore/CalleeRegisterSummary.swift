@@ -1019,11 +1019,13 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// mov x3, #0; b swift_beginAccess`), and a call to it forgot every field
     /// of self the caller held.
     /// `name` gives a stub's name: the summaries are built before any call
-    /// is named. ARC calls also need the resolver's exact provider proof;
-    /// the default keeps an unproved retain opaque.
+    /// is named. ARC calls also need the resolver's exact provider proof,
+    /// and an access marker its library binding; the defaults keep an
+    /// unproved retain or marker opaque.
     static func closeOverFieldWrites(
         _ summaries: inout [UInt64: CalleeRegisterSummary],
         arcIdentityContract: (UInt64, String) -> Bool = { _, _ in false },
+        namedABIContract: (UInt64, String) -> Bool = { _, _ in false },
         name: (UInt64) -> String?
     ) {
         let starts = summaries.keys.sorted()
@@ -1037,7 +1039,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                     if call.isFunction { return summaries[target]?.writesNoFields ?? false }
                     return name(target).map { callee in
                         ValueTracer.CallFacts(callee: callee,
-                            arcIdentityContract: arcIdentityContract(target, callee)).writesNoFields
+                            arcIdentityContract: arcIdentityContract(target, callee),
+                            namedABIContract: namedABIContract(target, callee)).writesNoFields
                     } ?? false
                 }
                 if preserving {

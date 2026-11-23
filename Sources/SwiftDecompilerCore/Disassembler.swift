@@ -1146,6 +1146,8 @@ public struct Disassembler: Sendable {
         )
         CalleeRegisterSummary.closeOverFieldWrites(&registerSummaries, arcIdentityContract: { target, callee in
             resolver.arcIdentityContract(at: target, named: callee)
+        }, namedABIContract: { target, callee in
+            resolver.namedABIContract(at: target, named: callee)
         }) { names[$0] }
 
         // Async funclet chains, from the hint sections plus a decode of just the
@@ -1676,6 +1678,8 @@ public struct Disassembler: Sendable {
         if rebuildingEntryRoles { CalleeRegisterSummary.closeOverProvenEntryReads(&summaries) }
         CalleeRegisterSummary.closeOverFieldWrites(&summaries, arcIdentityContract: { target, callee in
             resolver.arcIdentityContract(at: target, named: callee)
+        }, namedABIContract: { target, callee in
+            resolver.namedABIContract(at: target, named: callee)
         }) { resolvedNames[$0] }
 
         // Every closure is done: analysis reads only the facts.
@@ -1961,6 +1965,8 @@ public struct Disassembler: Sendable {
                 if rebuildingEntryRoles { CalleeRegisterSummary.closeOverProvenEntryReads(&summaries) }
                 CalleeRegisterSummary.closeOverFieldWrites(&summaries, arcIdentityContract: { target, callee in
                     resolver.arcIdentityContract(at: target, named: callee)
+                }, namedABIContract: { target, callee in
+                    resolver.namedABIContract(at: target, named: callee)
                 }) { resolvedNames[$0] }
                 for (start, body) in bodies where registerSummaryStarts.contains(start) {
                     outlinedFragments[start] = OutlinedFragment(start: start, instructions: body.instructions)

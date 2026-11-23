@@ -37,7 +37,10 @@ import Demangling
     for callee in ["swift_retain", "_swift_bridgeObjectRetain", "objc_retain", "objc_retain_x19", "swift_beginAccess",
                    "swift_endAccess"] {
         let arc = DisassembledFunction.isARCReferenceHelper(callee)
-        #expect(ValueTracer.CallFacts(callee: callee, arcIdentityContract: arc).writesNoFields, "\(callee)")
+        // An ARC entry point is admitted by its identity contract, an
+        // access marker by its library binding.
+        #expect(ValueTracer.CallFacts(callee: callee, arcIdentityContract: arc, namedABIContract: !arc).writesNoFields, "\(callee)")
+        if !arc { #expect(!ValueTracer.CallFacts(callee: callee).writesNoFields, "unbound \(callee)") }
         if arc {
             #expect(!ValueTracer.CallFacts(callee: callee).writesNoFields, "unproved \(callee)")
             #expect(!ValueTracer.CallFacts(callee: callee, knownArityApplies: false,
@@ -91,7 +94,13 @@ import Demangling
             }, source: .symbol)
         summaries[start] = try #require(CalleeRegisterSummary.of(function, isFunction: { bodies[$0] != nil }))
     }
-    CalleeRegisterSummary.closeOverFieldWrites(&summaries) { $0 == stub ? "swift_beginAccess" : nil }
+    // The name without its binding proves nothing about any body.
+    var unbound = summaries
+    CalleeRegisterSummary.closeOverFieldWrites(&unbound) { $0 == stub ? "swift_beginAccess" : nil }
+    #expect(unbound.values.allSatisfy { !$0.writesNoFields })
+    CalleeRegisterSummary.closeOverFieldWrites(&summaries, namedABIContract: { target, _ in target == stub }) {
+        $0 == stub ? "swift_beginAccess" : nil
+    }
     #expect(summaries[0x1000]?.writesNoFields == true)
     #expect(summaries[0x4000]?.writesNoFields == true)
     // A store through another register, an indirect call and a cycle prove nothing.
