@@ -61,6 +61,42 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-22: local outgoing async descriptor handoff qualification
+
+**Locally qualified at `ff02d78`** on Darwin arm64. The probe records an
+outgoing direct handoff when the caller loads the requested context size
+from a validated linked descriptor, calls the bound task allocator,
+stores the current X22 and return continuation in the new header, and
+passes the allocator result in X22 to the descriptor's direct entry.
+Incoming owner privacy stays unknown.
+
+The enforcing run passed **2,105 tests / 43 suites (1,443.235 s)**.
+The change adds **14 tests** and removes none. All **3,180 cost rows**
+met default budgets against the published `3c9b005` baseline. The
+**3,176 corpus renders** and four SDK output digests were unchanged.
+Postchecks passed **1,110 runs** with identical ordinary output,
+including lab text. These comprise 1,092 CLI invocations, eight
+serial streaming controls and ten guarded runs across five original
+apps. Both binaries produced **84,833 ordered app function headers**.
+
+Eight separate public probe runs used the optimized AwaitResults
+fixture. The candidate recorded the same **five outgoing handoffs**
+in the JSON array and structured streaming routes, in the same order.
+The baseline recorded zero. On each route, exit status and stdout and
+stderr bytes agreed across both binaries with recording on or off.
+The [probe fields](INSTRUMENTATION.md#scoring-without-parsing-pseudocode) describe machine
+provenance for the requested size and continuation.
+
+Incoming ownership, actual allocation extent, runtime write effects and
+live scalar transfer remain open.
+
+The original publication gate for `ff02d78` passed **2,105 enforcing
+tests / 43 suites (1,423.500 s)** and all **3,180 cost rows** met default
+budgets. Total retired instructions increased by **0.04%** and summed
+per-run peak footprint decreased by **0.22%**. The gate pushed `ff02d78`
+to `dev`. Hosted CI is pending.
+[Hosted run 45101565065](https://github.com/CamdenBopp/swiftdc/actions/runs/45101565065)
+
 ## 2026-11-22: local Go build-ID streaming fix
 
 **Fixed at `9341f33`, published in `3c9b005`** on Darwin arm64. The function
