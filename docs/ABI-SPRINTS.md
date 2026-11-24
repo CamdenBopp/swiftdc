@@ -82,7 +82,7 @@ premise touches.
 | 13 | [F01-a](research/abi-sprints-2026-11-23/04-foreign-ownership.md) | Reject address-shaped x20 as external nominal Self proof | soundness | S | open |
 | 14 | [E07-a](research/abi-sprints-2026-11-23/03-async-errors.md) | Propagate a callee's no-success result | soundness | M | fixed: reproduced on compiled Swift, see [readiness](PRODUCTION-READINESS.md#2026-11-23-a-callee-whose-result-is-never-hands-back-no-value) |
 | 15 | [E03-a](research/abi-sprints-2026-11-23/03-async-errors.md) | Require a proven direct typed-error carrier | soundness | S/M | open |
-| 16 | [M04-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Keep pointer reach past outgoing stack holes | soundness | M | open |
+| 16 | [M04-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Keep pointer reach past outgoing stack holes | soundness | M | fixed: reproduced with authored assembly, see [readiness](PRODUCTION-READINESS.md#2026-11-23-a-stack-argument-past-a-hole-or-past-the-sixteenth-word) |
 | 17 | [L03-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Preserve an FP barrier when counting integer pieces | soundness | M | count fixed, unreachable until Float16 is laid out: see [readiness](PRODUCTION-READINESS.md#2026-11-23-a-float-between-two-integers-keeps-them-in-separate-registers) |
 | 18 | [L06-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Bound recursive Optional direct-result claims | soundness | S/M | guarded: not reproduced, see [readiness](PRODUCTION-READINESS.md#2026-11-23-nested-optional-results-are-held-to-the-compilers-x8-use) |
 | 19 | [M02-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Include a proven async context in unknown-edge reach | soundness | M | open |

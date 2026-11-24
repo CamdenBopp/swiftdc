@@ -238,6 +238,7 @@ private let sweptImages = [
     "libCallerFrameAlias.size.dylib", "libSample.stripped.dylib", "libObjCPackedStack.opt.dylib",
     "libSwiftArgumentBoundary.O.dylib", "libReconstruction.opt.dylib", "libSwiftTailResults.O.dylib",
     "libCalleeBodyTransfer.opt.dylib", "libFrameReach.dylib",
+    "libStackHole.dylib",
 ]
 
 /// Statements the sweep shows to be false today, each an open soundness

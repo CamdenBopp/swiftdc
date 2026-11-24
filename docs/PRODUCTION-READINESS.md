@@ -61,6 +61,48 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: a stack argument past a hole, or past the sixteenth word
+
+**FIXED (soundness), sprint 16, M04-a.** When a call may take stack
+arguments, the tracer walks the words above sp to see which frame
+addresses the callee is handed. The walk stopped at the first word with
+no recorded store and after 16 words. An address after a padding word, or
+in the seventeenth word, was never handed over, and the local it points
+at kept its value across the call. Reproduced with authored assembly
+(stackhole.s); the sinks store 11 through the pointer they are passed:
+
+| Function | Rendered | Machine |
+|---|---|---|
+| `StackHole.padded()`: a word at sp, an 8-byte hole, then `&local` | `return 7` | 11 |
+| `StackHole.seventeenth()`: `&local` in the seventeenth word | `return 7` | 11 |
+
+The analysis showed the cut: `call sp+0=1` for `padded`, and exactly
+sixteen words for `seventeenth`. A hole is real in compiled code: an
+8-byte argument followed by a 16-byte-aligned one leaves one.
+
+The arguments are now every frame word stored since the last call, from
+sp up to the prologue's register save area, provided a word is stored at
+sp itself. The first stack argument is at sp, so with nothing there a
+frame address kept in a slot further up is a local of this frame. Without
+that condition three `-Onone` functions lost a true `return r0`, because
+a spilled frame address counted as an argument; an existing test
+(`onlyAFramePointerLostAtAMustJoinEscapes`) pins the case and caught it.
+
+Blast radius against c2217e8: 8 structured lines in 2 files. libStackHole,
+4: the two false returns. libIndirectResultOrder, 4: `_alias_result_make`
+at -Onone stores a word at sp and a frame address above it before calling
+`Packet.init`, whose stack arity is not proven, so `let r0 = …; return r0`
+becomes the call and `memcpy(&result, local_48, 40)`. A decline of a true
+render: proving the callee's stack arity from its signature would keep
+it. The four toolchain dylibs are unchanged. Cost: instructions +0.05%.
+
+Verified: StackHoleTests (four bodies from instruction words and the
+fixture through the pipeline and the bare tracer) and the emulator sweep,
+which now holds libStackHole. Six mutations seen red: the hole, the
+16-word cap, the save-area bound, words above the first, the
+no-stack-argument callee, and the first-word condition (which also turns
+the existing test red). Full enforcing suite: 2,204 tests.
+
 ## 2026-11-23: a callee whose result is Never hands back no value
 
 **FIXED (soundness), sprint 14, E07-a.** A call to a function whose

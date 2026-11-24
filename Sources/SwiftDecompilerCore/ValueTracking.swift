@@ -2228,14 +2228,13 @@ public struct ValueTracer: Sendable {
                     Self.markEscape(context, into: &registers, keepingProjected: keepsProjectedInputs,
                                     keepingContextBorrowed: borrowsContextInputs)
                 }
-                // Stack arguments are the words stored upward from sp at the
-                // call (`snapshot`); only a callee that can take any reads them,
-                // and never from the prologue's register save area.
+                // Stack arguments are bytes from sp upward at the call, and
+                // no extent is proved here: only a callee that can take any
+                // reads them. A word nothing stored (the padding in front of
+                // a 16-byte-aligned argument, a store that is not modelled)
+                // does not end them, and neither does a count of words.
                 if !call.passesNoStackArguments, case .frame(let base)? = registers[.sp] {
-                    for slot in 0..<16 {
-                        let offset = base + Int64(slot * 8)
-                        guard !facts.frame.saveSlots.contains(offset), let value = registers.frame[offset, .outgoing]
-                        else { break }
+                    for value in Self.possibleStackArguments(from: base, in: registers, saveSlots: facts.frame.saveSlots) {
                         Self.markEscape(value, into: &registers, keepingProjected: keepsProjectedInputs,
                                         keepingContextBorrowed: borrowsContextInputs)
                     }
@@ -7386,6 +7385,29 @@ public struct ValueTracer: Sendable {
             return total + (scalars.contains(type) ? 1 : type == "Swift.String" ? 2 : 4)
         }
         return registers <= 8
+    }
+
+    /// What a callee entered at `base` may read as stack arguments: every
+    /// frame word stored since the last call (`.outgoing`) at or above
+    /// `base` and below the prologue's register save area, in offset order.
+    /// The save area ends them: the arguments run upward from sp without a
+    /// gap in bytes, and a register saved on entry is not one. They begin
+    /// at sp: after that first word the rest need not be contiguous, 8-byte
+    /// aligned to sp, or few. Words below
+    /// `base` are the callee's own stack (`forgetCalleeStack`).
+    private static func possibleStackArguments(
+        from base: Int64, in registers: State, saveSlots: Set<Int64>
+    ) -> [AbstractValue] {
+        let end = saveSlots.lazy.filter { $0 >= base }.min()
+        var words: [(offset: Int64, value: AbstractValue)] = []
+        for component in registers.frame.components where component.field == .outgoing {
+            guard component.offset >= base, end.map({ component.offset < $0 }) ?? true else { continue }
+            words.append((component.offset, component.value))
+        }
+        // The first stack argument is at sp. With nothing stored there, a
+        // word further up is this frame's own local, not an argument.
+        guard words.contains(where: { $0.offset == base }) else { return [] }
+        return words.sorted { $0.offset < $1.offset }.map(\.value)
     }
 
     /// The stores `apply` writes into a frame slot exactly.
