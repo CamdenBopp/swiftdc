@@ -389,6 +389,10 @@ $CLANG -O1 -fobjc-arc -framework Foundation sprintnative.c -o sprint-native-orac
 echo "==> callees that store above their entry sp, directly and through a call (framereach.s)"
 $CLANG -arch arm64 -dynamiclib framereach.s -o libFrameReach.dylib
 
+echo "==> nested Optional results stay in registers until a tag makes a fifth piece (optionalnesting.swift, -O and -Onone)"
+$SWIFTC -parse-as-library -O -emit-library -module-name OptionalNesting optionalnesting.swift -o libOptionalNesting.dylib
+$SWIFTC -parse-as-library -Onone -emit-library -module-name OptionalNesting optionalnesting.swift -o libOptionalNesting.onone.dylib
+
 echo "==> the emulator oracle: any address, any register, traps and loops as outcomes (emuoracle.c, needs Unicorn)"
 if pkg-config --exists unicorn 2>/dev/null; then
     $CLANG -O1 $(pkg-config --cflags --libs unicorn) emuoracle.c -o emu-oracle

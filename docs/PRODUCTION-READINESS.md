@@ -61,6 +61,35 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: nested Optional results are held to the compiler's x8 use
+
+**GUARDED (tests), sprint 18, L06-a.** The card suspected that an
+Optional result is called direct with no bound on nesting or tag growth:
+`SwiftLowering.of` recurses on the payload's `isDirect`, so a callee with
+no body could be denied its x8 buffer. It does not reproduce. An Optional
+needs a fifth piece only around four pieces with no spare bit pattern,
+and no payload the lowering admits has that shape. A struct of four words
+is already unknown to it, so `Four?` never had a claim to withdraw.
+
+optionalnesting.swift holds one maker per admitted payload family, nested
+two levels (three for UInt64), beside `Four?` and an Optional pair of
+buffer pointers, which do return through x8. The compiled bodies are the
+oracle, at -O and -Onone: a result type called direct never has a maker
+that reads its incoming x8, 17 nested makers keep their claim, and the
+two that cross the boundary have none and read x8. At -O the linker
+folds `makeMetatype` and `makeUnmanaged` onto accessors with the same
+code, so those two are checked at -Onone only.
+
+**OPEN, found on the way:** `SwiftLowering` calls any type ending in
+`.Type` direct. An existential metatype of four or more witness-bearing
+protocols is five words and returns through x8. It is listed in
+ABI-SPRINTS.md under the drafted sprints.
+
+Verified: OptionalNestingLoweringTests, seen red under three mutations of
+the claim it guards: declining a nested Optional (71 issues), calling an
+unlisted type direct (17), and taking a tuple for a function type (7).
+No Core change, so no render change.
+
 ## 2026-11-23: a callee that writes above its entry sp
 
 **FIXED (soundness).** A caller's frame slot was taken to survive any call

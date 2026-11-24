@@ -84,7 +84,7 @@ premise touches.
 | 15 | [E03-a](research/abi-sprints-2026-11-23/03-async-errors.md) | Require a proven direct typed-error carrier | soundness | S/M | open |
 | 16 | [M04-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Keep pointer reach past outgoing stack holes | soundness | M | open |
 | 17 | [L03-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Preserve an FP barrier when counting integer pieces | soundness | M | open |
-| 18 | [L06-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Bound recursive Optional direct-result claims | soundness | S/M | open |
+| 18 | [L06-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Bound recursive Optional direct-result claims | soundness | S/M | guarded: not reproduced, see [readiness](PRODUCTION-READINESS.md#2026-11-23-nested-optional-results-are-held-to-the-compilers-x8-use) |
 | 19 | [M02-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Include a proven async context in unknown-edge reach | soundness | M | open |
 | 20 | [M01-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Decline ordinary preservation for an unproved nondefault convention | soundness | M | open |
 | 21 | [A02-a](research/abi-sprints-2026-11-23/03-async-errors.md) | Stop entry-slot seeds at unproved child effects | soundness | S/M | open |
