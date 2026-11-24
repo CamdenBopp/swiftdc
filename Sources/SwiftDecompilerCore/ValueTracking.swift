@@ -741,6 +741,12 @@ public struct ValueTracer: Sendable {
     /// (`CalleeRegisterSummary.readsFramePointer`): a call to one may write
     /// anywhere in this frame, above or below the frame record x29 holds.
     var framePointerUsers: Set<UInt64> = []
+    /// Callees that may write above their entry sp, with how many bytes
+    /// (`CalleeRegisterSummary.callerFrameReach`), or make an address there
+    /// (`frameReachPoints`): a call to one may write this frame's
+    /// `[sp, sp + bytes)`, and the slot at each `sp + point` escapes, with
+    /// no address of either passed.
+    var callerFrameReach: [UInt64: (bytes: Int64, points: [Int64])] = [:]
 
     /// Call targets that are functions of this image. The known C arity a
     /// callee's name gives is evidence only for the library function of
@@ -2195,6 +2201,19 @@ public struct ValueTracer: Sendable {
                 if let target = insn.branchTarget, framePointerUsers.contains(target),
                    case .frame? = registers[.x(29)] {
                     registers[Self.frameEscapeAllKey] = .immediate(1)
+                }
+                if let target = insn.branchTarget, let reach = callerFrameReach[target] {
+                    if reach.bytes != CallerFrameReach.unbounded, case .frame(let top)? = registers[.sp],
+                       case let (upper, overflow) = top.addingReportingOverflow(reach.bytes), !overflow,
+                       !reach.points.contains(where: { top.addingReportingOverflow($0).overflow }) {
+                        if reach.bytes > 0 {
+                            Self.forgetFrame(in: &registers, effect: FrameMemoryEffect(
+                                [.finite(lower: top, upper: upper)], arithmetic: .wrapping))
+                        }
+                        for point in reach.points { registers[.frameEscaped(top + point)] = .immediate(1) }
+                    } else {
+                        registers[Self.frameEscapeAllKey] = .immediate(1)
+                    }
                 }
                 // The same for x22: preserving the register does not preserve
                 // the context it points at.

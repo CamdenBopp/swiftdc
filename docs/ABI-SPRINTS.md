@@ -100,6 +100,19 @@ premise touches.
 | 31 | [O02-a](research/abi-sprints-2026-11-23/04-foreign-ownership.md) | Render the producer once through a tail-called retain | soundness | S | open |
 | 32 | [X08](research/abi-sprints-2026-11-23/04-foreign-ownership.md) | Distinguish empty render causes without claiming purity | soundness | S | open |
 
+### Found while drafting sprints 13 to 20
+
+Unbuilt patches for sprints 13 to 20 were drafted on 2026-11-23 from a
+read of HEAD at `c639424`. They are not in the tree: each still runs the
+full cycle above. The read found three defects no card owns. They join
+phase 1 when their cards are written.
+
+| Found by | Behaviour | Axis |
+|---|---|---|
+| L06-a | Decline a direct result for an existential metatype of four or more witness-bearing protocols (`SwiftLowering` calls any `.Type` direct) | soundness |
+| E07-a | Do not name x0 as the result on the error path of a synchronous `throws(E)` callee (the async path already declines) | soundness |
+| M02-a | Count x22 as read by an in-image veneer that tail-branches to an async import (the summary side of M02) | soundness |
+
 ## Phase 2: completeness
 
 The four domains in rotation, each in the order its card file recommends,

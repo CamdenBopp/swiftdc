@@ -162,6 +162,24 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// The other functions this body calls or tail-branches to directly, in
     /// address order: the ones whose clobbers can reach through it.
     var callees: [UInt64] = []
+    /// How many bytes above the sp it was entered with the body, or a body
+    /// it reaches by a direct call or branch, may write with no pointer
+    /// passed (`CallerFrameReach`): the caller's `[sp, sp + n)` at the call.
+    /// 0 for none, and for a body nothing decoded;
+    /// `CallerFrameReach.unbounded` for the whole frame.
+    var callerFrameReach: Int64 = 0
+    /// The body's direct calls and branches out with the depth of sp below
+    /// its entry value at each (-1 when nothing bounds it), for the
+    /// closure: a callee's reach above this body's own frame is its reach
+    /// less that depth.
+    var frameReachCalls: [FrameReachCall] = []
+    /// Offsets above the entry sp the body, or a body it reaches, makes an
+    /// address of: the caller's slot at `sp + k` escapes at the call.
+    var frameReachPoints: [Int64] = []
+    struct FrameReachCall: Sendable, Equatable {
+        let target: UInt64
+        let depth: Int64
+    }
     /// Every call and tail branch out of the body, by target (nil when
     /// indirect), and whether every store the body makes is through
     /// sp, into its own stack. `closeOverFieldWrites` decides from these
@@ -851,6 +869,18 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             framedCallTarget: readFacts?.framedCallTarget ?? framedCallTarget(of: function, isFunction: isFunction),
             hasProvenReturnTargets: hasProvenReturnTargets, needsReturnPreservation: needsReturnPreservation)
         summary.leavesOnlyThroughReturn = leavesOnlyThroughReturn
+        if let preservedFacts {
+            summary.callerFrameReach = preservedFacts.callerFrameReach
+            summary.frameReachCalls = preservedFacts.frameReachCalls
+            summary.frameReachPoints = preservedFacts.frameReachPoints
+        } else {
+            let scan = CallerFrameReach.scan(instructions)
+            summary.callerFrameReach = scan.own
+            summary.frameReachPoints = scan.points.sorted()
+            summary.frameReachCalls = scan.calls.keys.sorted().map {
+                FrameReachCall(target: $0, depth: (scan.calls[$0] ?? nil) ?? -1)
+            }
+        }
         summary.hasUnresolvedSwiftErrorCall = preservedFacts?.hasUnresolvedSwiftErrorCall
             ?? (hasUnmodelledFallthrough || outgoingCalls.contains { call in
                 guard let target = call.target else { return true }
@@ -1062,7 +1092,19 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             definitelyClobbered: Self.calleeSavedKeys, callees: callees, memoryEffect: memoryEffect,
             inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget, framedCallTarget: framedCallTarget, hasOpaqueInputTransfer: hasOpaqueInputTransfer, hasUnresolvedSwiftErrorCall: hasUnresolvedSwiftErrorCall)
             .keepingReadRegisters(mayReadRegisters, readsIncomingStack: readsIncomingStack)
+            .keepingCallerFrameReach(callerFrameReach, calls: frameReachCalls, points: frameReachPoints)
     }
+
+    private func keepingCallerFrameReach(
+        _ reach: Int64, calls: [FrameReachCall], points: [Int64]
+    ) -> CalleeRegisterSummary {
+        var summary = self
+        summary.callerFrameReach = reach
+        summary.frameReachCalls = calls
+        summary.frameReachPoints = points
+        return summary
+    }
+
 
     /// The facts a rebuild from the initializer would otherwise reset.
     private func keepingReadRegisters(_ bits: UInt32, readsIncomingStack: Bool) -> CalleeRegisterSummary {
@@ -1070,6 +1112,46 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         summary.mayReadRegisters = bits
         summary.readsIncomingStack = readsIncomingStack
         return summary
+    }
+
+    /// A callee's reach above its own entry sp starts that far down this
+    /// body's frame: what is left above this body's entry sp is the
+    /// callee's reach less the depth of sp at the call. With no bound on
+    /// the depth, any reach of the callee is this body's whole reach.
+    static func closeOverCallerFrameReach(_ summaries: inout [UInt64: CalleeRegisterSummary]) {
+        var callers: [UInt64: [UInt64]] = [:]
+        for start in summaries.keys.sorted() {
+            for call in summaries[start]?.frameReachCalls ?? [] { callers[call.target, default: []].append(start) }
+        }
+        var worklist = summaries.keys.filter {
+            summaries[$0]?.callerFrameReach != 0 || summaries[$0]?.frameReachPoints.isEmpty == false
+        }.sorted()
+        while let start = worklist.popLast() {
+            guard let callee = summaries[start], callee.callerFrameReach > 0 || !callee.frameReachPoints.isEmpty
+            else { continue }
+            let reach = callee.callerFrameReach
+            for caller in callers[start] ?? [] {
+                guard let summary = summaries[caller] else { continue }
+                var passed = summary.callerFrameReach
+                var points = Set(summary.frameReachPoints)
+                for call in summary.frameReachCalls where call.target == start {
+                    guard reach != CallerFrameReach.unbounded, call.depth >= 0 else {
+                        passed = CallerFrameReach.unbounded
+                        continue
+                    }
+                    passed = max(passed, reach - call.depth)
+                    // A point below this body's entry sp is one of its own slots.
+                    points.formUnion(callee.frameReachPoints.filter { $0 >= call.depth }.map { $0 - call.depth })
+                }
+                if points.count > CallerFrameReach.pointLimit { passed = CallerFrameReach.unbounded }
+                if passed == CallerFrameReach.unbounded { points = [] }
+                let sorted = points.sorted()
+                guard passed != summary.callerFrameReach || sorted != summary.frameReachPoints else { continue }
+                summaries[caller]?.callerFrameReach = passed
+                summaries[caller]?.frameReachPoints = sorted
+                worklist.append(caller)
+            }
+        }
     }
 
     /// Initial read/preservation analyses precede the callee summaries. Once
@@ -1322,6 +1404,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         summary.resultReads = resultReads
         summary.provenAllocationSites = provenAllocationSites
         summary.mayReadRegisters = mayReadRegisters
+        summary.callerFrameReach = callerFrameReach
+        summary.frameReachCalls = frameReachCalls
+        summary.frameReachPoints = frameReachPoints
         // Its body's stack reads are its own, whatever its callees read: a
         // callee whose register reads were widened by its calls lost the
         // flag here, so `fg(…)` read `fg()`.
@@ -1506,6 +1591,9 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             new.provenAllocationSites = old.provenAllocationSites
             new.mayReadRegisters = old.mayReadRegisters
             new.readsIncomingStack = old.readsIncomingStack
+            new.callerFrameReach = old.callerFrameReach
+            new.frameReachCalls = old.frameReachCalls
+            new.frameReachPoints = old.frameReachPoints
             guard new != old else {
                 summaries[start]?.provenAllocationSites = rebuilt.provenAllocationSites
                 continue

@@ -237,21 +237,13 @@ private let sweptImages = [
     "libAsyncMemoryEffects.dylib", "libCallerFrameAlias.dylib", "libCallerFrameAlias.opt.dylib",
     "libCallerFrameAlias.size.dylib", "libSample.stripped.dylib", "libObjCPackedStack.opt.dylib",
     "libSwiftArgumentBoundary.O.dylib", "libReconstruction.opt.dylib", "libSwiftTailResults.O.dylib",
+    "libCalleeBodyTransfer.opt.dylib", "libFrameReach.dylib",
 ]
 
 /// Statements the sweep shows to be false today, each an open soundness
 /// defect recorded in PRODUCTION-READINESS.md. The test fails if one of
 /// them stops disagreeing, so a fix has to remove its line.
-private let knownFalseStatements: Set<String> = [
-    // `return // x0 = 7` after a fragment whose `st4` writes 64 bytes
-    // across the caller's frame: the machine returns 0x4444444444444444.
-    "libAsyncMemoryEffects.dylib _async_memory_st4",
-    // `if (1)` on a slot the callee rewrote through a pointer made from
-    // its entry stack pointer: the machine reads 99 and does not branch.
-    "libCallerFrameAlias.dylib _entry_pointer_copy_probe",
-    "libCallerFrameAlias.opt.dylib _entry_pointer_copy_probe",
-    "libCallerFrameAlias.size.dylib _entry_pointer_copy_probe",
-]
+private let knownFalseStatements: Set<String> = []
 
 @Test func pipelineStatementsAgreeWithTheEmulatorIfPresent() async throws {
     var images = sweptImages

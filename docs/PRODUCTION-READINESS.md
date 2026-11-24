@@ -61,6 +61,80 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: a callee that writes above its entry sp
+
+**FIXED (soundness).** A caller's frame slot was taken to survive any call
+that was passed no address of it. A callee that stores above the sp it was
+entered with writes that frame anyway. The emulator sweep found two
+renders this made false, and the new fixture a third:
+
+| Function | Rendered | Machine |
+|---|---|---|
+| `_entry_pointer_copy_probe` (libCallerFrameAlias, three levels) | `if (1)` | branch not taken |
+| `_async_memory_st4` (libAsyncMemoryEffects) | `return // x0 = 7` | 0x4444444444444444 |
+| `_frame_reach_through_probe` and three more (libFrameReach) | `return // x0 = 3` | 99 |
+
+`CallerFrameReach` scans each body once, following the depth of sp below
+its entry value as a lower bound over the body's own branches, and
+records three things in the function's summary:
+
+- the bytes above the entry sp it may store to, directly or through an
+  address it made from sp or x29. The caller forgets its `[sp, sp + n)`
+  at the call. Compiled code does this to its stack arguments;
+- the offsets above the entry sp it makes an address of. The caller's
+  slot there escapes, as one whose address was passed. Machine-outlined
+  code does this, running on its caller's sp;
+- the depth of sp at each direct call. The closure takes a callee's reach
+  less that depth, so a reach that stays inside the calling body's own
+  frame stops there.
+
+A store nothing bounds (sp indexed by a register, sp from a register
+with no frame record) forgets the caller's whole frame. An address loaded
+back from memory, indexed by a register or handed to a call is not
+followed: what a callee writes through a pointer to a local is taken to
+stay inside the local.
+
+The first version was a yes/no fact that forgot the whole frame. Its
+blast radius showed why that is wrong: one outlined value function in
+each of libSwiftOperators and libSwiftCompilerPluginMessageHandling
+stores to its stack arguments, and every caller lost real renders
+(`&result` became `x8`, a named witness call became an indirect call).
+With bytes and points, the four toolchain dylibs render unchanged.
+
+Blast radius against c639424 (`Tools/blast-radius.sh --real --perf`,
+structured view, 10 files, 1,367 lines):
+
+- libCallerFrameAlias, 8 lines at each level: the `if (1)`, and the slot
+  above it, in `_entry_pointer_copy_probe`; one `if (0)` in each of two
+  oracles whose callee stores 72 bytes above its entry sp, over the slot
+  the condition reads.
+- libAsyncMemoryEffects, 1 line: the `x0 = 7`.
+- libFrameReach, 4 lines: the false `x0 = 3` renders.
+- narrow-integer-return-SwiftArgumentBoundary.Osize-oracle, 2 lines:
+  `type metadata for …` becomes `?` in one `swift_allocObject` call. An
+  outlined fragment takes the address of a slot of `_main` and returns it
+  in x20; the slot above it now escapes. A decline of a true render.
+- The two Go programs and their stripped copies, 374 and 294 lines each:
+  Go passes arguments and results in the caller's frame, so its callees
+  store above their entry sp. Go is not a target.
+
+Cost: instructions +0.86% in total (9,099G to 9,178G over 3,268 renders),
+footprint +0.27%, within budget. `CalleeRegisterSummary` grows 24 bytes
+(144 to 168).
+
+Not measured: the five apps. `-Osize` apps use the machine outliner
+heavily, and an outlined fragment that takes a caller slot's address now
+escapes that slot at the call.
+
+Verified: CallerFrameReachTests (20 synthetic bodies with their bytes
+and points, the closure over hand-built summaries, the call depths, and
+the fixtures through the whole image, a filter, the streamed image and
+one function at a time) and the emulator sweep, now with libFrameReach
+and no known false statement. 34 mutations, one per rule in the scan,
+the closure, the three summary copies, the plumbing, the three closure
+call sites and the three tracer effects, each seen red. Full enforcing
+suite: 2,181 tests.
+
 ## 2026-11-23: an emulator checks what the pipeline states
 
 **ADDED (validation).** `Fixtures/Sample/emuoracle.c` builds `emu-oracle` on Unicorn 2.1.4. It maps
@@ -81,15 +155,15 @@ call. The default list checks 1,868 returns and 216 constant conditions in
 7 s. `SWIFTDC_EMU_IMAGES=all` swept all 671 fixture dylibs: 12,854
 functions, 205,664 runs, 89,776 returns and 4,744 conditions.
 
-It found two false statements no test had caught. Both are **OPEN**
-soundness defects, listed in `knownFalseStatements`; the test fails when
-one stops disagreeing, so a fix removes its line.
+It found two false statements no test had caught. Both were listed in
+`knownFalseStatements` and are **FIXED** by the entry above; the list is
+empty again.
 
-- **OPEN** `_async_memory_st4` (libAsyncMemoryEffects.dylib) renders
+- **FIXED** `_async_memory_st4` (libAsyncMemoryEffects.dylib) renders
   `return // x0 = 7`. The fragment it calls writes 64 bytes with `st4`
   across the caller's frame, and the machine returns
   0x4444444444444444. The existing test asserted only the native value.
-- **OPEN** `_entry_pointer_copy_probe` (libCallerFrameAlias, -Onone, -O
+- **FIXED** `_entry_pointer_copy_probe` (libCallerFrameAlias, -Onone, -O
   and -Osize) renders `if (1)` for a compare of a frame slot with 99. The
   callee writes 99 to that slot through a pointer made from its entry
   stack pointer, so the machine does not take the branch.

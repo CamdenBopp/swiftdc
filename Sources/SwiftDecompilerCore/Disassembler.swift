@@ -1144,6 +1144,7 @@ public struct Disassembler: Sendable {
             compilerHelperGPInputPrefixes: ReferenceResolver.compilerHelperGPInputPrefixes(
                 labels: labelByAddress, names: names, folded: referenceFolds)
         )
+        CalleeRegisterSummary.closeOverCallerFrameReach(&registerSummaries)
         CalleeRegisterSummary.closeOverFieldWrites(&registerSummaries, arcIdentityContract: { target, callee in
             resolver.arcIdentityContract(at: target, named: callee)
         }, namedABIContract: { target, callee in
@@ -1676,6 +1677,7 @@ public struct Disassembler: Sendable {
             }
         }
         if rebuildingEntryRoles { CalleeRegisterSummary.closeOverProvenEntryReads(&summaries) }
+        CalleeRegisterSummary.closeOverCallerFrameReach(&summaries)
         CalleeRegisterSummary.closeOverFieldWrites(&summaries, arcIdentityContract: { target, callee in
             resolver.arcIdentityContract(at: target, named: callee)
         }, namedABIContract: { target, callee in
@@ -1963,6 +1965,7 @@ public struct Disassembler: Sendable {
                     }
                 }
                 if rebuildingEntryRoles { CalleeRegisterSummary.closeOverProvenEntryReads(&summaries) }
+                CalleeRegisterSummary.closeOverCallerFrameReach(&summaries)
                 CalleeRegisterSummary.closeOverFieldWrites(&summaries, arcIdentityContract: { target, callee in
                     resolver.arcIdentityContract(at: target, named: callee)
                 }, namedABIContract: { target, callee in
@@ -9253,6 +9256,10 @@ public struct Disassembler: Sendable {
             }
             if insn.controlFlow == .call, registerSummaries[target]?.readsFramePointer == true {
                 tracer.framePointerUsers.insert(target)
+            }
+            if insn.controlFlow == .call, let summary = registerSummaries[target],
+               summary.callerFrameReach > 0 || !summary.frameReachPoints.isEmpty {
+                tracer.callerFrameReach[target] = (summary.callerFrameReach, summary.frameReachPoints)
             }
             if let callee = DisassembledFunction.calleeName(of: insn),
                DisassembledFunction.knownArityNameMayHaveTwin(callee) {

@@ -21,7 +21,10 @@ import Ccapstone
     // forwards (construction state, emptied by closeOverProvenEntryReads),
     // the 32-bit proven-read mask and a flag. The proven probed-allocation
     // sites add 8: one array, empty for every function without a probe.
-    #expect(MemoryLayout<CalleeRegisterSummary>.stride <= 144)
+    // The reach above the entry sp adds 24: the byte count, the depth of
+    // sp at each direct call, which the closure subtracts, and the offsets
+    // an address is made of.
+    #expect(MemoryLayout<CalleeRegisterSummary>.stride <= 168)
 }
 
 /// Packing keeps every value: a Capstone id past a bank (`.other`), the

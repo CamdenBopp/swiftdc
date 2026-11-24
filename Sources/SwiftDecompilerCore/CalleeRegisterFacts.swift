@@ -29,6 +29,10 @@ struct CalleeRegisterFacts: Sendable {
     let storesOnlyToStack: Bool
     /// `CalleeRegisterSummary.leavesOnlyThroughReturn`.
     let leavesOnlyThroughReturn: Bool
+    /// `CalleeRegisterSummary.callerFrameReach`, closed over its calls.
+    let callerFrameReach: Int64
+    /// `CalleeRegisterSummary.frameReachPoints`, closed over its calls.
+    let frameReachPoints: [Int64]
     let writesNoFields: Bool
     let memoryEffect: CalleeMemoryEffect
     /// `CalleeRegisterSummary.provenAllocationSites`, for the function's own
@@ -68,6 +72,8 @@ struct CalleeRegisterFacts: Sendable {
         clobberedCalleeSaved = summary.clobberedCalleeSaved
         storesOnlyToStack = summary.storesOnlyToStack
         leavesOnlyThroughReturn = summary.leavesOnlyThroughReturn
+        callerFrameReach = summary.callerFrameReach
+        frameReachPoints = summary.frameReachPoints
         writesNoFields = summary.writesNoFields
         memoryEffect = summary.memoryEffect
         provenAllocationSites = summary.provenAllocationSites
