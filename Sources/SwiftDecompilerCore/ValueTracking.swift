@@ -1124,6 +1124,10 @@ public struct ValueTracer: Sendable {
         let allocatesArray: Bool
         /// A Swift signature returning `()`, or a setter.
         let returnsVoidByName: Bool
+        /// A Swift signature whose result is `Never`: the callee has no
+        /// success value. The result, not the thrown type: `throws(Never)
+        /// -> Int` returns an Int.
+        let returnsNeverByName: Bool
         let hasTupleResult: Bool
         /// A Swift signature returning a String (or `String?`), whose second
         /// word comes back in x1.
@@ -1174,6 +1178,8 @@ public struct ValueTracer: Sendable {
             returnsVoidByName = DisassembledFunction.splitSignature(callee)?.result == "()"
                 || DisassembledFunction.swiftAccessorProperty(callee)?.isGetter == false
                 || ValueTracer.voidRuntimeCalls.contains(runtimeName)
+            returnsNeverByName = DisassembledFunction.splitSignature(callee)
+                .map { $0.result == "Swift.Never" || $0.result == "Never" } ?? false
             hasTupleResult = DisassembledFunction.hasTupleResult(callee)
             // A getter prints its type after ` : `, with no arrow:
             // `CustomStringConvertible.description.getter : Swift.String`.
@@ -2372,6 +2378,15 @@ public struct ValueTracer: Sendable {
                 // the first argument — so those element stores can be gathered.
                 let count: Int = { if case .immediate(let n) = incomingX0 { return Int(n) } else { return -1 } }()
                 registers[.x(0)] = .arrayLiteral(site: insn.address, count: count)
+            } else if call.returnsNeverByName {
+                // A callee whose result is `Never` hands back no value. One
+                // that throws still comes back, on its error path alone, and
+                // x0 there is what it left or a typed error's payload
+                // (lib/IRGen/GenCall.cpp, the combined result and error
+                // schema), never a result: `bl stop; ret` in a `throws ->
+                // Int` function read `return try stop(arg0)`, and a catch's
+                // `error.code &+ 1` read `return (halt(arg0) + 1)`.
+                registers[.x(0)] = .unknown
             } else if call.returnsVoidByName
                         || voidCallSites.contains(insn.address)
                         || callReturnsVoid?(call.callee, site) == true {

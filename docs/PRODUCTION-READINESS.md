@@ -61,6 +61,48 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: a callee whose result is Never hands back no value
+
+**FIXED (soundness), sprint 14, E07-a.** A call to a function whose
+signature result is `Never` was given a result like any other call. Such
+a callee comes back only by throwing, and x0 on that path is what it left
+or a typed error's payload. Reproduced on compiled Swift at -Onone, -O
+and -Osize (nosuccess.swift) and on authored assembly (no_success.s):
+
+| Function | Rendered | True |
+|---|---|---|
+| `relay(Int) throws -> Int`, ending `bl stop; ret` | `return try stop((arg0 + 1))` | throws what `stop` threw |
+| `haltCode(Int) -> Int`, a catch reading the typed error | `return (halt(arg0) + 1)` | the error's payload plus one |
+
+The tracer's call transfer now leaves x0 unknown after a callee whose
+own printed signature has the result `Swift.Never` (`CallFacts.
+returnsNeverByName`). The call stays, as a statement, followed by the
+unresolved exit or `return ?`. A `throws(Never) -> Int` callee keeps its
+Int: the `Never` there is the thrown type. A callee with no signature
+keeps its result.
+
+The card asked for the control-flow edge after the call to be cut. It is
+not: the compiler marks only C callees `noreturn`, so after a
+`throws -> Never` call the next instruction is the error path, and
+cutting the edge would delete the catch. The -O `caught` fixture shows
+the catch running straight after the call.
+
+Blast radius against 004f0ed: 19 lines in the structured view, all in
+the four new images and all of the two shapes above; 0 lines in every
+other fixture and in the four toolchain dylibs. Cost: instructions
++0.20%, footprint +0.15%.
+
+**OPEN, found on the way** and drafted as its own patch: after any
+synchronous `throws(E)` callee that has a result, x0 on the error path
+is still named as that result (`tally(r0)` in a catch).
+
+Verified: NoSuccessResultTests, seen red under four mutations: the gate
+off (18 issues, on the compiled and the authored callers), `Never`
+matched anywhere in the name (5), any thrower taken to have no result
+(6), x0 left as the call's result (18). A write clearing v0 as well was
+removed: a `-> Double` caller showed it changes nothing. Full enforcing
+suite: 2,197 tests.
+
 ## 2026-11-23: a float between two integers keeps them in separate registers
 
 **FIXED (soundness), sprint 17, L03-a, latent.** `SwiftLowering` counted a

@@ -397,6 +397,14 @@ echo "==> a float between two integers of one 8-byte chunk keeps them in separat
 $SWIFTC -parse-as-library -O -emit-library -module-name FPBarrierPieces fpbarrierpieces.swift -o libFPBarrierPieces.dylib
 $SWIFTC -parse-as-library -Onone -emit-library -module-name FPBarrierPieces fpbarrierpieces.swift -o libFPBarrierPieces.onone.dylib
 
+echo "==> callers of a callee whose result is Never: no value after the call is its result (nosuccess.swift, all levels)"
+for level in Onone O Osize; do
+    $SWIFTC -parse-as-library -$level -emit-library -module-name NoSuccess nosuccess.swift -o libNoSuccess.$level.dylib
+done
+
+echo "==> the same callers in the shapes that read x0 after the call, by hand (no_success.s)"
+$CLANG -arch arm64 -dynamiclib no_success.s -o libNoSuccessAsm.dylib
+
 echo "==> the emulator oracle: any address, any register, traps and loops as outcomes (emuoracle.c, needs Unicorn)"
 if pkg-config --exists unicorn 2>/dev/null; then
     $CLANG -O1 $(pkg-config --cflags --libs unicorn) emuoracle.c -o emu-oracle
