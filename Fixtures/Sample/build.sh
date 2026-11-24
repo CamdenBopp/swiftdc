@@ -411,6 +411,13 @@ $CLANG -arch arm64 -dynamiclib stackhole.s -o libStackHole.dylib
 echo "==> a callee-saved register stored and never loaded back, reached through a relay (spill_carry.s)"
 $CLANG -arch arm64 -dynamiclib spill_carry.s -o libSpillCarry.dylib
 
+echo "==> a typed error is in x0 only beside a direct result: direct controls, and indirect results with x0 poisoned (errorcarrier.swift + errorcarrier.s, -Onone/-O/-Osize)"
+$CLANG -arch arm64 -c errorcarrier.s -o errorcarrier.o
+for level in Onone O Osize; do
+    $SWIFTC -parse-as-library -$level -emit-library -module-name ErrorCarrier errorcarrier.swift errorcarrier.o -o libErrorCarrier.$level.dylib
+done
+rm -f errorcarrier.o
+
 echo "==> the emulator oracle: any address, any register, traps and loops as outcomes (emuoracle.c, needs Unicorn)"
 if pkg-config --exists unicorn 2>/dev/null; then
     $CLANG -O1 $(pkg-config --cflags --libs unicorn) emuoracle.c -o emu-oracle

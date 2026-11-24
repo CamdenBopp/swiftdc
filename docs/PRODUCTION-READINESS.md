@@ -61,6 +61,54 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-24: a typed error is named from x0 only beside a proven direct result
+
+**FIXED (soundness), sprint 15, E03-a.** A typed error's case was named
+from x0 at a throw exit unless one veto fired (a result of five
+`UInt64`s). A typed error is in x0 only when the function's result is
+direct too; beside an indirect result it goes through a buffer and x0 is
+whatever was left there. Reproduced at -Onone, -O and -Osize
+(errorcarrier.swift with two authored bodies in errorcarrier.s):
+
+| Function | Truth | Rendered |
+|---|---|---|
+| `wide(Int) throws(Fault) -> Quint` | stores `.high` through the error buffer, x0 = 1 | `throw ErrorCarrier.Fault.mid` |
+| `opaque<A>(A, Int) throws(Fault) -> A` | the same | `throw ErrorCarrier.Fault.mid` |
+
+In the `wide` render the store of the real tag, `mem8[x1] = 2`, was the
+line above the wrong `throw`.
+
+The case is now named only when a direct carrier is proven
+(`provesDirectTypedErrorCarrier`): a synchronous function named by its
+own symbol with a plain declaration head, an error that is a
+non-resilient enum with no payload, and a result proven direct: a
+direct scalar, a complete struct within four registers, or a tuple of
+one-register scalars within four, labels allowed. Everything else
+renders `throw ?`. The five-word veto and its test are unchanged.
+
+Cost in true renders, measured: none on the fixtures. Across 26 built
+typed-throw and throwing images the tip printed 17 named-case throws
+(`typedScale` in five Reconstruction builds, `probeDirect` and
+`probeFour` six each); the gate keeps all 17. Declined by the gate and
+without a fixture behind them: async typed throwers (today's tip names
+none), results such as `(String, Int)` or an Optional of a struct,
+specialized or metadata-recovered names, and single-case error enums.
+The five apps were not measured.
+
+Blast radius against 088cfd9: 12 structured lines, all in the three
+libErrorCarrier images (the two wrong throws at each level). Cost:
+instructions +0.04%, footprint +0.30%.
+
+Verified: TypedErrorCarrierTests (three image tests over the direct
+controls, the two indirect throwers, the compiler's own indirect thrower
+and an async one; one unit test that removes a premise at a time) and
+the emulator sweep with libErrorCarrier.O. Twelve mutations seen red,
+one per premise: the use-site proof, the direct result, async, the
+error's tag, resilience, the declaration head, the function's own
+symbol, a generic parameter in the result, the four-register struct
+budget, the tuple budget, a tuple element's width, and a tuple label.
+Full enforcing suite: 2,212 tests.
+
 ## 2026-11-24: a register stored and never reloaded is clobbered for every caller up the chain
 
 **FIXED (soundness), sprint 20, M01-a.** The card's own case was already

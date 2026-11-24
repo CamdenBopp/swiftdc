@@ -8753,6 +8753,96 @@ public struct Disassembler: Sendable {
         }
     }
 
+    /// Whether a thrown typed error is proven to travel in x0, beside a flag
+    /// in x21. IRGen returns the error in the result's registers only when
+    /// the result is direct too; an indirect SIL result, a result of more
+    /// than four registers or an error that is not all integers each moves
+    /// the error to a buffer the caller passes, and x0 at the throw is then
+    /// undefined (swift/lib/IRGen/GenCall.cpp, `combineResultAndTypedErrorType`
+    /// and the `addOpaquePointerParameter` after the error result). A direct
+    /// error takes the first integer slot of the combined result, which is
+    /// x0 whatever the result's own registers are.
+    ///
+    /// Proven for a synchronous declaration named by its own symbol, whose
+    /// error is a no-payload enum of this image with a tag to carry and
+    /// whose printed result lowers to at most four registers. A
+    /// specialization, thunk or closure may not follow the signature it
+    /// prints, and an async function hands its error to a resume function
+    /// under rules this does not model: each is unproven, not indirect.
+    static func provesDirectTypedErrorCarrier(
+        _ function: DisassembledFunction, fieldMaps: [String: FieldMap],
+        enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
+    ) -> Bool {
+        guard function.source == .symbol, function.objcMethod == nil,
+              let signature = function.analysisName.flatMap(DisassembledFunction.splitSignature),
+              signature.isThrowing, !signature.isAsync,
+              let errorType = signature.thrownType,
+              isPlainDeclarationHead(signature.head),
+              // One case is zero-sized: no register holds it.
+              enumCaseIndex.isNoPayloadEnum(errorType), !enumCaseIndex.isResilient(errorType)
+        else { return false }
+        return resultIsProvenDirect(signature.result, fieldMaps: fieldMaps,
+                                    enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
+    }
+
+    /// Whether a printed result type is proven returned in registers: a
+    /// type `SwiftLowering` places there, a struct this image lays out in
+    /// full in at most four, or a tuple of at most four one-register
+    /// scalars. A generic parameter is returned by address, and its letter
+    /// is no type name even where a map is keyed by the same letter.
+    static func resultIsProvenDirect(
+        _ result: String, fieldMaps: [String: FieldMap],
+        enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
+    ) -> Bool {
+        guard !containsGenericParameterToken(result) else { return false }
+        if SwiftLowering.of(result, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex).isDirect {
+            return true
+        }
+        if SwiftLowering.directAggregateRegisters(
+            of: result, fieldMaps: fieldMaps, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) != nil {
+            return true
+        }
+        // A tuple of scalars. An element that is not one whole register
+        // (a String's two words, a nested tuple) is not counted, so
+        // anything else between the parentheses declines.
+        guard result.hasPrefix("("), result.hasSuffix(")") else { return false }
+        let elements = DisassembledFunction.splitTopLevelArguments(result.dropFirst().dropLast())
+        // Four registers is the direct result budget; each scalar takes one.
+        let directResultRegisterBudget = 4
+        var registers = 0
+        for element in elements {
+            // A label names the element and is no part of its type.
+            var type = Substring(element)
+            if let colon = type.range(of: ": "),
+               type[..<colon.lowerBound].allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) {
+                type = type[colon.upperBound...]
+            }
+            switch SwiftLowering.of(String(type), enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) {
+            case .zeroSized: continue
+            case .oneInteger, .oneFloat: registers += 1
+            case .direct, .unknown: return false
+            }
+        }
+        return registers <= directResultRegisterBudget
+    }
+
+    /// Whether a signature's head is a declaration's own dotted name and
+    /// argument list, with nothing before it: no specialization clause,
+    /// thunk or closure prefix, whose entry may differ from the signature
+    /// printed after it.
+    static func isPlainDeclarationHead(_ head: String) -> Bool {
+        guard let arguments = DisassembledFunction.outermostArgumentListRange(of: head),
+              arguments.lowerBound > head.startIndex, arguments.upperBound < head.endIndex,
+              head.index(after: arguments.upperBound) == head.endIndex
+        else { return false }
+        var name = withoutPrivateDiscriminators(String(head[..<head.index(before: arguments.lowerBound)]))
+            .trimmingCharacters(in: .whitespaces)
+        if name.hasPrefix("static ") { name.removeFirst("static ".count) }
+        // A generic function's parameter clause is not part of its name.
+        if name.hasSuffix(">"), let open = name.firstIndex(of: "<") { name = String(name[..<open]) }
+        return name.contains(".") && name.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }
+    }
+
     /// A field map for a demangled type name.
     /// A qualified type name requires its own descriptor's map; simple keys
     /// serve genuinely unqualified names.
@@ -12832,6 +12922,11 @@ public struct Disassembler: Sendable {
             } : nil
         let typedErrorX0IsInactive = throwsSignature?.thrownType != nil
             && Self.hasIndirectFiveWordTypedThrowResult(function, fieldMaps: typeFieldMaps)
+        // The positive half: x0 is the error only where the direct schema
+        // is proven. The veto above stays as a second, independent refusal.
+        let typedErrorIsInX0 = throwsSignature?.thrownType != nil
+            && Self.provesDirectTypedErrorCarrier(
+                function, fieldMaps: typeFieldMaps, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
         // An async throwing function returns through its context's
         // ResumeParent with the error in x20, zero for none: `swift_allocError`
         // then `mov x20, x0; br x0` throws, `mov x20, #0; br x1` returns. A
@@ -13767,10 +13862,13 @@ public struct Disassembler: Sendable {
                 sourceNotes.append(DisassembledFunction.thenThrowNote)
             }
             if throwExits.contains(insn.address) {
-                // The normal result and typed error can share native return
+                // The normal result and typed error share native return
                 // registers only when both qualify for the combined schema.
+                // x0 names the case where that is proven, never where it
+                // is merely not disproven: under the indirect schema x0
+                // is undefined and may hold any other case's tag.
                 var thrown = "?"
-                if let errorType = throwsSignature?.thrownType, !typedErrorX0IsInactive,
+                if let errorType = throwsSignature?.thrownType, typedErrorIsInX0, !typedErrorX0IsInactive,
                    case .immediate(let tag)? = analysis.exitValues[insn.address].map(sanitizeValue),
                    tag <= UInt64(Int.max),
                    let caseName = enumCaseIndex.caseName(ofEnum: errorType, tag: Int(tag)) {

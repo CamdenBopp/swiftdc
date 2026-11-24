@@ -239,6 +239,7 @@ private let sweptImages = [
     "libSwiftArgumentBoundary.O.dylib", "libReconstruction.opt.dylib", "libSwiftTailResults.O.dylib",
     "libCalleeBodyTransfer.opt.dylib", "libFrameReach.dylib",
     "libStackHole.dylib",
+    "libErrorCarrier.O.dylib",
 ]
 
 /// Statements the sweep shows to be false today, each an open soundness
