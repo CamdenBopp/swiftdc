@@ -418,6 +418,11 @@ for level in Onone O Osize; do
 done
 rm -f errorcarrier.o
 
+echo "==> x0 on the error edge of a typed-throwing call is the error, never the result (typedcatch.swift, -Onone, -O)"
+for level in Onone O; do
+    $SWIFTC -$level -parse-as-library -emit-library -module-name TypedCatch typedcatch.swift -o libTypedCatch.$level.dylib
+done
+
 echo "==> the emulator oracle: any address, any register, traps and loops as outcomes (emuoracle.c, needs Unicorn)"
 if pkg-config --exists unicorn 2>/dev/null; then
     $CLANG -O1 $(pkg-config --cflags --libs unicorn) emuoracle.c -o emu-oracle

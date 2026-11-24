@@ -240,6 +240,7 @@ private let sweptImages = [
     "libCalleeBodyTransfer.opt.dylib", "libFrameReach.dylib",
     "libStackHole.dylib",
     "libErrorCarrier.O.dylib",
+    "libTypedCatch.Onone.dylib", "libTypedCatch.O.dylib",
 ]
 
 /// Statements the sweep shows to be false today, each an open soundness

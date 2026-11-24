@@ -110,7 +110,7 @@ phase 1 when their cards are written.
 | Found by | Behaviour | Axis |
 |---|---|---|
 | L06-a | Decline a direct result for an existential metatype of four or more witness-bearing protocols (`SwiftLowering` calls any `.Type` direct) | soundness |
-| E07-a | Do not name x0 as the result on the error path of a synchronous `throws(E)` callee (the async path already declines) | soundness |
+| E07-a | Do not name x0 as the result on the error path of a synchronous `throws(E)` callee (the async path already declines): **fixed**, see [readiness](PRODUCTION-READINESS.md#2026-11-24-the-result-of-a-typed-throwing-call-ends-at-its-error-edge) | soundness |
 | M02-a | Count x22 as read by an in-image veneer that tail-branches to an async import (the summary side of M02) | soundness |
 | L03-a | Give `Swift.Float16` a size in the layout reader, so a struct holding one is placed (needs the L03-a count) | completeness |
 

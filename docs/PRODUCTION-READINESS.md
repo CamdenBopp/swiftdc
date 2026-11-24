@@ -61,6 +61,51 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-24: the result of a typed-throwing call ends at its error edge
+
+**FIXED (soundness).** After a call to a synchronous `throws(E)` callee
+that has a result, x0 stayed bound as that result on the caller's error
+path, where it holds the thrown error or nothing defined. Reproduced on
+compiled Swift three times: in typedcatch.swift, and independently in
+two functions of a native fixture family written to test error handling.
+
+| Function | Rendered | True |
+|---|---|---|
+| `caughtKind` (-O): `do { return try hold(grade(n)) } catch { return tally(error) }` | `return TypedCatch.tally(r0)`, r0 being `grade`'s result | the argument is the thrown `Kind` |
+| the same at -Onone | `TypedCatch.tally((r0 & 0xffffffff))` | the same |
+| a rethrow that boxes the caught payload (-Onone) | `Boxed.__allocating_init(code:)((r0 + 677))` | the error's payload plus 677 |
+| a catch reading a thrown class's field (-Osize) | `OUTLINED_FUNCTION_42(r0)` on the `x21 != 0` edge | x0 is the thrown object |
+
+The tracer now gives a block an error edge when it ends in `cbz` or
+`cbnz` on 64-bit x21, its last call prints `throws(E)`, the call is not
+proven non-throwing, and nothing writes x21 after it. Along that edge
+every register and frame slot whose value is, or is computed from, the
+call's x0 result is forgotten. Nothing is named as the error. The
+success edge is unchanged, and so is untyped `throws`, whose error is in
+x21.
+
+**OPEN, left as today's behaviour:** a value loaded through the result
+pointer, a word of an indirect result, and the second register of a
+two-register result are not forgotten on the error edge (the drafted
+arms for them had no test that killed them and were cut); an x21 test
+made in a later block than the call, or by `cmp` and `b.cond`, is not
+recognised as the error edge.
+
+Blast radius against 964f0d6: 8 structured lines in 4 files.
+libTypedCatch at -Onone and -O, 2 each: the two rows above.
+typed-error-inactive-O-oracle and -Osize-oracle, 2 each: one stored byte
+on an error path changes from `(? & 255)` to the raw `w23`, one unknown
+spelled as another. The four toolchain dylibs are unchanged. Cost:
+instructions +0.17%, footprint +0.24%.
+
+Verified: TypedCatchErrorEdgeTests (bodies from instruction words for
+each premise, and the fixture through the whole image and a filter) and
+the emulator sweep with both libTypedCatch images. Nine mutations seen
+red: the refinement itself, typed only, not proven non-throwing, x21
+unwritten since the call, the tested register, its width, the edge's
+polarity, the existential error counted as typed, and values computed
+from the result. Full enforcing suite: 2,220 tests.
+
 ## 2026-11-24: a typed error is named from x0 only beside a proven direct result
 
 **FIXED (soundness), sprint 15, E03-a.** A typed error's case was named

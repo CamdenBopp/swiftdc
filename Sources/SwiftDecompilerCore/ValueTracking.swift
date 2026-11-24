@@ -1116,6 +1116,10 @@ public struct ValueTracer: Sendable {
         let passesNoStackArguments: Bool
         /// The demangled name carries ` throws`.
         let throwsByName: Bool
+        /// The signature prints a thrown type (`throws(E)`): a concrete or
+        /// generic error, which comes back in x0 or through a buffer, with
+        /// x21 only the flag. Plain `throws` returns the error in x21.
+        let throwsTypedError: Bool
         let provablyDoesNotThrow: Bool
         /// A runtime call that returns its x0 argument (`objc_retain`).
         let returnsArgument: Bool
@@ -1161,6 +1165,8 @@ public struct ValueTracer: Sendable {
             } ?? [.x(0), .x(1), .x(2), .x(3), .x(4), .x(5), .x(6), .x(7), .x(8), .x(20)]
             passesNoStackArguments = applies && ValueTracer.passesNoStackArguments(callee, namedABIContract: namedABI)
             throwsByName = callee.contains(" throws")
+            throwsTypedError = DisassembledFunction.splitSignature(callee)?.thrownType
+                .map { !Self.existentialErrorTypes.contains($0) } ?? false
             provablyDoesNotThrow = bodyPreservesSwiftError || ((!DisassembledFunction.isARCReferenceHelper(callee) || arcIdentityContract)
                 && (ValueTracer.hasNonThrowingLanguageContract(callee)
                     || ((nonThrowingABIContract || arcIdentityContract)
@@ -1189,6 +1195,10 @@ public struct ValueTracer: Sendable {
                 .map { Disassembler.twoWordStringTypes.contains($0) } ?? false
             cResult = applies ? Self.result(of: DisassembledFunction.cPrototype(of: callee, namedABIContract: namedABI)) : nil
         }
+
+        /// Spellings of the untyped error: thrown as one of these, the error
+        /// is the box in x21.
+        static let existentialErrorTypes: Set<String> = ["any Swift.Error", "Swift.Error", "Error", "any Error"]
 
         /// A declaration's result, or nil for one the table could not
         /// classify (`x`), which claims nothing about x0 or v0.
@@ -1458,6 +1468,12 @@ public struct ValueTracer: Sendable {
         // exact frame slot with nothing writing either since: the edge where
         // that register is zero, on which the slot is zero too.
         var zeroEdges: [UInt64: ZeroEdge] = [:]
+        // Per block that calls a typed-throwing function and closes on a
+        // test of x21: the edge the error takes. It depends on the
+        // instructions alone, so it is fixed before the first lap.
+        let errorEdges = Dictionary(blocks.compactMap { block in
+            Self.errorEdge(of: block, facts: facts).map { (block.startAddress, $0) }
+        }, uniquingKeysWith: { first, _ in first })
         var worklist = blocks.map(\.startAddress)
         var queued = Set(worklist)
         var iterations = 0
@@ -1489,7 +1505,7 @@ public struct ValueTracer: Sendable {
             var incoming: [State] = []
             if reached.contains(addr) {
                 incoming = preds.compactMap { pred in
-                    outState[pred].map { Self.refined($0, along: zeroEdges[pred], to: addr) }
+                    outState[pred].map { Self.refined($0, along: zeroEdges[pred], error: errorEdges[pred], to: addr) }
                 }
                 if addr == function.startAddress { incoming.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots, floatWidths: entryFloatWidths, entryHasResultBuffer: entryHasResultBuffer)) }
                 // None of its predecessors has run: not reached yet, so its
@@ -1556,7 +1572,7 @@ public struct ValueTracer: Sendable {
         resolveAcyclicSelects(
             blocks: blocks, entryAddress: function.startAddress, predecessors: predecessors,
             blockByStart: blockByStart, inState: &inState, outState: outState,
-            entry: entry, facts: facts, zeroEdges: zeroEdges
+            entry: entry, facts: facts, zeroEdges: zeroEdges, errorEdges: errorEdges
         )
         // Loop-carried induction variables: a header slot with a proven constant
         // initial value and a proven `i ± c` recurrence across the back-edge is
@@ -1734,7 +1750,8 @@ public struct ValueTracer: Sendable {
             guard preds.count > 1 else { continue }
             for predecessor in preds {
                 guard var registers = outState[predecessor].map({
-                          Self.refined($0, along: zeroEdges[predecessor], to: block.startAddress)
+                          Self.refined($0, along: zeroEdges[predecessor], error: errorEdges[predecessor],
+                                       to: block.startAddress)
                       }),
                       let end = blockByStart[predecessor]?.instructions.last?.address else { continue }
                 for insn in block.instructions {
@@ -3284,7 +3301,7 @@ public struct ValueTracer: Sendable {
         blocks: [BasicBlock], entryAddress: UInt64, predecessors: [UInt64: [UInt64]],
         blockByStart: [UInt64: BasicBlock], inState: inout [UInt64: State],
         outState: [UInt64: State], entry: MethodEntryConvention?, facts: FunctionFacts,
-        zeroEdges: [UInt64: ZeroEdge] = [:]
+        zeroEdges: [UInt64: ZeroEdge] = [:], errorEdges: [UInt64: ErrorEdge] = [:]
     ) {
         let rawInState = inState
         resolveDiamondSelects(blocks: blocks, entryAddress: entryAddress, predecessors: predecessors,
@@ -3303,7 +3320,7 @@ public struct ValueTracer: Sendable {
                 guard let block = blockByStart[address] else { continue }
                 // The same edge-refined inputs as the fixpoint's meet.
                 var inputs = (predecessors[address] ?? []).compactMap { pred in
-                    forwarded[pred].map { Self.refined($0, along: zeroEdges[pred], to: address) }
+                    forwarded[pred].map { Self.refined($0, along: zeroEdges[pred], error: errorEdges[pred], to: address) }
                 }
                 if address == blocks.first?.startAddress { inputs.append(Self.initialState(entry: entry, asyncContextSlots: asyncContextSlots, floatWidths: entryFloatWidths)) }
                 let prior = rawInState[address]
@@ -7222,11 +7239,64 @@ public struct ValueTracer: Sendable {
                         successor: detail.id == AARCH64_INS_CBZ ? target : next)
     }
 
+    /// The error edge of a block's closing `cbz`/`cbnz` on x21, for the
+    /// typed-throwing call at `site` whose flag that x21 is.
+    struct ErrorEdge: Equatable {
+        let site: UInt64
+        let successor: UInt64
+    }
+
+    /// The edge on which a block's closing 64-bit `cbz`/`cbnz` finds x21
+    /// set by the block's last call, where that call is to a function whose
+    /// signature throws a typed error: the target of a `cbnz`, the
+    /// fallthrough of a `cbz`. On that edge the callee produced no result:
+    /// x0 is the error where both the result and the error are direct
+    /// (swift/lib/IRGen/GenCall.cpp, `combineResultAndTypedErrorType`: the
+    /// error shares the result's integer registers) and undefined where
+    /// either is indirect (`hasIndirectTypedErrorResultSlot`). None when
+    /// anything but that call may have written x21 since, when the callee
+    /// is proven not to throw, or when both edges reach the same block.
+    private static func errorEdge(of block: BasicBlock, facts: FunctionFacts) -> ErrorEdge? {
+        guard let last = block.instructions.last, let detail = last.detail,
+              detail.id == AARCH64_INS_CBZ || detail.id == AARCH64_INS_CBNZ,
+              let tested = detail.operands.first?.operand.register, tested.kind == .gpr,
+              tested.widthBits == 64, tested.key == "x21", let target = last.branchTarget
+        else { return nil }
+        let next = last.address &+ 4
+        guard target != next else { return nil }
+        for insn in block.instructions.dropLast().reversed() {
+            if insn.controlFlow == .call {
+                let call = facts.call(insn)
+                guard call.throwsTypedError, !call.provablyDoesNotThrow else { return nil }
+                return ErrorEdge(site: insn.address, successor: detail.id == AARCH64_INS_CBNZ ? target : next)
+            }
+            guard let written = insn.detail?.writtenRegisterKeys, !written.contains("x21") else { return nil }
+        }
+        return nil
+    }
+
+    /// Whether `value` is, or is computed from, the x0 the call at `site`
+    /// returned.
+    private static func mentionsResult(ofCallAt site: UInt64, in value: AbstractValue) -> Bool {
+        contains(.callResult(site), in: value)
+    }
+
     /// A predecessor's state along one edge: on its zero edge, the tested
-    /// register and the slot it was spilled to are both zero.
-    private static func refined(_ state: State, along edge: ZeroEdge?, to successor: UInt64) -> State {
-        guard let edge, edge.successor == successor, let register = Location(key: edge.register) else { return state }
+    /// register and the slot it was spilled to are both zero; on its error
+    /// edge, nothing is the call's result, in a register or spilled.
+    private static func refined(
+        _ state: State, along edge: ZeroEdge?, error: ErrorEdge?, to successor: UInt64
+    ) -> State {
+        let onErrorEdge = error?.successor == successor
+        let zeroRegister = edge.flatMap { $0.successor == successor ? Location(key: $0.register) : nil }
+        guard onErrorEdge || zeroRegister != nil else { return state }
         var refined = state
+        if onErrorEdge, let error {
+            for key in state.compactMap({ key, value in mentionsResult(ofCallAt: error.site, in: value) ? key : nil }) {
+                refined[key] = nil
+            }
+        }
+        guard let edge, let register = zeroRegister else { return refined }
         refined[register] = .immediate(0)
         refined[.stack(edge.slot)] = .immediate(0)
         return refined
