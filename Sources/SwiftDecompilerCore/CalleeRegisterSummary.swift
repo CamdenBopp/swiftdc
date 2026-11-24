@@ -145,9 +145,11 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     let clobberedCalleeSaved: Set<String>
     /// Every unproved vector low-lane clobber carries through calls, even
     /// when the body stored it without restoring it. For general registers,
-    /// only those never stored carry through (an outlined fragment writing
-    /// x19). A general register the body saves but whose save slot the
-    /// analysis cannot prove intact (a frame address passed to a callee)
+    /// those never stored carry through (an outlined fragment writing
+    /// x19), and so do those stored and never loaded back: a body that
+    /// spills x19 and overwrites it keeps no convention that preserves it.
+    /// A general register the body saves and reloads but whose save slot
+    /// the analysis cannot prove intact (a frame address passed to a callee)
     /// is clobbered for its direct callers, as before, and goes no further:
     /// carried up the call graph, that caution cost thousands of correct
     /// lines on real apps. x21 is left out too: it is Swift's error
@@ -685,6 +687,10 @@ struct CalleeRegisterSummary: Sendable, Equatable {
 
         var writtenCalleeSaved = Set<String>()
         var storedGeneralCalleeSaved = Set<String>()
+        // Stored registers the body can still hand back: one of its own
+        // instructions loads the register from memory, or a callee changes
+        // it, and a callee's change can be a reload of this body's save.
+        var reloadableGeneralCalleeSaved = Set<String>()
         var callees = Set(preservedFacts?.callees ?? [])
         var outgoingCalls: [OutgoingCall] = preservedFacts?.outgoingCalls ?? []
         var storesOnlyToStack = preservedFacts?.storesOnlyToStack ?? true
@@ -732,6 +738,15 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                     }
                 }
             }
+            // Missing access flags cannot prove an operand was not loaded.
+            if detail.operands.contains(where: { if case .memory = $0.operand { $0.isRead || $0.access == 0 } else { false } }) {
+                for info in detail.operands where info.isWritten || info.access == 0 {
+                    if case .register(let register) = info.operand, register.kind == .gpr,
+                       calleeSavedKeys.contains(register.key) {
+                        reloadableGeneralCalleeSaved.insert(register.key)
+                    }
+                }
+            }
             if insn.controlFlow == .call || insn.controlFlow == .branch || insn.controlFlow == .conditionalBranch,
                let target = insn.branchTarget,
                !addresses.contains(target) || (insn.controlFlow == .call && target == entry) {
@@ -739,6 +754,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                 let effect = calleeEffects(target)
                 writtenCalleeSaved.formUnion(effect.clobbers)
                 writtenCalleeSaved.formUnion(effect.restores.keys)
+                reloadableGeneralCalleeSaved.formUnion(effect.clobbers)
             }
         }
         func external(_ insn: Instruction) -> UInt64? {
@@ -841,8 +857,12 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         }
         // The save-slot escape exception belongs to GPRs only. A stored but
         // unrestored vector must still invalidate its callers' low lanes.
+        // It needs a reload whose slot might be intact: a register the body
+        // stores and nothing loads back is handed to the caller changed,
+        // whatever convention the body keeps.
+        let unprovedSaves = storedGeneralCalleeSaved.intersection(reloadableGeneralCalleeSaved)
         let definitelyClobbered = preservedFacts?.definitelyClobbered
-            ?? clobbered.subtracting(storedGeneralCalleeSaved).subtracting(["x21"])
+            ?? clobbered.subtracting(unprovedSaves).subtracting(["x21"])
         var summary = CalleeRegisterSummary(
             argumentReads: reads,
             provenArgumentReads: provenReads,

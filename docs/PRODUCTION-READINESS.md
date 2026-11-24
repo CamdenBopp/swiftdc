@@ -61,6 +61,48 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-24: a register stored and never reloaded is clobbered for every caller up the chain
+
+**FIXED (soundness), sprint 20, M01-a.** The card's own case was already
+guarded: a direct `bl` to a body that leaves x19 changed makes x19
+unknown from the body's evidence. The hole was one call further away. The
+set of clobbers a summary carries to its callers dropped every register
+the body stores anywhere, including one it stores, overwrites and never
+loads back. A caller two calls up then read the register as preserved.
+Reproduced with authored assembly (spill_carry.s), run natively:
+
+| Function | Rendered | Machine |
+|---|---|---|
+| `SpillCarry.relayed`, `tailed`, `parked` | `return arg0` | arg1 (2 for the vector 1, 2) |
+| `SpillCarry.fixed` | `return 7` | 11 |
+
+A stored register now stays out of the carried clobbers only if the body
+has a load into it, or a callee's effect clobbers it. Otherwise it
+carries like one never stored. Four controls keep `return arg0`: a body
+that saves and reloads, one that reloads through a helper, one that hands
+the register to a callee that restores it, and one whose callee restores
+it.
+
+A fourth rule in the drafted change, counting a callee's proven reload,
+was removed: deleting it changed no test and no render.
+
+Blast radius against e4c9b94: 8 structured lines, all in libSpillCarry
+(the four false returns). No other fixture and none of the four
+toolchain dylibs changes. Cost: instructions +0.08%, footprint -0.30%.
+The concern that async funclets replacing x22 would add summary rebuilds
+did not show: the two large inputs are flat.
+
+One existing expectation flips, in
+`strictBodyReturnProofsFollowFrameAliasesThroughAllActualCallInputsIfPresent`:
+the alias leaves there store x19 and never reload it, so they now carry
+the clobber.
+
+Verified: SpillCarryTests (native results through dlopen, the renders in
+the array, filtered and streaming views, and the summaries), and the
+emulator sweep with libSpillCarry. Three mutations seen red: the carry
+itself (34 issues), a body's own reload (9), a callee's clobber (5). Full
+enforcing suite: 2,208 tests.
+
 ## 2026-11-23: a stack argument past a hole, or past the sixteenth word
 
 **FIXED (soundness), sprint 16, M04-a.** When a call may take stack

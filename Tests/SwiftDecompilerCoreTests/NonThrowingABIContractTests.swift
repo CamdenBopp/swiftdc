@@ -721,7 +721,10 @@ private func swiftErrorBodyCall(at start: UInt64, to target: UInt64) -> [UInt32]
                 calleeEffects: effects, calleeArity: arity, isFunction: starts.contains)
         }
         #expect(summaries[leaf.startAddress]?.clobberedCalleeSaved.contains("x19") == true)
-        #expect(summaries[leaf.startAddress]?.definitelyClobbered.contains("x19") == false)
+        // The leaf stores x19 and never loads it back, so the clobber
+        // carries; carried, it is an unknown value and no frame address,
+        // and the strict closure below is what finds the alias.
+        #expect(summaries[leaf.startAddress]?.definitelyClobbered.contains("x19") == true)
         #expect(summaries[middle.startAddress]?.hasProvenReturnTargets == true)
         if kind == "fp" {
             #expect((summaries[writer.startAddress]?.mayReadFloatArguments ?? 0) & 1 != 0)

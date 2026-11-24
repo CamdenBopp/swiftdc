@@ -86,7 +86,7 @@ premise touches.
 | 17 | [L03-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Preserve an FP barrier when counting integer pieces | soundness | M | count fixed, unreachable until Float16 is laid out: see [readiness](PRODUCTION-READINESS.md#2026-11-23-a-float-between-two-integers-keeps-them-in-separate-registers) |
 | 18 | [L06-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Bound recursive Optional direct-result claims | soundness | S/M | guarded: not reproduced, see [readiness](PRODUCTION-READINESS.md#2026-11-23-nested-optional-results-are-held-to-the-compilers-x8-use) |
 | 19 | [M02-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Include a proven async context in unknown-edge reach | soundness | M | open |
-| 20 | [M01-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Decline ordinary preservation for an unproved nondefault convention | soundness | M | open |
+| 20 | [M01-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Decline ordinary preservation for an unproved nondefault convention | soundness | M | fixed one call further than the card: reproduced with authored assembly, see [readiness](PRODUCTION-READINESS.md#2026-11-24-a-register-stored-and-never-reloaded-is-clobbered-for-every-caller-up-the-chain) |
 | 21 | [A02-a](research/abi-sprints-2026-11-23/03-async-errors.md) | Stop entry-slot seeds at unproved child effects | soundness | S/M | open |
 | 22 | [A08-a](research/abi-sprints-2026-11-23/03-async-errors.md) | Qualify rendered runtime-hop roles | soundness | S/M | open |
 | 23 | [C06-a](research/abi-sprints-2026-11-23/02-generics-closures.md) | Separate a placed capture word from its source value category | soundness | M | open |

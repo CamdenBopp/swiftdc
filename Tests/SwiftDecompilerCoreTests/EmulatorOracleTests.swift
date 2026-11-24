@@ -233,7 +233,7 @@ func sweepAgainstEmulator(_ image: String) async throws -> EmulatorSweep? {
 private let sweptImages = [
     "libInt64Fields.dylib", "libInt64Fields.onone.dylib", "libOptionSubset.dylib",
     "libTrapTail.dylib", "libTrapTail.stripped.dylib", "libErrorLookalike.dylib", "libHookPath.dylib",
-    "libSelectorStubShape.dylib", "libDeferThrow.dylib", "libAccessTwin.dylib",
+    "libSelectorStubShape.dylib", "libDeferThrow.dylib", "libAccessTwin.dylib", "libSpillCarry.dylib",
     "libAsyncMemoryEffects.dylib", "libCallerFrameAlias.dylib", "libCallerFrameAlias.opt.dylib",
     "libCallerFrameAlias.size.dylib", "libSample.stripped.dylib", "libObjCPackedStack.opt.dylib",
     "libSwiftArgumentBoundary.O.dylib", "libReconstruction.opt.dylib", "libSwiftTailResults.O.dylib",

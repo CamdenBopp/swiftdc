@@ -408,6 +408,9 @@ $CLANG -arch arm64 -dynamiclib no_success.s -o libNoSuccessAsm.dylib
 echo "==> the address of a local as a stack argument past a padding word, past sixteen words, and packed (stackhole.s)"
 $CLANG -arch arm64 -dynamiclib stackhole.s -o libStackHole.dylib
 
+echo "==> a callee-saved register stored and never loaded back, reached through a relay (spill_carry.s)"
+$CLANG -arch arm64 -dynamiclib spill_carry.s -o libSpillCarry.dylib
+
 echo "==> the emulator oracle: any address, any register, traps and loops as outcomes (emuoracle.c, needs Unicorn)"
 if pkg-config --exists unicorn 2>/dev/null; then
     $CLANG -O1 $(pkg-config --cflags --libs unicorn) emuoracle.c -o emu-oracle
