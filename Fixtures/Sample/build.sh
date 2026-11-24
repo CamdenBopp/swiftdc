@@ -393,6 +393,10 @@ echo "==> nested Optional results stay in registers until a tag makes a fifth pi
 $SWIFTC -parse-as-library -O -emit-library -module-name OptionalNesting optionalnesting.swift -o libOptionalNesting.dylib
 $SWIFTC -parse-as-library -Onone -emit-library -module-name OptionalNesting optionalnesting.swift -o libOptionalNesting.onone.dylib
 
+echo "==> a float between two integers of one 8-byte chunk keeps them in separate registers (fpbarrierpieces.swift, -O and -Onone)"
+$SWIFTC -parse-as-library -O -emit-library -module-name FPBarrierPieces fpbarrierpieces.swift -o libFPBarrierPieces.dylib
+$SWIFTC -parse-as-library -Onone -emit-library -module-name FPBarrierPieces fpbarrierpieces.swift -o libFPBarrierPieces.onone.dylib
+
 echo "==> the emulator oracle: any address, any register, traps and loops as outcomes (emuoracle.c, needs Unicorn)"
 if pkg-config --exists unicorn 2>/dev/null; then
     $CLANG -O1 $(pkg-config --cflags --libs unicorn) emuoracle.c -o emu-oracle

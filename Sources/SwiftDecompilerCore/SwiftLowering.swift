@@ -170,12 +170,16 @@ extension SwiftLowering {
     /// Measured against `swiftc -O -emit-ir` (docs/ABI-INVARIANTS.md, the
     /// struct-lowering oracle): IRGen explodes the struct into its scalar
     /// fields at their byte offsets, nested structs flattened and empty
-    /// ones dropped, and the Swift calling convention then merges the
-    /// integer data in each 8-byte chunk into one register (`{Int32, Int32}`
-    /// is one i64, `{Bool, Bool}` one i16) while every float or double keeps
-    /// its own (`{Float, Float}` is two floats, `{Float, Int32}` a float and
-    /// an i32). More than four registers in all go indirect (`{Int ×5}`,
-    /// `{Float ×4, Int}`).
+    /// ones dropped, and the Swift calling convention then merges integer
+    /// scalars that are neighbours in offset order and share an 8-byte chunk
+    /// into one register (`{Int32, Int32}` is one i64, `{Bool, Bool}` one
+    /// i16) while every float or double keeps its own (`{Float, Float}` is
+    /// two floats, `{Float, Int32}` a float and an i32). A float between two
+    /// integers of one chunk keeps them apart: `{Int16, Float16, Int16}` is
+    /// i16, half, i16, three registers, where `{Int16, Int16, Float16}` is
+    /// i32, half (clang `SwiftAggLowering::finish` merges `Entries[i - 1]`
+    /// with `Entries[i]` only, and never a floating-point entry). More than
+    /// four registers in all go indirect (`{Int ×5}`, `{Float ×4, Int}`).
     static func aggregateRegisters(
         of type: String, fieldMaps: [String: FieldMap],
         enumCaseIndex: EnumCaseIndex = EnumCaseIndex(), classTypeIndex: ClassTypeIndex = ClassTypeIndex()
@@ -214,19 +218,42 @@ extension SwiftLowering {
            map.trustLimitReason == nil, map.fields.isEmpty {
             return (0, 0)
         }
-        var integerChunks = Set<Int>()
-        var floats = 0
+        var pieces: [ScalarPiece] = []
         guard collectScalars(of: type, at: 0, fieldMaps: fieldMaps, enumCaseIndex: enumCaseIndex,
-                             classTypeIndex: classTypeIndex, depth: 0,
-                             integerChunks: &integerChunks, floats: &floats)
+                             classTypeIndex: classTypeIndex, depth: 0, pieces: &pieces)
         else { return nil }
-        return (integerChunks.count, floats)
+        var integers = 0, floats = 0
+        var previous: ScalarPiece?
+        for piece in pieces.sorted(by: { $0.begin < $1.begin }) {
+            // Two scalars at the same bytes are not one struct's fields: the
+            // layout contradicts itself, and neither reading is counted.
+            if let previous, piece.begin < previous.end { return nil }
+            // An integer joins the register of the piece just before it when
+            // that piece is an integer ending in the chunk this one starts in.
+            let joinsPrevious = previous.map { !$0.isFloat && ($0.end - 1) / 8 == piece.begin / 8 } ?? false
+            if piece.isFloat {
+                floats += 1
+            } else if !joinsPrevious {
+                integers += 1
+            }
+            previous = piece
+        }
+        return (integers, floats)
+    }
+
+    /// One scalar a struct lowers to, at its bytes `begin ..< end` from the
+    /// start of the outermost value. An integer piece lies within one 8-byte
+    /// chunk; padding is no piece.
+    private struct ScalarPiece {
+        let begin: Int
+        let end: Int
+        let isFloat: Bool
     }
 
     private static func collectScalars(
         of type: String, at base: Int, fieldMaps: [String: FieldMap],
         enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex, depth: Int,
-        integerChunks: inout Set<Int>, floats: inout Int
+        pieces: inout [ScalarPiece]
     ) -> Bool {
         guard depth < 8,
               let map = Disassembler.completeValueLayout(of: type, fieldMaps: fieldMaps, classTypeIndex: classTypeIndex),
@@ -242,21 +269,28 @@ extension SwiftLowering {
                 // An integer field never straddles a chunk: it is aligned to
                 // its size.
                 guard field.bytes <= 8, offset % 8 + field.bytes <= 8 else { return false }
-                integerChunks.insert(offset / 8)
+                pieces.append(ScalarPiece(begin: offset, end: offset + field.bytes, isFloat: false))
             case .oneFloat:
-                floats += 1
+                pieces.append(ScalarPiece(begin: offset, end: offset + field.bytes, isFloat: true))
             case .zeroSized:
                 continue
             default:
                 if Disassembler.twoWordStringTypes.contains(fieldType), field.bytes == 16 {
-                    integerChunks.formUnion([offset / 8, offset / 8 + 1])
+                    // Two whole words, each its own chunk.
+                    guard offset % 8 == 0 else { return false }
+                    pieces.append(ScalarPiece(begin: offset, end: offset + 8, isFloat: false))
+                    pieces.append(ScalarPiece(begin: offset + 8, end: offset + 16, isFloat: false))
                 } else if let payload = Disassembler.optionalScalarPayload(ofParameterType: fieldType) {
-                    // Its payload's bytes, a Double's included, then a tag byte.
-                    integerChunks.insert(offset / 8)
-                    integerChunks.insert((offset + payload.bytes) / 8)
+                    // Its payload's bytes, a Double's included, then a tag
+                    // byte: integer data both, so a payload narrower than a
+                    // word shares its register with the tag.
+                    guard offset % 8 + payload.bytes <= 8 else { return false }
+                    let tag = offset + payload.bytes
+                    pieces.append(ScalarPiece(begin: offset, end: tag, isFloat: false))
+                    pieces.append(ScalarPiece(begin: tag, end: tag + 1, isFloat: false))
                 } else if !collectScalars(of: fieldType, at: offset, fieldMaps: fieldMaps,
                                           enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex,
-                                          depth: depth + 1, integerChunks: &integerChunks, floats: &floats) {
+                                          depth: depth + 1, pieces: &pieces) {
                     return false
                 }
             }

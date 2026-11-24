@@ -61,6 +61,44 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-23: a float between two integers keeps them in separate registers
+
+**FIXED (soundness), sprint 17, L03-a, latent.** `SwiftLowering` counted a
+struct argument's general registers as the set of 8-byte chunks its
+integer scalars fall in, so `{ Int16, Float16, Int16 }` counted one. The
+Swift calling convention merges only neighbouring integer entries and
+never across a float (clang `SwiftCallingConv.cpp` at the 6.4.2 pin; the
+audit's IR shows `(i16, half, i16)`), so the struct takes two general
+registers and one vector register, and every formal after it would be
+placed one register early.
+
+Nothing renders wrongly today, and the fix changes no render: the layout
+reader has no size for `Float16`, so a struct holding one has an untrusted
+layout and no count (`swiftdc layout` prints `typeDescriptorNotFound
+(qualifiedTypeName: "Swift.Float16")`), and every function of
+fpbarrierpieces.swift renders `return ?`. A 2-byte float is the only way
+to put a float between two integers of one chunk, so `Float16` is the
+only way in. The count is fixed first so that teaching the reader
+`Float16`, which is now listed as a completeness item, cannot open the
+defect.
+
+Scalars are now collected as ordered pieces with their bytes. An integer
+starts a new register unless the piece just before it is an integer
+ending in the same chunk; overlapping pieces decline; the four-register
+limit runs on the merged count.
+
+Blast radius against 1df4124: 0 lines in all four views over 3,284
+renders. Cost: instructions -0.07%, footprint +0.15%.
+
+Verified: FPBarrierPieceTests. Four tests on hand-built layouts, seen red
+under nine mutations (the barrier, merging at all, the chunk test, the
+overlap decline, the String and Optional pieces and their guards, the
+four-register limit). Two image tests pin the decline at -O and -Onone:
+no count for any of the four structs, and no formal named after one. They
+were not seen red; they go red when the reader learns `Float16`, and are
+then replaced by the placement the fixture states. Full enforcing suite:
+2,191 tests.
+
 ## 2026-11-23: nested Optional results are held to the compiler's x8 use
 
 **GUARDED (tests), sprint 18, L06-a.** The card suspected that an

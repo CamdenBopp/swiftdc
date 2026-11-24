@@ -83,7 +83,7 @@ premise touches.
 | 14 | [E07-a](research/abi-sprints-2026-11-23/03-async-errors.md) | Propagate a callee's no-success result | soundness | M | open |
 | 15 | [E03-a](research/abi-sprints-2026-11-23/03-async-errors.md) | Require a proven direct typed-error carrier | soundness | S/M | open |
 | 16 | [M04-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Keep pointer reach past outgoing stack holes | soundness | M | open |
-| 17 | [L03-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Preserve an FP barrier when counting integer pieces | soundness | M | open |
+| 17 | [L03-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Preserve an FP barrier when counting integer pieces | soundness | M | count fixed, unreachable until Float16 is laid out: see [readiness](PRODUCTION-READINESS.md#2026-11-23-a-float-between-two-integers-keeps-them-in-separate-registers) |
 | 18 | [L06-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Bound recursive Optional direct-result claims | soundness | S/M | guarded: not reproduced, see [readiness](PRODUCTION-READINESS.md#2026-11-23-nested-optional-results-are-held-to-the-compilers-x8-use) |
 | 19 | [M02-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Include a proven async context in unknown-edge reach | soundness | M | open |
 | 20 | [M01-a](research/abi-sprints-2026-11-23/01-lowering-machine.md) | Decline ordinary preservation for an unproved nondefault convention | soundness | M | open |
@@ -112,6 +112,7 @@ phase 1 when their cards are written.
 | L06-a | Decline a direct result for an existential metatype of four or more witness-bearing protocols (`SwiftLowering` calls any `.Type` direct) | soundness |
 | E07-a | Do not name x0 as the result on the error path of a synchronous `throws(E)` callee (the async path already declines) | soundness |
 | M02-a | Count x22 as read by an in-image veneer that tail-branches to an async import (the summary side of M02) | soundness |
+| L03-a | Give `Swift.Float16` a size in the layout reader, so a struct holding one is placed (needs the L03-a count) | completeness |
 
 ## Phase 2: completeness
 
