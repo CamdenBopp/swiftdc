@@ -61,6 +61,37 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-26: the emulator oracle runs as a full CPU
+
+**FIXED (validation).** The emulator oracle ran on Unicorn's default
+model, a Cortex-A72, which has no LSE atomics, no pointer authentication
+and no `fjcvtzs`. Each of those stopped a run, and the harness reported
+the stop as `trapped`, which the tests hold as an observation about the
+program. Shown on emucpu.s: on the default model `ldaddal`, `paciza` and
+`fjcvtzs` each end the run at their own address.
+
+The harness now selects `UC_CPU_ARM64_MAX`, under which the three probes
+return 42, 0x1234 and 7. A stop is `trapped` only when the instruction is
+a `brk` or `udf` the program wrote; any other instruction that stops the
+run is `unsupported`, which is no observation.
+
+The default model had hidden nothing in the fixtures: the sweep of all
+688 fixture images under the full model checks 90,446 returns and 4,600
+constant conditions over 12,967 functions and 207,472 runs, with no
+disagreement.
+
+**OPEN, the oracle's other known gap:** it maps the image's bytes as
+they are on disk, with no rebase or bind applied, so a function that
+loads a GOT slot, a constant pointer or a selector reference faults or
+runs on with a wrong value. Unicorn 2.1.4 also has open AArch64 bugs
+(signed LSE min and max, some FP16 encodings); nothing checks the
+emulator against native execution per instruction form yet.
+
+Verified: theEmulatorRunsInstructionsPastItsDefaultCPUIfPresent, seen
+red under three mutations of the harness: the default CPU (three
+issues), every stop called a trap, and no stop called a trap. Full
+enforcing suite: 2,221 tests.
+
 ## 2026-11-24: the result of a typed-throwing call ends at its error edge
 
 **FIXED (soundness).** After a call to a synchronous `throws(E)` callee

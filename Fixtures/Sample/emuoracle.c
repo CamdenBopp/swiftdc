@@ -19,7 +19,9 @@
 //       branches=<pc>:<t|n>,… calls=<pc>><target>(x0,x1,x2,x3),… mem=<w0>,…
 //
 //   outcome: returned (reached the return address), trapped (brk, udf),
-//   hung (instruction limit), faulted (unmapped access), external (the
+//   unsupported (an instruction this emulator does not implement: no
+//   observation of the program), hung (instruction limit), faulted
+//   (unmapped access), external (the
 //   run called out of the image; the call returned at once with every
 //   register as it was, so nothing after it is the real machine's).
 #include <mach-o/loader.h>
@@ -158,6 +160,10 @@ int main(int argc, char **argv) {
     if (argc != 2) die("usage: emu-oracle <image>, requests on stdin");
     uc_engine *uc;
     if (uc_open(UC_ARCH_ARM64, UC_MODE_ARM, &uc) != UC_ERR_OK) die("cannot start the emulator");
+    // Unicorn's default model is a Cortex-A72: no LSE atomics, no pointer
+    // authentication, no `fjcvtzs`. Apple code uses all three, and on the
+    // A72 each would stop the run as if it were a trap.
+    if (uc_ctl_set_cpu_model(uc, UC_CPU_ARM64_MAX) != UC_ERR_OK) die("cannot select the CPU model");
     mapImage(uc, argv[1]);
     if (uc_mem_map(uc, STACK_BASE, STACK_SIZE, UC_PROT_READ | UC_PROT_WRITE) != UC_ERR_OK) die("cannot map a stack");
     if (uc_mem_map(uc, SCRATCH_BASE, SCRATCH_SIZE, UC_PROT_READ | UC_PROT_WRITE) != UC_ERR_OK) die("cannot map scratch");
@@ -220,7 +226,16 @@ int main(int argc, char **argv) {
             uc_reg_read(uc, UC_ARM64_REG_PC, &pc);
             if (hasRedirect) { pc = redirect; executed += 1; if (executed >= limit) { outcome = "hung"; break; } continue; }
             if (error == UC_ERR_OK) { outcome = pc == RETURN_ADDRESS ? "returned" : "hung"; break; }
-            if (error == UC_ERR_EXCEPTION || error == UC_ERR_INSN_INVALID) { outcome = "trapped"; break; }
+            if (error == UC_ERR_EXCEPTION || error == UC_ERR_INSN_INVALID) {
+                // A trap is a `brk` or a `udf` the program wrote. Any other
+                // instruction that stops the run is one the emulator does
+                // not have: that says nothing about the program.
+                uint32_t word = 0;
+                int wrote = uc_mem_read(uc, pc, &word, 4) == UC_ERR_OK
+                    && ((word & 0xffe0001f) == 0xd4200000 || (word >> 16) == 0);
+                outcome = wrote ? "trapped" : "unsupported";
+                break;
+            }
             outcome = "faulted";
             break;
         }

@@ -322,3 +322,29 @@ private let knownFalseStatements: Set<String> = []
     #expect(try hook.run(at: either, registers: [0: 0, 1: 9]).x[21] == 9)
     #expect(try hook.run(at: either, registers: [0: 0, 1: 0]).x[21] == 0)
 }
+
+/// The emulator runs what Apple code uses: LSE atomics, pointer
+/// authentication and `fjcvtzs`. Unicorn's default CPU has none of them,
+/// and each would end a run like a trap. A `brk` the program wrote is
+/// still a trap.
+@Test func theEmulatorRunsInstructionsPastItsDefaultCPUIfPresent() async throws {
+    let image = "libEmuCPU.dylib"
+    guard FileManager.default.fileExists(atPath: "Fixtures/Sample/libEmuCPU.dylib"),
+          let emulator = try EmulatorOracle(image: image) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: "Fixtures/Sample/libEmuCPU.dylib")
+    }
+    func run(_ symbol: String, _ registers: [Int: UInt64]) throws -> EmulatedRun {
+        let function = try #require(functions.first { $0.symbol == symbol }, "\(symbol)")
+        return try emulator.run(at: function.startAddress, registers: registers)
+    }
+    let atomic = try run("_emu_cpu_lse", [0: 40, 1: 2])
+    #expect(atomic.outcome == "returned" && atomic.x[0] == 42, "\(atomic.outcome) \(atomic.x[0])")
+    let signed = try run("_emu_cpu_pac", [0: 0x1234])
+    #expect(signed.outcome == "returned" && signed.x[0] == 0x1234, "\(signed.outcome) \(signed.x[0])")
+    let converted = try run("_emu_cpu_jcvt", [:])
+    #expect(converted.outcome == "returned" && converted.x[0] == 7, "\(converted.outcome) \(converted.x[0])")
+    #expect(try run("_emu_cpu_brk", [:]).outcome == "trapped")
+    // An encoding the emulator has no meaning for is no observation.
+    #expect(try run("_emu_cpu_unallocated", [:]).outcome == "unsupported")
+}
