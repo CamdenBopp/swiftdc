@@ -199,10 +199,61 @@ extension Disassembler {
         return name == "memcpy" || name == "memmove" || name == "memset" || name.hasPrefix("swift_memcpy")
     }
 
+    /// Runtime entry points whose result was read from their declaration
+    /// and that have no row in the generated tables, which is where
+    /// `knownCArity` takes their arity from too: `void` or one register
+    /// each. swift/include/swift/Runtime/HeapObject.h:205 `void
+    /// swift_release_n`, Error.h:128 `void swift_unexpectedError`; the
+    /// rest are libobjc's (objc-internal.h, NSObject.mm): `id` from
+    /// `objc_alloc`, `objc_alloc_init`, `objc_opt_new` and
+    /// `objc_retainBlock`, `Class` from `objc_opt_class`, `BOOL` from the
+    /// two queries, `void *` from the pool push, `void` from the pool pop
+    /// and `objc_storeStrong`.
+    static let undeclaredDirectResultRuntimeNames: Set<String> = [
+        "swift_release_n", "swift_unexpectedError",
+        "objc_alloc", "objc_alloc_init", "objc_opt_new", "objc_retainBlock", "objc_opt_class",
+        "objc_opt_isKindOfClass", "objc_opt_respondsToSelector",
+        "objc_autoreleasePoolPush", "objc_autoreleasePoolPop", "objc_storeStrong",
+    ]
+
+    /// Whether a declaration's result code leaves x8 unused. `v`, `i`, `f`
+    /// and `d` are nothing or one register. `x` is two words in the
+    /// runtime's table and an unclassified type in the SDK's, and `s` is a
+    /// value no one register holds: neither says where the result goes.
+    static func isDirectResultRole(_ role: Character, inRuntimeTable: Bool) -> Bool {
+        switch role {
+        case "v", "i", "f", "d": return true
+        case "x": return inRuntimeTable
+        default: return false
+        }
+    }
+
+    /// A Swift or Objective-C runtime name whose own declaration returns in
+    /// registers. The name's prefix says nothing: a name no table declares
+    /// has an unknown result convention. The intrinsic table writes a
+    /// result delivered through x8 as `v`; `isKnownDirectReturnCallee`
+    /// removes those names first.
+    static func declaresDirectRuntimeResult(_ callee: String) -> Bool {
+        // The retain and autorelease family returns its argument, and the
+        // register-specific releases return nothing.
+        if DisassembledFunction.isARCReferenceHelper(callee)
+            || RuntimeFunctionReference.isRegisterSpecificObjCRelease(callee) { return true }
+        // The runtime's table leaves out every name the SDK declares, so
+        // the order of the two lookups decides nothing.
+        if let role = (SwiftRuntimeSignatures.table[callee] ?? SwiftIntrinsicSignatures.table[callee])?.first {
+            return isDirectResultRole(role, inRuntimeTable: true)
+        }
+        if let role = SDKCPrototypes.entry(callee)?.first {
+            return isDirectResultRole(role, inRuntimeTable: false)
+        }
+        return undeclaredDirectResultRuntimeNames.contains(callee)
+    }
+
     /// Runtime and C-library entry points with a fixed public ABI that never
-    /// return through x8. The Swift and Objective-C runtimes return at most two
-    /// words, except `swiftResultBufferRuntimeNames`; the libc helpers here
-    /// return a pointer or an integer.
+    /// return through x8. A Swift or Objective-C runtime entry is one by its
+    /// declaration (`declaresDirectRuntimeResult`), except
+    /// `swiftResultBufferRuntimeNames`; the libc helpers here return a
+    /// pointer or an integer.
     static func isKnownDirectReturnCallee(_ callee: String) -> Bool {
         let name = String(callee.drop(while: { $0 == "_" }))
         if swiftResultBufferRuntimeNames.contains(name) { return false }
@@ -213,14 +264,15 @@ extension Disassembler {
         // The forwarding entry is declared `void (void)` (objc/message.h)
         // and, like a send, returns whatever the forwarded method returns.
         if name == "objc_msgForward" || name == "objc_msgForward_stret" { return false }
-        if name.hasPrefix("swift_") || name.hasPrefix("objc_") { return true }
+        if name.hasPrefix("swift_memcpy") { return true }
+        if name.hasPrefix("swift_") || name.hasPrefix("objc_") { return declaresDirectRuntimeResult(callee) }
         let libc: Set<String> = [
             "memcpy", "memmove", "memset", "memcmp", "bzero", "strlen", "strcmp", "strncmp",
             "malloc", "calloc", "realloc", "free", "abort", "exit", "arc4random", "arc4random_uniform",
             "pthread_mutex_lock", "pthread_mutex_unlock", "os_unfair_lock_lock", "os_unfair_lock_unlock",
             "dispatch_once_f", "dispatch_async", "dispatch_sync",
         ]
-        return libc.contains(name) || name.hasPrefix("swift_memcpy")
+        return libc.contains(name)
     }
 
     /// A fixed result convention belongs to the bound entry, not its name.

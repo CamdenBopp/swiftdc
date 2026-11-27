@@ -77,6 +77,17 @@ from another library and after a call returning through x8) print as
 before. Blast radius against cf55245: the new image only; instructions
 +0.05%.
 
+**GUARD (soundness), the commit after.** A bound runtime name is direct
+by its declaration, not its prefix: its row in the runtime, intrinsic or
+SDK prototype table must return nothing or in registers (`x`, two words,
+only in the runtime table), or it is one of twelve names with no row
+whose result was read by hand. Over the 557 `swift_`/`objc_` provider
+names the old and new answers agree, so no render moves (0 lines in
+3,376 renders): a name a later SDK adds with no declaration is now
+unknown, where it was direct. The ten libobjc entries in the hand list
+were written from memory of objc-internal.h, which is not on this host;
+each was already direct before the change.
+
 
 ## 2026-11-27: an enum-only witness slot is named only for an enum's table
 
