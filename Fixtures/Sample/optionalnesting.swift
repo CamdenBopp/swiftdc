@@ -3,16 +3,18 @@
 //
 // A result of at most four registers is returned in them; a fifth piece
 // sends the whole value through the caller's buffer in x8. An Optional adds
-// a piece only when its payload has no spare bit pattern for nil, and only
-// once: the tag byte it adds has spare values of its own, so every further
-// level of nesting reuses that byte. A payload with a spare pattern (a
-// reference, a String's bridge object, a closure's function pointer) never
-// grows at all.
+// a tag byte when its payload has no spare bit pattern for nil, and each
+// further level of nesting adds another: `MemoryLayout` gives 9, 10 and 11
+// bytes for `Int?`, `Int??` and `UInt64???`. The tag bytes share one
+// register, so the register count grows once. A payload with a spare
+// pattern (a reference, a String's bridge object, a closure's function
+// pointer, a Bool) never grows at all.
 //
-// So `Int??` is the same two registers as `Int?`, `Substring??` is still
-// Substring's four words, and `UnsafeBufferPointer<UInt8>??` is its two
-// words and one tag. The value that does cross the boundary is an Optional
-// of four words with no spare pattern: `Four?` is 33 bytes, five pieces.
+// So `Int??` is the same two registers as `Int?` with two tag bytes in the
+// second, `Substring??` is still Substring's four words, and
+// `UnsafeBufferPointer<UInt8>??` is its two words and a register of tags
+// (18 bytes). The value that does cross the boundary is an Optional of
+// four words with no spare pattern: `Four?` is 33 bytes, five pieces.
 //
 // Each maker returns its last argument wrapped as non-nil. The constants
 // and the leading `k` only keep two makers from compiling to one body.
