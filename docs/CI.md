@@ -4,6 +4,12 @@ CI runs one thing: the enforcing test suite, on every push to `dev` and
 every pull request. "Enforcing" means a missing fixture fails the run
 instead of skipping its test.
 
+A second workflow, `go` (`.github/workflows/go.yml`), runs the Go tests
+(`Tools/test.sh go`) on every push to `dev`. Go is not a target and those
+tests are opt-in everywhere else, the suite above included, where they
+report as skipped. The `go` workflow is a report, not a gate: nothing
+waits on it, and a push does not wait for it to finish.
+
 The Build step keeps Swift's real exit status while logging through `tee`.
 A nonzero build fails the step even without an `error:` message, so the
 suite cannot run an older test binary after that failure. The `suite-log`

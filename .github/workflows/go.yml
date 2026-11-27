@@ -1,0 +1,48 @@
+# The Go tests, which no other tier runs (Tools/test.sh go): Go is not a
+# target, and these tests are the longest in the suite. They run here on
+# every push to dev as their own workflow, so a regression in the Go
+# function table, the build ID or the x8 entry handling shows within a
+# day without holding the `ci` workflow or a push. A red run here is a
+# report, not a gate: nothing waits on it.
+name: go
+on:
+  push:
+    branches: [dev]
+concurrency:
+  group: go-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  go-tests:
+    # The same machine choice as ci.yml's suite; docs/CI.md has it.
+    runs-on: ${{ vars.SWIFTDC_SELF_HOSTED == 'true' && fromJSON('["self-hosted", "macOS", "ARM64", "swiftdc"]') || 'xcode-27' }}
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        if: runner.environment == 'github-hosted'
+        with:
+          go-version: stable
+      - name: Install Unicorn for the emulator oracle
+        if: runner.environment == 'github-hosted'
+        run: brew install unicorn pkgconf
+      - name: Select the tested Xcode
+        if: runner.environment == 'github-hosted'
+        run: sudo xcode-select --switch /Applications/Xcode_27.1.app
+      - name: Toolchain
+        run: Tools/ci/environment.sh
+      - name: Fixtures
+        run: |
+          Tools/fixtures.sh || {
+            find "$HOME/Library/Caches/swiftdc-fixtures" -name build.log -exec tail -60 {} \;
+            exit 1
+          }
+      - name: Go tests
+        run: |
+          set -o pipefail
+          Tools/test.sh go 2>&1 | tee go.log | grep -E "recorded an issue|Test run with|skipped"
+      - name: Go test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-log
+          path: go.log

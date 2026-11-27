@@ -67,9 +67,9 @@ results do not replace previously recorded release performance measurements.
 fixtures carry `.goTier` and run only under `SWIFTDC_GO_TESTS=1`
 (`Tools/test.sh go`); elsewhere, the gate and hosted CI included, each is
 reported as skipped with that reason. Full enforcing suite: 2,667 s
-before, 787 s after (2,228 tests, 13 skipped). **OPEN:** nothing runs
-the Go tests automatically, so a regression in the Go function table,
-build-ID or x8 handling shows only when the tier is run by hand. The
+before, 787 s after (2,228 tests, 13 skipped). Hosted CI runs them on every push
+to dev as a separate workflow, `go`, that nothing waits on; its first
+run has not been seen yet. The
 all-fixture sweeps (emulator, facts, CFG) still read the Go images.
 
 
