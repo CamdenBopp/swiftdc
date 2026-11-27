@@ -9,7 +9,8 @@
 # under $SWIFTDC_RENDER_CACHE, keyed by the binary's hash, the fixture key
 # and the view, so a baseline is rendered once and every later change
 # diffs against it. Copy each binary out of .build first: the key is its
-# content, and a binary rebuilt in place is a different key.
+# content, and a binary rebuilt in place is a different key. Entries older
+# than SWIFTDC_RENDER_CACHE_DAYS (2) are removed at the start of each run.
 #
 # Writes <outdir>/<view>.diff (unified) and prints one line per view:
 # files and lines changed. Every changed line belongs in the commit message.
@@ -62,6 +63,11 @@ repo=$(cd "$(dirname "$0")/.." && pwd)
 cache=${SWIFTDC_RENDER_CACHE:-$HOME/Library/Caches/swiftdc-renders}
 jobs=${SWIFTDC_BLAST_JOBS:-6}
 mkdir -p "$out" "$cache"
+# The cache grows by a few gigabytes for every binary measured and filled
+# the disk twice (128 GB on 2026-11-26). An entry is only reused while its
+# binary is still being compared, so one not rendered into for
+# SWIFTDC_RENDER_CACHE_DAYS (2) is dropped before this run adds to it.
+find "${cache:?}" -mindepth 1 -maxdepth 1 -mtime +"${SWIFTDC_RENDER_CACHE_DAYS:-2}" -exec rm -rf {} + 2>/dev/null || true
 out=$(cd "$out" && pwd)
 started=$SECONDS
 
