@@ -23,3 +23,9 @@ import ExtensionMemberKit
 @inline(never) public func viaBuffer(_ p: UnsafeRawBufferPointer, _ k: Int, _ j: Int) -> Int {
     p.emCount(k) &+ j
 }
+
+// viaStruct(a, b, k) = emMake(a, b).against(EMBig(a: k, b: 1, c: 2, d: 3))
+//                    = a &+ b &+ 3 &- (k &+ 6)
+@inline(never) public func viaStruct(_ a: Int, _ b: Int, _ k: Int) -> Int {
+    emMake(a, b).against(EMBig(a: k, b: 1, c: 2, d: 3))
+}

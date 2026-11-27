@@ -98,8 +98,10 @@ hidden and stale registers; a call that was nested there as an argument
 becomes its own statement. Instructions -0.10%.
 
 **OPEN, in the same fixture.**
-- A formal in a floating-point register: `tilted(self: …, ?, ?,
-  <projection>)` is left as found.
+- **FIXED** in a later commit: a formal in a floating-point register
+  read `tilted(self: …, ?, ?, <projection>)`. Each formal is now taken
+  from its own bank, the Double from d0: `tilted(self: …, arg2)`. A
+  struct formal is still left as found.
 - **FIXED** in a later commit: a fixed-width integer's extension member,
   `self` in the one register after the formals:
   `Swift.Int.emPlus(arg2, arg0, arg2)`, the third a stale x2, is now

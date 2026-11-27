@@ -38,3 +38,9 @@ extension Int {
 extension UnsafeRawBufferPointer {
     @inline(never) public func emCount(_ k: Int) -> Int { count &+ k }
 }
+
+// A struct formal: four words, in x0 to x3.
+// EMShape.against(other) = area &- other.area.
+extension EMShape {
+    @inline(never) public func against(_ other: EMBig) -> Int { area &- other.area }
+}

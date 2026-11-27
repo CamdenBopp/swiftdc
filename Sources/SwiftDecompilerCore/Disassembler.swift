@@ -11330,8 +11330,8 @@ public struct Disassembler: Sendable {
             // GenExLib):GenExLib.Shape4.ext(Swift.Int) -> Swift.Int` on an
             // opened existential read `ext(self: …, arg1, ?, ?, <the
             // projected address>)`, x3 the temporary that address passed
-            // through. With every formal one general register, it shows
-            // exactly those. Only such a member: a specialization's name
+            // through. With every formal one general or one floating-point
+            // register, it shows exactly those. Only such a member: a specialization's name
             // prints formals its body may no longer take, and a witness
             // thunk is left as found.
             if selfValueBySite[address] != nil, let callee = calleeByAddress[address],
@@ -11340,11 +11340,21 @@ public struct Disassembler: Sendable {
                let range = DisassembledFunction.outermostArgumentListRange(of: signature.head),
                case let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])
                    .filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }),
-               parameters.allSatisfy({
-                   Self.scalarParameterClass($0, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) == .integer
+               case let classes = parameters.map({
+                   Self.scalarParameterClass($0, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex)
                }),
-               values.count > parameters.count {
-                argumentsByAddress[address] = values.prefix(parameters.count).map(sanitizeValue)
+               classes.allSatisfy({ $0 == .integer || $0 == .floating }) {
+                // Each formal from its own bank, in order: a Double is in
+                // d0 whatever x0 holds.
+                var general = 0, floating = 0
+                argumentsByAddress[address] = classes.map { kind in
+                    if kind == .integer {
+                        defer { general += 1 }
+                        return general < values.count ? sanitizeValue(values[general]) : .unknown
+                    }
+                    defer { floating += 1 }
+                    return floating < site.floatArguments.count ? sanitizeValue(site.floatArguments[floating]) : .unknown
+                }
                 strategy = "extension-formals"
                 continue
             }

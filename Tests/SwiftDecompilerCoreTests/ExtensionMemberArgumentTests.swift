@@ -48,12 +48,22 @@ private func extensionMemberViews(_ name: String) async throws -> [String]? {
     }
 }
 
-/// A formal in a floating-point register is not placed by this: the call
-/// is left as found, its open tail included, never cut to x0.
-@Test func anExtensionMemberWithAFloatFormalIsLeftAsFoundIfPresent() async throws {
+/// A formal in a floating-point register comes from that bank: the
+/// Double is in d0, whatever the integer registers hold. It read
+/// `tilted(self: …, ?, ?, <the projected address>)`.
+@Test func anExtensionMemberTakesAFloatFormalFromItsOwnRegisterIfPresent() async throws {
     guard let views = try await extensionMemberViews("viaDouble") else { return }
     for text in views {
-        #expect(text.contains("), ?, ?, __swift_project_boxed_opaque_existential_1(local_"), "\(text)")
+        #expect(text.contains("EMShape.tilted(self: __swift_project_boxed_opaque_existential_1(local_"), "\(text)")
+        #expect(text.contains(", ?), arg2)\n"), "\(text)")
+    }
+}
+
+/// A struct formal is neither kind of scalar: the call is left as found.
+@Test func anExtensionMemberWithAStructFormalIsLeftAsFoundIfPresent() async throws {
+    guard let views = try await extensionMemberViews("viaStruct") else { return }
+    for text in views {
+        #expect(text.contains("ExtensionMemberKit.EMBig.init(a:b:c:d:)(arg2, 1, 2, 3))"), "\(text)")
     }
 }
 
