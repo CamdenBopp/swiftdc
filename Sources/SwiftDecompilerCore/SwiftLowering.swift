@@ -84,6 +84,13 @@ enum SwiftLowering: Equatable, Sendable {
         return .unknown
     }
 
+    /// The standard library's frozen fixed-width integers and `Bool`: one
+    /// general register each, passed by value wherever they are `self`.
+    static let fixedWidthIntegers: Set<String> = [
+        "Swift.Bool", "Swift.Int", "Swift.UInt", "Swift.Int8", "Swift.UInt8", "Swift.Int16", "Swift.UInt16",
+        "Swift.Int32", "Swift.UInt32", "Swift.Int64", "Swift.UInt64",
+    ]
+
     /// A result of more words than this is returned through x8.
     private static let maxDirectResultWords = 4
     /// Composition members that are never a protocol with a witness table:

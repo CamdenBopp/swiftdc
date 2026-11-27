@@ -83,9 +83,12 @@ Instructions +0.16%.
 
 **OPEN.**
 - The receiver is in v0 and could be named; it is `?`.
-- An integer receiver's getter still takes the positional layout:
-  `Swift.Int.hashValue.getter(arg0, arg1)` at -Onone, where `arg1` is
-  stale. The fixture's `intHash` shows it.
+- **FIXED** in the next commit: a fixed-width integer's getter took the
+  positional layout, `Swift.Int.hashValue.getter(arg0, arg1)` at -Onone,
+  where `arg1` is stale. It takes `self` in x0 and nothing after it:
+  `getter(self: arg0)`. One line, in the fixture. The two getter rules
+  together cost +0.4% instructions: each parses the callee's name again
+  at every call site they reach, which a shared parse would remove.
 - A getter an extension adds (`(extension in M):Swift.Float.….getter`)
   is not a scalar the lowering knows and stays positional.
 

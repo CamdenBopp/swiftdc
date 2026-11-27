@@ -39,13 +39,13 @@ func aFloatGetterTakesNoIntegerRegisterIfPresent(name: String, getter: String, c
     }
 }
 
-/// The rule is for a float receiver only. An integer one is in x0, and its
-/// getter keeps the receiver the call was given.
-@Test func anIntegerGettersReceiverIsNotDeclinedIfPresent() async throws {
+/// A fixed-width integer receiver is in x0, and its getter takes nothing
+/// after it: `Int.hashValue.getter(arg0, arg1)` named the caller's second
+/// formal, still in x1, as an argument.
+@Test func anIntegerGetterTakesItsReceiverAndNothingElseIfPresent() async throws {
     guard let views = try await bitPatternViews("intHash") else { return }
     for text in views {
-        #expect(text.contains("Swift.Int.hashValue.getter(arg0"), "\(text)")
-        #expect(!text.contains("self: ?"), "\(text)")
+        #expect(text.contains("(Swift.Int.hashValue.getter(self: arg0) + arg1)"), "\(text)")
     }
 }
 

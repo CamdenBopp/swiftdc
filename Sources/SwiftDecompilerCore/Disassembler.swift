@@ -10607,6 +10607,19 @@ public struct Disassembler: Sendable {
                 strategy = "float-getter-self"
                 continue
             }
+            // An instance getter of a frozen fixed-width integer takes its
+            // `self` in x0 and nothing after it: `Int.hashValue.getter` at
+            // -Onone read `getter(arg0, arg1)`, the caller's second formal
+            // still in x1.
+            if selfValueBySite[address] == nil, let callee = calleeByAddress[address],
+               let property = DisassembledFunction.swiftAccessorProperty(callee), property.isGetter,
+               let accessor = callee.range(of: ".\(property.property).getter"),
+               SwiftLowering.fixedWidthIntegers.contains(String(callee[..<accessor.lowerBound])) {
+                let value = values.first.map(sanitizeValue) ?? .unknown
+                selfValueBySite[address] = value
+                strategy = "integer-getter-self"
+                continue
+            }
             // A Swift callee gets exactly its declared parameters. Async GP
             // slots use only facts common to both candidate prefixes; FP
             // slots keep their independent bank. No trailing trim hides arity.
