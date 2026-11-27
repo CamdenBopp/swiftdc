@@ -67,10 +67,11 @@ private func extensionMemberViews(_ name: String) async throws -> [String]? {
     }
 }
 
-/// The rule is for a member an extension adds. A protocol witness thunk
-/// called with `self` in x20 is left as found, its hidden metadata and
-/// witness table shown: trimming it to its formals is not proven here.
-@Test func aWitnessThunkIsNotTrimmedToItsFormalsIfPresent() async throws {
+/// A protocol witness thunk has its requirement's convention: `self` in
+/// x20, the formals from x0, then Self's metadata and the witness table.
+/// `describe()` has no formal, and read `describe(self: …, 0x1000081f8,
+/// 0x1000080c0)`.
+@Test func aWitnessThunkShowsItsFormalsOnlyIfPresent() async throws {
     let path = "Fixtures/Sample/sample.release"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies {
@@ -80,7 +81,21 @@ private func extensionMemberViews(_ name: String) async throws -> [String]? {
     let call = try #require(all.split(separator: "\n").first {
         $0.contains("protocol witness for sample.Shape.describe(self: ")
     })
-    #expect(call.contains("), 0x"), "\(call)")
+    #expect(call.hasSuffix("))"), "\(call)")
+    #expect(!call.contains("), 0x"), "\(call)")
+}
+
+/// Which callees the rule is for, by name.
+@Test func onlyAnExtensionMemberOrAWitnessThunkTakesFormalsOnly() {
+    #expect(Disassembler.takesOnlyFormalsBesideContextSelf("(extension in M):M.P.scaled(Swift.Int) -> Swift.Int"))
+    #expect(Disassembler.takesOnlyFormalsBesideContextSelf(
+        "protocol witness for M.P.describe() -> Swift.String in conformance M.C : M.P in M"))
+    for name in ["generic specialization <Swift.Int> of M.Box.get() -> Swift.Int",
+                 "function signature specialization <Arg[0] = Dead> of M.C.run(Swift.Int) -> ()",
+                 "generic pre-specialization <Swift.AnyObject> of Swift.Array._makeUniqueAndReserveCapacityIfNotUnique() -> ()",
+                 "M.C.run(Swift.Int) -> ()", "merged (extension in M):M.P.scaled(Swift.Int) -> Swift.Int", ""] {
+        #expect(!Disassembler.takesOnlyFormalsBesideContextSelf(name), "\(name)")
+    }
 }
 
 /// Only a fixed-width integer's one word is known from its name.

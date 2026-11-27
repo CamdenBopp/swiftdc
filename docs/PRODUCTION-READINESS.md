@@ -108,10 +108,11 @@ becomes its own statement. Instructions -0.10%.
   `emPlus(arg2, arg0)`. Whether the member is mutating its name does not
   say, so the words stay positional and are not named `self`. A receiver
   of two words or more is not bounded.
-- A protocol witness thunk and a specialization called with `self` in x20
-  still show registers past their formals (`protocol witness for
-  sample.Shape.describe(self: …, 0x…, 0x…)`); a specialization's printed
-  formals are not proven to be its body's.
+- **FIXED** in a later commit for a protocol witness thunk, which has
+  its requirement's convention: `protocol witness for
+  sample.Shape.describe(self: …, 0x…, 0x…)` is now `describe(self: …)`.
+  A specialization called with `self` in x20 still shows registers past
+  its formals; its printed formals are not proven to be its body's.
 
 
 ## 2026-11-27: a generic free function has no self

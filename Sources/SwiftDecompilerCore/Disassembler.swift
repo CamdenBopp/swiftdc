@@ -7704,6 +7704,15 @@ public struct Disassembler: Sendable {
         SwiftLowering.fixedWidthIntegers.contains(receiver) ? 1 : nil
     }
 
+    /// Whether a callee reached with `self` in x20 takes, in the registers
+    /// from x0, its printed formals and then only hidden generic words: a
+    /// member an extension adds, or a protocol witness thunk. Not a
+    /// specialization, whose body may take fewer or other parameters than
+    /// its name prints, nor any member a signature layout already places.
+    static func takesOnlyFormalsBesideContextSelf(_ callee: String) -> Bool {
+        callee.hasPrefix("(extension in ") || callee.hasPrefix("protocol witness for ")
+    }
+
     /// Whether a property getter takes nothing in x0–x7: a static property's
     /// (the metatype rides in x20), a class instance property's (self in
     /// x20) or a global's. A value type's instance getter does not qualify,
@@ -11331,11 +11340,14 @@ public struct Disassembler: Sendable {
             // opened existential read `ext(self: …, arg1, ?, ?, <the
             // projected address>)`, x3 the temporary that address passed
             // through. With every formal one general or one floating-point
-            // register, it shows exactly those. Only such a member: a specialization's name
-            // prints formals its body may no longer take, and a witness
-            // thunk is left as found.
+            // register, it shows exactly those. So does a protocol witness
+            // thunk, which has its requirement's convention: `protocol
+            // witness for sample.Shape.describe(self: …, 0x1000081f8,
+            // 0x1000080c0)` showed Self's metadata and the witness table.
+            // A specialization's name prints formals its body may no
+            // longer take, and is left as found.
             if selfValueBySite[address] != nil, let callee = calleeByAddress[address],
-               callee.hasPrefix("(extension in "),
+               Self.takesOnlyFormalsBesideContextSelf(callee),
                let signature = DisassembledFunction.splitSignature(callee),
                let range = DisassembledFunction.outermostArgumentListRange(of: signature.head),
                case let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])
