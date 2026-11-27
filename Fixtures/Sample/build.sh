@@ -434,6 +434,11 @@ $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -o libEmuImage.dylib
 # The same image with the older bind opcodes in place of chained fixups.
 $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -Wl,-no_fixup_chains -o libEmuImage.opcodes.dylib
 
+echo "==> a family of branch conditions, arithmetic idioms and loops, each function's result naming its path (cfa.swift, -Onone, -O and -Osize)"
+for CFA_LEVEL in Onone O Osize; do
+    $SWIFTC -parse-as-library -$CFA_LEVEL -emit-library -module-name CFA cfa.swift -o libCFA.$CFA_LEVEL.dylib
+done
+
 echo "==> two conditional class casts in a row, the second accessor's request the first cast's nil (castchainkit.swift, castchainclient.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -emit-module -module-name CastChainKit castchainkit.swift -o libCastChainKit.dylib
 $SWIFTC -parse-as-library -O -emit-library -module-name CastChainClient castchainclient.swift -I . -L . -lCastChainKit -o libCastChainClient.dylib

@@ -61,6 +61,21 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: the first fixture family is held by the emulator
+
+**ADDED (tests).** `cfa.swift`, a family of 190 compiled functions whose
+results name the path the machine took (comparisons at every width and
+signedness, selects, range and bit tests, switches, checked and wrapping
+arithmetic, division by constants, loops), is built at -Onone, -O and
+-Osize. `FixtureFamilySweepTests` runs every function in the emulator and
+holds each rendered return to the machine's: 2,316, 2,844 and 2,504
+returns, no disagreement. Seven more families wait in `work/fixture-queue`.
+
+The sweep checks returns and constant conditions, so it does not see a
+wrong call argument, which is what most of the families' recorded defects
+were. Those keep their own fixtures.
+
+
 ## 2026-11-27: a second cast after a failed one keeps its class
 
 **FIXED (completeness).** After a failed `as?` the compiler reuses the
