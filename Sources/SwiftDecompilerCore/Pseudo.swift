@@ -352,10 +352,16 @@ public extension DisassembledFunction {
         let name = call[..<open].trimmingCharacters(in: .whitespaces)
         let arguments = splitTopLevelArguments(call[call.index(after: open)..<call.index(before: call.endIndex)])
             .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        // The one argument a non-generic accessor takes is its request, a
-        // constant. `…` is an unproven list, and `?` an unknown argument:
-        // neither shows the accessor takes no type.
+        // The one argument a non-generic accessor takes is its request: a
+        // constant, or the result of an earlier call. After a failed
+        // `as?` the compiler reuses that cast's nil, still in x0, as the
+        // zero request of the next class's accessor, and `accessor for
+        // M.Two(r1)` named no type: the second cast printed
+        // `swift_dynamicCastClass(r0)`, its class gone. `…` is an unproven
+        // list, and `?` an unknown argument: neither shows the accessor
+        // takes no type.
         let isRequest = arguments.first.map { text in
+            if text.wholeMatch(of: #/r[0-9]+/#) != nil { return true }
             let digits = text.hasPrefix("0x") ? text.dropFirst(2) : Substring(text)
             return !digits.isEmpty && digits.allSatisfy(\.isHexDigit)
         } ?? true

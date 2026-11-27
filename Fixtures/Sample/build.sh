@@ -434,6 +434,10 @@ $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -o libEmuImage.dylib
 # The same image with the older bind opcodes in place of chained fixups.
 $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -Wl,-no_fixup_chains -o libEmuImage.opcodes.dylib
 
+echo "==> two conditional class casts in a row, the second accessor's request the first cast's nil (castchainkit.swift, castchainclient.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -emit-module -module-name CastChainKit castchainkit.swift -o libCastChainKit.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name CastChainClient castchainclient.swift -I . -L . -lCastChainKit -o libCastChainClient.dylib
+
 echo "==> members an extension adds, called on an opened existential and on a value (extensionmemberkit.swift, extensionmemberclient.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -emit-module -module-name ExtensionMemberKit extensionmemberkit.swift -o libExtensionMemberKit.dylib
 $SWIFTC -parse-as-library -O -emit-library -module-name ExtensionMemberClient extensionmemberclient.swift -I . -L . -lExtensionMemberKit -o libExtensionMemberClient.dylib

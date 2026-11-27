@@ -85,6 +85,13 @@ func aCastToAnUninstantiatedGenericTargetStaysRawIfPresent(name: String) async t
     #expect(name("type metadata accessor for M.Shelf(…)") == nil)
     #expect(name("type metadata accessor for M.Shelf(?)") == nil)
     #expect(name("type metadata accessor for M.Shelf(arg0)") == nil)
+    // An earlier call's result as the request: the nil of a failed cast,
+    // reused as the next accessor's zero.
+    #expect(name("type metadata accessor for M.Plain(r1)") == "M.Plain")
+    #expect(name("type metadata accessor for M.Plain(r12)") == "M.Plain")
+    #expect(name("type metadata accessor for M.Shelf(r1, type metadata for Swift.Int)") == nil)
+    #expect(name("type metadata accessor for M.Plain(r)") == nil)
+    #expect(name("type metadata accessor for M.Plain(r1 + 8)") == nil)
     // An accessor's address, not a call.
     #expect(name("type metadata accessor for M.Shelf") == nil)
     #expect(name("type metadata for ") == nil)
@@ -92,4 +99,22 @@ func aCastToAnUninstantiatedGenericTargetStaysRawIfPresent(name: String) async t
     #expect(DisassembledFunction.swiftCastIdiom(
         callee: "swift_dynamicCastClass",
         arguments: ["arg0", "type metadata accessor for M.Shelf(…)"]) == nil)
+}
+
+/// Two conditional casts in a row. When the first fails, its nil is still
+/// in x0 and is the request of the second class's accessor, so that
+/// accessor printed `CCTwo(r1)` and the second cast lost its class:
+/// `swift_dynamicCastClass(r0)`. castchainclient.swift states the value.
+@Test func aSecondCastAfterAFailedOneKeepsItsClassIfPresent() async throws {
+    let path = "Fixtures/Sample/libCastChainClient.dylib"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let functions = try await withStableDependencies {
+        try await Disassembler(preset: .default).disassemble(path: path)
+    }
+    let function = try #require(functions.first { $0.displayName.contains("CastChainClient.classify(") })
+    for text in [function.renderStructured(), function.renderPseudo()] {
+        #expect(text.contains("(r0 as? CastChainKit.CCOne)"), Comment(rawValue: text))
+        #expect(text.contains("(r0 as? CastChainKit.CCTwo)"), Comment(rawValue: text))
+        #expect(!text.contains("swift_dynamicCastClass("), Comment(rawValue: text))
+    }
 }

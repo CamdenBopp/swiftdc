@@ -61,6 +61,22 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: a second cast after a failed one keeps its class
+
+**FIXED (completeness).** After a failed `as?` the compiler reuses the
+cast's nil, still in x0, as the zero request of the next class's metadata
+accessor. That accessor printed `accessor for M.Two(r1)`, which named no
+type because only a constant counted as a request, and the second cast
+fell back to the raw call with its metadata stripped:
+`libCastChainClient.dylib` `classify` rendered `swift_dynamicCastClass(r0)`
+where the listing had both arguments. An earlier call's result is now a
+request too, and the cast prints `(r0 as? CastChainKit.CCTwo)`. A formal
+in that position is still declined. One line, in the new fixture.
+
+**OPEN.** The same function still ends `return ?`: its three returns are
+not recovered.
+
+
 ## 2026-11-27: an extension's member called with self in x20 takes its formals only
 
 **FIXED (soundness).** A member an extension adds has no signature layout
