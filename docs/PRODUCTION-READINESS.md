@@ -77,9 +77,13 @@ enums and Optionals (`enumfam.swift`), errors (`f3errors.swift`), closures
 the three levels: 18 images in all. The sweep reaches fewer of their
 functions, 32 to 304 returns an image, because it seeds integer formals
 only. All 18 go red with add and subtract swapped in the tracer. The suite
-grew from 744 s to 780 s. Two families remain outside the repository: the
-generics pair, which needs two images, and memory and frames, which the
-sweep barely reaches.
+grew from 744 s to 780 s.
+
+The generics pair (`genexlib.swift`, `genexuse.swift`) is built too, as
+two images a level. Only the using image is listed, 32 returns a level:
+the library renders mostly `return ?` and field reads, and no arithmetic
+mutation of the tracer turned its sweep red. The memory and frames family
+stays outside the repository; the sweep barely reaches it.
 
 The sweep checks returns and constant conditions, so it does not see a
 wrong call argument, which is what most of the families' recorded defects

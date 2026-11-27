@@ -443,6 +443,19 @@ for FAMILY_LEVEL in Onone O Osize; do
     $SWIFTC -parse-as-library -$FAMILY_LEVEL -emit-library -module-name F6 f6classes.swift -o libF6Classes.$FAMILY_LEVEL.dylib
 done
 
+echo "==> a family of generics and existentials in two images, the library and its user (genexlib.swift, genexuse.swift; -Onone, -O and -Osize)"
+for FAMILY_LEVEL in Onone O Osize; do
+    GENEX_MODULES=$(mktemp -d)
+    $SWIFTC -parse-as-library -$FAMILY_LEVEL -emit-library -emit-module -module-name GenExLib \
+        -emit-module-path "$GENEX_MODULES/GenExLib.swiftmodule" \
+        -Xlinker -install_name -Xlinker @rpath/libGenExLib.$FAMILY_LEVEL.dylib \
+        genexlib.swift -o libGenExLib.$FAMILY_LEVEL.dylib
+    $SWIFTC -parse-as-library -$FAMILY_LEVEL -emit-library -module-name GenExUse \
+        -I "$GENEX_MODULES" -L . -lGenExLib.$FAMILY_LEVEL -Xlinker -rpath -Xlinker @loader_path \
+        genexuse.swift -o libGenExUse.$FAMILY_LEVEL.dylib
+    rm -rf "$GENEX_MODULES"
+done
+
 echo "==> a family of branch conditions, arithmetic idioms and loops, each function's result naming its path (cfa.swift, -Onone, -O and -Osize)"
 for CFA_LEVEL in Onone O Osize; do
     $SWIFTC -parse-as-library -$CFA_LEVEL -emit-library -module-name CFA cfa.swift -o libCFA.$CFA_LEVEL.dylib

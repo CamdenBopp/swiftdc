@@ -39,6 +39,14 @@ private let families: [(image: String, returns: Int)] = [
     ("Fixtures/Sample/libF6Classes.Onone.dylib", 165),
     ("Fixtures/Sample/libF6Classes.O.dylib", 165),
     ("Fixtures/Sample/libF6Classes.Osize.dylib", 240),
+    // genexuse.swift: callers of generic functions, protocol witnesses and
+    // existentials defined in another image, genexlib.swift. The library
+    // itself is built and not listed: its returns are field reads and
+    // calls, and no arithmetic mutation of the tracer turned its sweep
+    // red, so listing it would guard nothing.
+    ("Fixtures/Sample/libGenExUse.Onone.dylib", 25),
+    ("Fixtures/Sample/libGenExUse.O.dylib", 25),
+    ("Fixtures/Sample/libGenExUse.Osize.dylib", 25),
 ]
 
 @Test(arguments: families.map(\.image))
