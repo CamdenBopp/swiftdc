@@ -10,22 +10,44 @@ import Testing
 ///
 /// The floor under each image is what the sweep checked when the family
 /// was added, less a margin: a sweep that silently checks nothing fails.
-private let controlFlowFamily: [(image: String, returns: Int)] = [
+private let families: [(image: String, returns: Int)] = [
+    // cfa.swift: comparisons at every width and signedness, selects, range
+    // and bit tests, switches, checked and wrapping arithmetic, division by
+    // constants, loops.
     ("Fixtures/Sample/libCFA.Onone.dylib", 2000),
     ("Fixtures/Sample/libCFA.O.dylib", 2400),
     ("Fixtures/Sample/libCFA.Osize.dylib", 2100),
+    // structfamily.swift: structs and tuples passed and returned in
+    // registers, each field weighed into the result.
+    ("Fixtures/Sample/libStructFamily.Onone.dylib", 40),
+    ("Fixtures/Sample/libStructFamily.O.dylib", 26),
+    ("Fixtures/Sample/libStructFamily.Osize.dylib", 110),
+    // enumfam.swift: enum and Optional makers and weighers, by case.
+    ("Fixtures/Sample/libEnumFam.Onone.dylib", 120),
+    ("Fixtures/Sample/libEnumFam.O.dylib", 100),
+    ("Fixtures/Sample/libEnumFam.Osize.dylib", 160),
+    // f3errors.swift: untyped and typed throws, catches and rethrows.
+    ("Fixtures/Sample/libF3Errors.Onone.dylib", 120),
+    ("Fixtures/Sample/libF3Errors.O.dylib", 90),
+    ("Fixtures/Sample/libF3Errors.Osize.dylib", 85),
+    // f4closures.swift: function values built and invoked through an
+    // opaque invoker.
+    ("Fixtures/Sample/libF4.Onone.dylib", 95),
+    ("Fixtures/Sample/libF4.O.dylib", 80),
+    ("Fixtures/Sample/libF4.Osize.dylib", 120),
+    // f6classes.swift: stored properties, vtable and static dispatch.
+    ("Fixtures/Sample/libF6Classes.Onone.dylib", 165),
+    ("Fixtures/Sample/libF6Classes.O.dylib", 165),
+    ("Fixtures/Sample/libF6Classes.Osize.dylib", 240),
 ]
 
-/// cfa.swift: comparisons at every width and signedness, selects, range
-/// and bit tests, switches, checked and wrapping arithmetic, division by
-/// constants, loops.
-@Test(arguments: controlFlowFamily.map(\.image))
-func theControlFlowFamilysReturnsAgreeWithTheEmulatorIfPresent(path: String) async throws {
+@Test(arguments: families.map(\.image))
+func aFixtureFamilysReturnsAgreeWithTheEmulatorIfPresent(path: String) async throws {
     guard FileManager.default.fileExists(atPath: path) else { return }
     let image = String(path.dropFirst("Fixtures/Sample/".count))
     // No emulator (Unicorn not installed): the enforcing suite names it.
     guard let sweep = try await sweepAgainstEmulator(image) else { return }
-    let floor = try #require(controlFlowFamily.first { $0.image == path }).returns
+    let floor = try #require(families.first { $0.image == path }).returns
     #expect(sweep.mismatches.isEmpty, "false statements:\n\(sweep.mismatches.sorted { $0.key < $1.key }.prefix(8).map { "\($0.key): \($0.value.first ?? "")" }.joined(separator: "\n"))")
     #expect(sweep.returnsChecked >= floor, "checked \(sweep.returnsChecked) returns in \(image)")
 }

@@ -69,7 +69,17 @@ signedness, selects, range and bit tests, switches, checked and wrapping
 arithmetic, division by constants, loops), is built at -Onone, -O and
 -Osize. `FixtureFamilySweepTests` runs every function in the emulator and
 holds each rendered return to the machine's: 2,316, 2,844 and 2,504
-returns, no disagreement. Seven more families wait in `work/fixture-queue`.
+returns, no disagreement.
+
+Five more followed: structs and tuples in registers (`structfamily.swift`),
+enums and Optionals (`enumfam.swift`), errors (`f3errors.swift`), closures
+(`f4closures.swift`) and classes with dispatch (`f6classes.swift`), each at
+the three levels: 18 images in all. The sweep reaches fewer of their
+functions, 32 to 304 returns an image, because it seeds integer formals
+only. All 18 go red with add and subtract swapped in the tracer. The suite
+grew from 744 s to 780 s. Two families remain outside the repository: the
+generics pair, which needs two images, and memory and frames, which the
+sweep barely reaches.
 
 The sweep checks returns and constant conditions, so it does not see a
 wrong call argument, which is what most of the families' recorded defects

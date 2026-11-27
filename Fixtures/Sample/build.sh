@@ -434,6 +434,15 @@ $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -o libEmuImage.dylib
 # The same image with the older bind opcodes in place of chained fixups.
 $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -Wl,-no_fixup_chains -o libEmuImage.opcodes.dylib
 
+echo "==> four more families, each function's result weighing what it was passed or which path it took: structs and tuples in registers (structfamily.swift), enums and Optionals (enumfam.swift, enumfam_big.swift), errors (f3errors.swift), closures (f4support.swift, f4closures.swift), classes and dispatch (f6classes.swift); -Onone, -O and -Osize"
+for FAMILY_LEVEL in Onone O Osize; do
+    $SWIFTC -parse-as-library -$FAMILY_LEVEL -emit-library -module-name StructFamily structfamily.swift -o libStructFamily.$FAMILY_LEVEL.dylib
+    $SWIFTC -parse-as-library -$FAMILY_LEVEL -emit-library -module-name EnumFam enumfam.swift enumfam_big.swift -o libEnumFam.$FAMILY_LEVEL.dylib
+    $SWIFTC -parse-as-library -$FAMILY_LEVEL -emit-library -module-name F3Errors f3errors.swift -o libF3Errors.$FAMILY_LEVEL.dylib
+    $SWIFTC -parse-as-library -$FAMILY_LEVEL -emit-library -module-name F4 f4support.swift f4closures.swift -o libF4.$FAMILY_LEVEL.dylib
+    $SWIFTC -parse-as-library -$FAMILY_LEVEL -emit-library -module-name F6 f6classes.swift -o libF6Classes.$FAMILY_LEVEL.dylib
+done
+
 echo "==> a family of branch conditions, arithmetic idioms and loops, each function's result naming its path (cfa.swift, -Onone, -O and -Osize)"
 for CFA_LEVEL in Onone O Osize; do
     $SWIFTC -parse-as-library -$CFA_LEVEL -emit-library -module-name CFA cfa.swift -o libCFA.$CFA_LEVEL.dylib
