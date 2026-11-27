@@ -61,6 +61,32 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: an address parked in x20 is named a foreign struct method's receiver
+
+**OPEN (soundness), with a DEAD END.** For an instance member of a struct
+or enum of a library the program brings, the import does not say whether
+`self` travels by address in x20 (mutating, resilient or address-only) or
+by value in the registers after the formals. A call reached with an
+address in x20 names it the receiver either way. A reduction in authored
+assembly (`add x20, sp, #8` kept across `Reading.scaled(3)`, with `self`
+in x1) renders `Reading.scaled(self: local_28, 3)` at -Onone, -O and
+-Osize: a receiver the callee never saw. No compiled body was found that
+does it.
+
+- Declining every such receiver fixes the reduction and loses 1,622 named
+  receivers in the toolchain's swift-syntax dylibs (`TokenSyntax` getters,
+  `SyntaxCollectionIterator.next` and others), which are large or mutating
+  and almost certainly true. Not landed.
+- **DEAD END:** declining only when x20 is not provably this call's input
+  alone (written in the call's block, rewritten on every path before any
+  read or other call). libSwiftOperators: 32 receivers declined by the
+  blanket rule, 27 still declined. The compiler sets x20 once for several
+  calls on one receiver, so the proof rarely holds.
+- Not tried: proving `self` is not by value because the registers after
+  the formals are not written between the previous call and this one. The
+  hole is a previous call's result forwarded in x0 as a one-word `self`.
+
+
 ## 2026-11-27: an existential metatype result of five words is not called direct
 
 **GUARD (soundness).** `SwiftLowering.of` called every `.Type` result
