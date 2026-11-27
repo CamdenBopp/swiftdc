@@ -183,11 +183,14 @@ around what a rebuild costs:
 
 - **Two scratch paths, always.** Debug and tests in `.build`, release in
   `.build-release`. Never switch configurations in one scratch path.
-- **Batch the mutation proofs.** Save the changed files, then one loop:
-  apply a mutation by exact string replacement (assert the old text occurs
-  once), rebuild, run the filtered tests, restore the saved files. End with
-  one rebuild and a green run. A mutation that does not compile proves
-  nothing: check the build for `error:` before reading the test result.
+- **Batch the mutation proofs** with `Tools/mutate.py <table.json>
+  --filter '<tests>'`. The table lists each mutation as a file, the exact
+  old text (it must occur once) and the new text. The tool applies one,
+  rebuilds, runs the filtered tests, restores the file, and ends on a
+  rebuild and a green run. It prints `killed`, `SURVIVED` (write the test
+  or remove the code) or `BUILDERR` (a mutant that does not compile proves
+  nothing) for each, and exits 1 unless every entry was killed. Keep the
+  table beside the work until the commit message names what it showed.
 - **Blast radius:** `Tools/blast-radius.sh <base> <new> <outdir> --real`
   renders every fixture Mach-O and the toolchain's swift-syntax dylibs in
   all four views with both binaries and diffs them. Renders are cached by
