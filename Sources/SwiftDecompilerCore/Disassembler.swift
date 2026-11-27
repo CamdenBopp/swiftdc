@@ -7672,6 +7672,28 @@ public struct Disassembler: Sendable {
             && property.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" }
     }
 
+    /// `name` without a generic parameter clause it ends in: `M.f<A where A:
+    /// M.P>` is `M.f`, and `M.Box<A>.get` is itself. The clause is matched
+    /// from its closing bracket; the `>` of an arrow inside it closes
+    /// nothing. An unbalanced name is returned as it is.
+    static func withoutTrailingGenericClause(_ name: Substring) -> Substring {
+        guard name.last == ">" else { return name }
+        var depth = 0
+        var index = name.endIndex
+        while index > name.startIndex {
+            index = name.index(before: index)
+            switch name[index] {
+            case ">" where index > name.startIndex && name[name.index(before: index)] == "-": break
+            case ">": depth += 1
+            case "<":
+                depth -= 1
+                if depth == 0 { return name[..<index] }
+            default: break
+            }
+        }
+        return name
+    }
+
     /// Whether a property getter takes nothing in x0–x7: a static property's
     /// (the metatype rides in x20), a class instance property's (self in
     /// x20) or a global's. A value type's instance getter does not qualify,
@@ -10181,7 +10203,11 @@ public struct Disassembler: Sendable {
                 // value its caller kept in x20).
                 if let signature = DisassembledFunction.splitSignature(Self.withoutSpecializationClauses(callee)),
                    let range = DisassembledFunction.outermostArgumentListRange(of: signature.head) {
-                    let name = signature.head[..<range.lowerBound].dropLast()
+                    // A generic free function prints its own parameters
+                    // last, `Module.name<A where A: P>(…)`: without them it
+                    // is `Module.name`. A method of a generic type keeps its
+                    // type's clause in the middle and is no free function.
+                    let name = Self.withoutTrailingGenericClause(signature.head[..<range.lowerBound].dropLast())
                     if name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." }),
                        name.filter({ $0 == "." }).count == 1 { continue }
                 }

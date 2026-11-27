@@ -61,6 +61,25 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: a generic free function has no self
+
+**FIXED (soundness).** A module-level function, `Module.name(…)`, has no
+`self`, and a call to one was already kept from taking x20. A generic one
+prints its own parameters after the name, `Module.name<A where A: P>(…)`,
+which that test did not recognise, so a value the caller kept in x20
+across the call was named its receiver. `libFreeGenericClient.dylib`
+`weighPair` rendered `FreeGenericKit.gWeigh<A where A:
+FreeGenericKit.FGWeighted>(self: arg0, local_30, arg2)`; now
+`gWeigh<…>(local_30, arg2)`. A generic method of a class,
+`FGBox.pick<A>(self: arg0, …)`, keeps its receiver.
+
+Blast radius against 0b77720: the new image; `sample.debug`, where
+`Swift._allocateUninitializedArray<A>` had `self=r1`, an earlier
+allocation's result; and the same standard-library function in two
+swift-syntax listings with `self=__swift_instantiateConcreteTypeFromMangledName(…)`.
+Four lines structured, 12 listing. Instructions +0.04%.
+
+
 ## 2026-11-27: an imported metadata accessor does not take the caller's registers
 
 **FIXED (soundness).** A type metadata accessor of another image takes

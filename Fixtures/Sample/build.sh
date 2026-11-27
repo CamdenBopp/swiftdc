@@ -434,6 +434,10 @@ $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -o libEmuImage.dylib
 # The same image with the older bind opcodes in place of chained fixups.
 $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -Wl,-no_fixup_chains -o libEmuImage.opcodes.dylib
 
+echo "==> a generic free function of another image called with a caller's value in x20, beside a generic method (freegenerickit.swift, freegenericclient.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -emit-module -module-name FreeGenericKit freegenerickit.swift -o libFreeGenericKit.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name FreeGenericClient freegenericclient.swift -I . -L . -lFreeGenericKit -o libFreeGenericClient.dylib
+
 echo "==> an imported type metadata accessor reached with the caller's formals still in x1 and x2 (metaaccessorkit.swift, metaaccessorclient.swift, -O)"
 $SWIFTC -parse-as-library -O -emit-library -emit-module -module-name MetaAccessorKit metaaccessorkit.swift -o libMetaAccessorKit.dylib
 $SWIFTC -parse-as-library -O -emit-library -module-name MetaAccessorClient metaaccessorclient.swift -I . -L . -lMetaAccessorKit -o libMetaAccessorClient.dylib
