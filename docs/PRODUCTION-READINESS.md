@@ -61,6 +61,27 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: an entry's context slot is not carried across an awaited child
+
+**FIXED (soundness).** `asyncChainSlots` proved a context slot at the
+entry funclet's suspensions and handed it to every resume funclet of the
+chain, whatever the suspension was. An awaited callee holds the caller's
+context in its Parent word and can write through it.
+`libAsyncChildSeed.dylib` `followed()` stores 7 in slot 16, awaits a child
+that stores 11 there through its Parent word, and its resume rendered
+`return AsyncChildSeed.observe(7)`; the machine passes 11. A chain now
+keeps its seeds only when every transfer in it is an executor hop; an
+await, a runtime wait or a continuation anywhere declines every slot and
+records `async.context-escape-unknown` with reason
+`unproved-transfer-effect`. `followed` and `disjoint` now print
+`observe(?)`; `hopped` keeps 7.
+
+`disjoint`'s child does not touch the slot, so its 7 was true and is now
+declined: nothing proves what an awaited child writes. No image in
+Fixtures/Sample had a slot proven before this, so no other render moves.
+Blast radius against ccd79d5: the new fixture only; instructions +0.11%.
+
+
 ## 2026-11-27: a veneer to an async import reads its caller's context
 
 **FIXED (soundness).** A body in the image that leaves to an import stub

@@ -2679,8 +2679,9 @@ public struct Disassembler: Sendable {
 
     /// Resume funclet → slot offset → value definitely initialized before
     /// every entry suspension. A candidate requires a unique portable store
-    /// originating in entry, definite matching transfer facts, and no possible
-    /// chain mutation. Entry receives no seeds; its forward states preserve
+    /// originating in entry, definite matching transfer facts, no possible
+    /// chain mutation, and a chain that suspends only through executor hops.
+    /// Entry receives no seeds; its forward states preserve
     /// the temporal order of its own loads and stores. Later-funclet stores
     /// decline until their inter-funclet ordering can be independently proved.
     func asyncChainSlots(
@@ -2782,7 +2783,24 @@ public struct Disassembler: Sendable {
                     stores[slot, default: []] += values
                 }
             }
-            let proven = stores.filter { slot, _ in escapedFrom.map { slot < $0 } ?? true }
+            // The proof below is of a slot at the entry's suspensions. It
+            // holds at a resume only when nothing that can reach the context
+            // ran in between. An executor hop leaves the task suspended
+            // until its continuation runs. An awaited callee holds this
+            // context in its Parent word, a runtime wait completes into a
+            // buffer its caller named, and a continuation is resumed by
+            // other code: their writes are unproved, so one such transfer
+            // anywhere in the chain declines every slot.
+            let unprovedTransfer = chain.flatMap { index.transfers[$0] ?? [] }
+                .filter { $0.kind != .executorHop }
+                .min { ($0.site, $0.resume) < ($1.site, $1.resume) }
+            if let unprovedTransfer {
+                Probe.inFunction(entry, entryName ?? "async chain") {
+                    Probe.record(.contextEscapeUnknown, at: unprovedTransfer.site,
+                                 ["reason": .label("unproved-transfer-effect")])
+                }
+            }
+            let proven = (unprovedTransfer == nil ? stores : [:]).filter { slot, _ in escapedFrom.map { slot < $0 } ?? true }
                 .reduce(into: [Int: AbstractValue]()) { proven, pair in
                     let (slot, values) = pair
                     guard values.count == 1, let value = values.first, isPortable(value),

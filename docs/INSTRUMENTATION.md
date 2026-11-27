@@ -227,7 +227,7 @@ now represented directly:
 | `render.function` | view, symbol, returns, returnStatements, unknownReturns, gotos, lines; committed output only |
 | `async.context-escape` | offset; possible aliases on either incoming path invalidate slots |
 | `async.context-escape-cap` | blocks, cap; no slots proven after an incomplete analysis |
-| `async.context-escape-unknown` | reason; missing instruction semantics |
+| `async.context-escape-unknown` | reason; missing instruction semantics, or `unproved-transfer-effect`: the chain suspends through an await, a runtime wait or a continuation, whose writes to the context are unproved |
 | `async.slot-proven` | offset, value; a portable slot fact assigned to a resume funclet |
 | `async.descriptor-handoff` | descriptor, entry, resume, sizeOperand, sizeLoad, allocationCall, provider, incomingPrivacy; the requested size and direct machine handoff, with incoming privacy unknown |
 
