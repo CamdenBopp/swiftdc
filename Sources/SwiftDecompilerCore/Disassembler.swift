@@ -13197,8 +13197,17 @@ public struct Disassembler: Sendable {
         // left an unresolved exit, as was any error not from
         // `swift_allocError`.
         let willThrowErrors: [(site: UInt64, value: AbstractValue)] = function.instructions.compactMap { insn in
+            // An in-image function of the hook's name may be called with
+            // anything in x21, null included: `mov x21, x1; bl
+            // swift_willThrow; mov x0, #8; ret` around one rendered
+            // `throw arg1`, and returns 8 when arg1 is zero. So a hook is
+            // evidence only when the call leaves the image. That also
+            // declines a `swift_willThrowTyped` the compiler emitted into
+            // this image; no fixture's render rests on one (seven typed
+            // images rendered the same with and without it).
             guard insn.controlFlow == .call,
-                  DisassembledFunction.calleeName(of: insn).map(willThrowHooks.contains) == true,
+                  let callee = DisassembledFunction.calleeName(of: insn), willThrowHooks.contains(callee),
+                  callTargets[insn.address] == nil,
                   let error = analysis.callSites[insn.address]?.errorValue
             else { return nil }
             return (insn.address, error)

@@ -74,6 +74,14 @@ reads: both print `swift_willThrow(arg0)`. A call that leaves the image
 keeps the runtime's convention. Blast radius against 4e78b4f: the new
 image only; instructions +0.02%.
 
+The same name was also throw evidence. `afterHook` (`mov x21, x1; bl
+swift_willThrow; mov x0, #8; ret`) rendered `throw arg1`, and returns 8
+when arg1 is zero. A throw hook now proves a throw only when the call
+leaves the image; `afterHook` ends `machine_return() /* unresolved Swift
+success/error exit */`. That also declines a `swift_willThrowTyped` the
+compiler emitted into the image, which no fixture's render rested on.
+Blast radius against 7a6ec32: the same image only (2 lines).
+
 
 ## 2026-11-27: a result buffer is not kept across `_objc_msgForward`
 

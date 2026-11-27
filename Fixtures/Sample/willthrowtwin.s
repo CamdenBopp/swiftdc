@@ -32,3 +32,17 @@ _$s13WillThrowTwin5staleyS2i_SitF:
     ldr x21, [sp, #16]
     ldp x29, x30, [sp], #32
     ret
+
+// WillThrowTwin.afterHook(Swift.Int, Swift.Int) throws -> Swift.Int
+// x21 = the second argument, the twin, x0 = 8, ret. A Swift function
+// throws by returning with x21 non-zero: this returns 8 when the second
+// argument is zero and throws it otherwise.
+.globl _$s13WillThrowTwin9afterHookyS2i_SitKF
+_$s13WillThrowTwin9afterHookyS2i_SitKF:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x21, x1
+    bl _swift_willThrow
+    mov x0, #8
+    ldp x29, x30, [sp], #16
+    ret
