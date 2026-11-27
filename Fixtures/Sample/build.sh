@@ -426,6 +426,9 @@ done
 echo "==> instructions past a Cortex-A72 that the emulator must run: LSE, pointer authentication, fjcvtzs (emucpu.s)"
 $CLANG -arch arm64 -march=armv8.5-a -dynamiclib emucpu.s -o libEmuCPU.dylib
 
+echo "==> what the emulator must get right about an image and about runs: fixups, clean starts, calls out (emuimage.s)"
+$CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -o libEmuImage.dylib
+
 echo "==> the emulator oracle: any address, any register, traps and loops as outcomes (emuoracle.c, needs Unicorn)"
 if pkg-config --exists unicorn 2>/dev/null; then
     $CLANG -O1 $(pkg-config --cflags --libs unicorn) emuoracle.c -o emu-oracle

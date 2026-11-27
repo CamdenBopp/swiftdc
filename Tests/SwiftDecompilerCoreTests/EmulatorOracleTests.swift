@@ -21,6 +21,11 @@ struct EmulatedRun {
     let branches: [(pc: UInt64, taken: Bool)]
     /// The site of each call out of the image.
     let externalCalls: [UInt64]
+    /// A call out was handed an address in the emulated stack, scratch
+    /// buffer or writable image: the real callee could have written there.
+    let handedMemory: Bool
+    /// The callee-saved registers and sp a returned run left changed.
+    let changedCalleeSaved: [String]
 }
 
 /// One emulator process per image, one request per run.
@@ -61,8 +66,11 @@ final class EmulatorOracle {
 
     enum EmulatorError: Error { case closed, malformed(String) }
 
-    func run(at start: UInt64, registers: [Int: UInt64] = [:], limit: Int = 20000) throws -> EmulatedRun {
+    func run(
+        at start: UInt64, registers: [Int: UInt64] = [:], limit: Int = 20000, poison: UInt64? = nil
+    ) throws -> EmulatedRun {
         var request = "run 0x\(String(start, radix: 16)) limit=\(limit)"
+        if let poison { request += " poison=0x\(String(poison, radix: 16))" }
         for (register, value) in registers.sorted(by: { $0.key < $1.key }) {
             request += " x\(register)=0x\(String(value, radix: 16))"
         }
@@ -86,8 +94,11 @@ final class EmulatorOracle {
             guard sides.count == 2, let pc = hex(String(sides[0])) else { throw EmulatorError.malformed(reply) }
             return (pc, sides[1] == "t")
         }
-        let calls = (fields["calls"] ?? "").split(separator: ",").compactMap { hex(String($0.prefix { $0 != ">" })) }
-        return EmulatedRun(outcome: parts[1], last: last, x: x, branches: branches, externalCalls: calls)
+        let listed = (fields["calls"] ?? "").split(separator: ",")
+        let calls = listed.compactMap { hex(String($0.prefix { $0 != ">" })) }
+        let changed = fields["abi"].map { $0 == "ok" ? [] : $0.split(separator: ",").map(String.init) } ?? []
+        return EmulatedRun(outcome: parts[1], last: last, x: x, branches: branches, externalCalls: calls,
+                           handedMemory: listed.contains { $0.hasSuffix("!") }, changedCalleeSaved: changed)
     }
 }
 
@@ -107,6 +118,8 @@ private let inputVectors: [[UInt64]] = [
 struct EmulatorSweep {
     var functions = 0, runs = 0
     var returnsChecked = 0, conditionsChecked = 0
+    /// Runs that called out of the image and were still checked.
+    var checkedPastCalls = 0
     /// `image symbol`: what was stated and what the machine did.
     var mismatches: [String: [String]] = [:]
 }
@@ -138,7 +151,7 @@ func sweepAgainstEmulator(_ image: String) async throws -> EmulatorSweep? {
         }
     }
     var seeds: [UInt64: [(register: Int, value: ProbeValue)]] = [:]
-    var returns: [UInt64: ProbeValue] = [:]
+    var returns: [UInt64: (value: ProbeValue, path: ProbeValue?)] = [:]
     for record in recorder.records {
         if record.event.id == "analysis.entry", let start = record.address,
            case .object(let registers)? = record["seeds"] {
@@ -148,7 +161,7 @@ func sweepAgainstEmulator(_ image: String) async throws -> EmulatorSweep? {
             }
         } else if record.event.id == "render.return-value", let address = record.address,
                   record["register"] == .label("x0"), let value = record["value"] {
-            returns[address] = value
+            returns[address] = (value, record["path"])
         }
     }
     var sweep = EmulatorSweep()
@@ -188,13 +201,25 @@ func sweepAgainstEmulator(_ image: String) async throws -> EmulatorSweep? {
             for seed in entrySeeds {
                 if let value = try? seed.value.evaluateInteger(arguments: inputs) { registers[seed.register] = value }
             }
-            let run = try emulator.run(at: function.startAddress, registers: registers)
+            let run = try emulator.run(at: function.startAddress, registers: registers, poison: 0x5eed_0000_0000_1111)
             sweep.runs += 1
-            // After a call out of the image the emulator's registers are
-            // not the machine's: nothing later in the run is evidence.
-            guard run.externalCalls.isEmpty else { continue }
+            // A call out of the image returns at once, with a pattern where
+            // the callee's results would be. No branch after it is
+            // evidence. The result is the machine's only if the callee was
+            // handed no address it could write through, and the run ends at
+            // the same place with the same x0 when the callee instead hands
+            // every register back as it got it, as one returning its
+            // argument does.
+            let calledOut = !run.externalCalls.isEmpty
+            if calledOut {
+                guard !run.handedMemory else { continue }
+                let handedBack = try emulator.run(at: function.startAddress, registers: registers)
+                guard handedBack.outcome == run.outcome, handedBack.last == run.last, handedBack.x[0] == run.x[0]
+                else { continue }
+                sweep.checkedPastCalls += 1
+            }
             let counts = Dictionary(run.branches.map { ($0.pc, 1) }, uniquingKeysWith: +)
-            for branch in run.branches where counts[branch.pc] == 1 {
+            for branch in run.branches where !calledOut && counts[branch.pc] == 1 {
                 guard let constant = constants[branch.pc] else { continue }
                 sweep.conditionsChecked += 1
                 if constant != branch.taken {
@@ -202,7 +227,7 @@ func sweepAgainstEmulator(_ image: String) async throws -> EmulatorSweep? {
                         "branch @0x\(String(branch.pc, radix: 16)) rendered \(constant ? 1 : 0), machine \(branch.taken ? "took it" : "did not")")
                 }
             }
-            guard run.outcome == "returned" else { continue }
+            guard run.outcome == "returned" || run.outcome == "external" else { continue }
             if let value = held[run.last] {
                 sweep.returnsChecked += 1
                 if value != run.x[0] {
@@ -215,9 +240,16 @@ func sweepAgainstEmulator(_ image: String) async throws -> EmulatorSweep? {
             var unseeded = inputs
             for index in inputs.indices where !carried.contains(index) { unseeded[index] ^= 0x1357_9bdf }
             guard let claim = stated[run.last],
-                  let value = try? claim.evaluateInteger(arguments: inputs),
-                  (try? claim.evaluateInteger(arguments: unseeded)) == value
+                  let value = try? claim.value.evaluateInteger(arguments: inputs),
+                  (try? claim.value.evaluateInteger(arguments: unseeded)) == value
             else { continue }
+            // A claim holds on the paths it names: a `ret` two paths share
+            // carries the value of one of them.
+            if let path = claim.path {
+                guard let taken = try? path.evaluateInteger(arguments: inputs), taken != 0,
+                      (try? path.evaluateInteger(arguments: unseeded)) == taken
+                else { continue }
+            }
             sweep.returnsChecked += 1
             if value != run.x[0] {
                 sweep.mismatches[key, default: []].append(
@@ -241,6 +273,7 @@ private let sweptImages = [
     "libStackHole.dylib",
     "libErrorCarrier.O.dylib",
     "libTypedCatch.Onone.dylib", "libTypedCatch.O.dylib",
+    "libEmuImage.dylib", "libFrameFactStore.dylib",
 ]
 
 /// Statements the sweep shows to be false today, each an open soundness
@@ -259,12 +292,13 @@ private let knownFalseStatements: Set<String> = []
     var total = EmulatorSweep()
     for image in images {
         guard let sweep = try await sweepAgainstEmulator(image) else { continue }
-        print("emulator-sweep \(image): functions=\(sweep.functions) runs=\(sweep.runs) returns=\(sweep.returnsChecked) conditions=\(sweep.conditionsChecked) mismatched-functions=\(sweep.mismatches.count)")
+        print("emulator-sweep \(image): functions=\(sweep.functions) runs=\(sweep.runs) returns=\(sweep.returnsChecked) conditions=\(sweep.conditionsChecked) past-calls=\(sweep.checkedPastCalls) mismatched-functions=\(sweep.mismatches.count)")
         for (key, lines) in sweep.mismatches.sorted(by: { $0.key < $1.key }) {
             print("emulator-mismatch \(key): \(Set(lines).sorted().prefix(3).joined(separator: "; "))")
         }
         total.functions += sweep.functions; total.runs += sweep.runs
         total.returnsChecked += sweep.returnsChecked; total.conditionsChecked += sweep.conditionsChecked
+        total.checkedPastCalls += sweep.checkedPastCalls
         total.mismatches.merge(sweep.mismatches) { $0 + $1 }
     }
     guard total.runs > 0 else { return }
@@ -347,4 +381,47 @@ private let knownFalseStatements: Set<String> = []
     #expect(try run("_emu_cpu_brk", [:]).outcome == "trapped")
     // An encoding the emulator has no meaning for is no observation.
     #expect(try run("_emu_cpu_unallocated", [:]).outcome == "unsupported")
+}
+
+/// The emulated image is the image as dyld leaves it, and every run starts
+/// from the same machine. emuimage.s states each function's behaviour.
+@Test func theEmulatorLoadsTheImageAndStartsEveryRunCleanIfPresent() async throws {
+    let path = "Fixtures/Sample/libEmuImage.dylib"
+    guard FileManager.default.fileExists(atPath: path), let emulator = try EmulatorOracle(image: "libEmuImage.dylib")
+    else { return }
+    let functions = try await withStableDependencies { try await Disassembler(preset: .default).disassemble(path: path) }
+    func run(_ name: String, _ registers: [Int: UInt64] = [:], poison: UInt64? = nil) throws -> EmulatedRun {
+        let function = try #require(functions.first { $0.symbol == "_emu_image_\(name)" }, "\(name)")
+        return try emulator.run(at: function.startAddress, registers: registers, poison: poison)
+    }
+    // A rebased pointer leads to the word it names, and a bound one is the
+    // import's own address, outside every mapping.
+    let rebased = try run("rebased")
+    #expect(rebased.outcome == "returned" && rebased.x[0] == 77, "\(rebased.outcome) \(rebased.x[0])")
+    let bound = try run("bound")
+    #expect(bound.outcome == "returned" && bound.x[0] >= 0x7_d000_0000 && bound.x[0] < 0x7_d100_0000, "\(bound.x[0])")
+    // A call through that pointer is a call out, like one through a stub.
+    let through = try run("call_pointer", poison: 1)
+    #expect(through.outcome == "external" && through.externalCalls.count == 1 && through.x[0] == 5)
+    #expect(!through.handedMemory)
+    // What the callee returned is the pattern, and differs with it.
+    #expect(try run("uses_result", poison: 1).x[0] != run("uses_result", poison: 2).x[0])
+    #expect(try run("call_pointer", poison: 2).x[0] == 5)
+    // An address of a local in an argument register marks the call.
+    let handed = try run("passes_local", poison: 1)
+    #expect(handed.handedMemory && handed.x[0] == 9)
+    // Runs do not see each other: data, vector registers, the stack.
+    #expect(try run("count").x[0] == 1)
+    #expect(try run("count").x[0] == 1)
+    #expect(try run("fill_vector").x[0] == 1)
+    #expect(try run("vector_upper").x[0] == 0)
+    #expect(try run("below_write", [0: 0x99]).x[0] == 0x99)
+    #expect(try run("below_read").x[0] == 0)
+    // A returned run names the callee-saved state it left changed.
+    #expect(try run("rebased").changedCalleeSaved == [])
+    #expect(try run("clobbers").changedCalleeSaved == ["x19"])
+    #expect(try run("unbalanced").changedCalleeSaved == ["sp"])
+    // More branches than a reply lists: the run says so and lists none.
+    let spun = try run("spin")
+    #expect(spun.outcome == "overflowed" && spun.branches.isEmpty)
 }

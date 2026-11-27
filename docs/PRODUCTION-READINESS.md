@@ -61,6 +61,55 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-26: the emulator oracle loads the image, starts every run clean, and checks past calls
+
+**FIXED (validation).** Reading the harness after the CPU-model fix found
+that its runs were not what the tests took them for. Each row is shown on
+emuimage.s:
+
+| Defect | Now |
+|---|---|
+| The image was mapped as the bytes on disk: a rebased pointer or a bound GOT slot held its fixup encoding | Chained fixups are applied. A rebase is its target; a bind is that import's own address in a page that is not mapped |
+| A call through a bound pointer faulted | It is a call out of the image, like one through a stub |
+| A run saw the last run's writes to the image's data and to the stack | Writable segments and the stack are put back before each run |
+| Only the low half of each vector register was reset | All 128 bits are |
+| Any run that called out of the image was discarded | The callee's results are replaced by a pattern. The run's x0 is checked when the callee was handed no address into the stack, the scratch buffer or the writable image, and x0 and the end of the run are the same when the callee instead hands every register back as it got it |
+| A body that broke the ABI went unnoticed | A returned run names the callee-saved registers and sp it left changed |
+| More branches than a reply lists were cut off silently | The run's outcome is `overflowed` and it lists none |
+
+The new coverage found a defect in the sweep itself: it ignored the path
+condition a return claim carries, and held a success-path value to a run
+that took the throw path. A claim is now checked only on a run its path
+admits, and skipped when the path cannot be evaluated.
+
+The first design for checking past a call compared two patterns. A
+fixture disproved it: a function that retains nil and branches on the
+result returns 2 under any two non-zero patterns and 1 on the machine.
+The second run is now the one where the callee hands its registers back.
+
+Sweep of all 689 fixture images: 12,974 functions, 207,584 runs, 90,268
+returns and 4,600 constant conditions checked, 1,616 runs checked past a
+call out, no disagreement.
+
+**OPEN:** the 38 fixture images that carry `LC_DYLD_INFO` fixups and any
+arm64e pointer format are still mapped unfixed. Stack arguments are not
+seeded. A claim whose path condition holds a comparison is skipped,
+because the claim evaluator cannot evaluate it. No branch after a call
+out is checked.
+
+Verified: theEmulatorLoadsTheImageAndStartsEveryRunCleanIfPresent, seen
+red under eleven mutations of the harness: no fixups, a bind read as a
+rebase, data not put back, the low half of a vector only, the stack not
+cleared, no pattern, no call marked as handed an address, every image
+address counted as handed, changed registers not reported, a branch to
+an import treated as a fault, an overflow not reported. The sweep, seen
+red under three: a claim's path ignored (libTypedCatch.O), x0 not
+compared with the handed-back run (libEmuImage), a handed address
+ignored (libFrameFactStore). Two guards in the sweep were not seen red
+and are kept because each only withholds a check: comparing where the
+two runs end, and checking no branch past a call. Full enforcing suite:
+2,222 tests.
+
 ## 2026-11-26: the emulator oracle runs as a full CPU
 
 **FIXED (validation).** The emulator oracle ran on Unicorn's default
@@ -80,12 +129,11 @@ The default model had hidden nothing in the fixtures: the sweep of all
 constant conditions over 12,967 functions and 207,472 runs, with no
 disagreement.
 
-**OPEN, the oracle's other known gap:** it maps the image's bytes as
-they are on disk, with no rebase or bind applied, so a function that
-loads a GOT slot, a constant pointer or a selector reference faults or
-runs on with a wrong value. Unicorn 2.1.4 also has open AArch64 bugs
-(signed LSE min and max, some FP16 encodings); nothing checks the
-emulator against native execution per instruction form yet.
+The oracle's other gap named here, the image mapped with no rebase or
+bind applied, is closed by the entry above for chained fixups.
+**OPEN:** Unicorn 2.1.4 has open AArch64 bugs (signed LSE min and max,
+some FP16 encodings); nothing checks the emulator against native
+execution per instruction form yet.
 
 Verified: theEmulatorRunsInstructionsPastItsDefaultCPUIfPresent, seen
 red under three mutations of the harness: the default CPU (three

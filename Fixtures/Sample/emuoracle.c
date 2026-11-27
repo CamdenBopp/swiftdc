@@ -9,23 +9,42 @@
 // endless loop is an outcome, not a crash. Nothing here is swiftdc's: it
 // is an independent account of the same bytes.
 //
+// The image is loaded as dyld would leave it: chained fixups are applied,
+// a rebase to its target and a bind to an address of its own in a page
+// that is not mapped, so a call or a load through an import is known by
+// which import it was. Every run starts from the same machine: registers
+// and vector registers zero, a zeroed stack, and the image's writable
+// segments as loaded.
+//
 //   emu-oracle <image>          then one request per line on stdin:
-//   run <start> [limit=<n>] [x<n>=<v>] [d<n>=<v>] [peek=<n>]
+//   run <start> [limit=<n>] [x<n>=<v>] [d<n>=<v>] [peek=<n>] [poison=<v>]
+//
+// `poison=<v>` leaves x0…x17, v0…v7 and the flags holding a pattern made
+// from <v> after each call out of the image, where the real callee would
+// leave values this emulator cannot know. A fact that is the same under
+// two patterns did not come from them.
 //
 // Values are hex with 0x, or decimal. `@<offset>` is an address inside a
 // zeroed 64 KiB scratch buffer, for a pointer argument. One reply line:
 //
 //   OUT <outcome> pc=<pc> last=<pc of the last instruction run> x0=… … x28=… d0=… d1=…
-//       branches=<pc>:<t|n>,… calls=<pc>><target>(x0,x1,x2,x3),… mem=<w0>,…
+//       abi=<ok | the callee-saved registers and sp a returned run left changed>
+//       branches=<pc>:<t|n>,… calls=<pc>><target>(x0,x1,x2,x3)[!],… mem=<w0>,…
+//
+//   A call marked `!` was handed an address inside this machine's stack,
+//   scratch buffer or the image's writable segments: the real callee
+//   could have written there.
 //
 //   outcome: returned (reached the return address), trapped (brk, udf),
 //   unsupported (an instruction this emulator does not implement: no
-//   observation of the program), hung (instruction limit), faulted
-//   (unmapped access), external (the
-//   run called out of the image; the call returned at once with every
-//   register as it was, so nothing after it is the real machine's).
+//   observation of the program), hung (instruction limit), overflowed
+//   (more branches or calls ran than a reply lists: none is listed), faulted
+//   (unmapped access), external (the run returned after calling out of
+//   the image; each call returned at once, so what follows it is the real
+//   machine's only where it does not depend on what the callee did).
 #include <mach-o/loader.h>
 #include <mach-o/fat.h>
+#include <mach-o/fixup-chains.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +57,8 @@
 #define SCRATCH_BASE 0x600000000ull
 #define SCRATCH_SIZE 0x10000ull
 #define RETURN_ADDRESS 0x7e0000000ull
+#define IMPORT_BASE 0x7d0000000ull   // never mapped: import n is IMPORT_BASE + 16 * n
+#define IMPORT_SIZE 0x1000000ull
 #define MAX_EVENTS 4096
 
 typedef struct { uint64_t start, end; } Range;
@@ -46,6 +67,12 @@ static Range image[64];      // mapped segments
 static int imageCount;
 static Range stubs[16];      // import stub sections
 static int stubCount;
+static Range writable[64];   // segments a run may write, and each one's bytes as loaded
+static uint8_t *loaded[64];
+static int writableCount;
+static uint64_t poison;
+static int hasPoison;
+static int overflowed;
 
 static uint64_t branchPC[MAX_EVENTS];
 static char branchTaken[MAX_EVENTS];
@@ -53,7 +80,7 @@ static int branchCount;
 static uint64_t pendingBranch;   // a conditional branch whose outcome the next pc decides
 static int hasPending;
 
-typedef struct { uint64_t pc, target, x[4]; } Call;
+typedef struct { uint64_t pc, target, x[4]; int handed; } Call;
 static Call calls[MAX_EVENTS];
 static int callCount;
 static int wentExternal;
@@ -65,6 +92,46 @@ static int inRanges(const Range *ranges, int count, uint64_t address) {
     for (int index = 0; index < count; index++)
         if (address >= ranges[index].start && address < ranges[index].end) return 1;
     return 0;
+}
+
+static int isImport(uint64_t address) { return address >= IMPORT_BASE && address < IMPORT_BASE + IMPORT_SIZE; }
+
+/// A call out of the image at `target`, about to return to `lr`: what it
+/// was given, and whether any of it points into this machine's memory.
+static void leaveImage(uc_engine *uc, uint64_t target) {
+    uint64_t lr = 0;
+    uc_reg_read(uc, UC_ARM64_REG_LR, &lr);
+    if (callCount < MAX_EVENTS) {
+        Call *call = &calls[callCount++];
+        call->pc = lr - 4;
+        call->target = target;
+        call->handed = 0;
+        for (int reg = 0; reg < 8; reg++) {
+            uint64_t v = 0;
+            uc_reg_read(uc, UC_ARM64_REG_X0 + reg, &v);
+            if (reg < 4) call->x[reg] = v;
+            if ((v >= STACK_BASE && v < STACK_BASE + STACK_SIZE) || (v >= SCRATCH_BASE && v < SCRATCH_BASE + SCRATCH_SIZE)
+                || inRanges(writable, writableCount, v))
+                call->handed = 1;
+        }
+    } else {
+        overflowed = 1;
+    }
+    if (hasPoison) {
+        for (int reg = 0; reg <= 17; reg++) {
+            uint64_t v = poison ^ (0x0101010101010101ull * (uint64_t)(reg + 1));
+            uc_reg_write(uc, UC_ARM64_REG_X0 + reg, &v);
+        }
+        for (int reg = 0; reg < 8; reg++) {
+            uint64_t v[2] = { ~poison ^ (0x1111111111111111ull * (uint64_t)(reg + 1)), poison };
+            uc_reg_write(uc, UC_ARM64_REG_V0 + reg, v);
+        }
+        uint64_t nzcv = (poison & 0xf) << 28;
+        uc_reg_write(uc, UC_ARM64_REG_NZCV, &nzcv);
+    }
+    wentExternal = 1;
+    redirect = lr;
+    hasRedirect = 1;
 }
 
 static int isConditionalBranch(uint32_t word) {
@@ -81,26 +148,15 @@ static void onCode(uc_engine *uc, uint64_t address, uint32_t size, void *user) {
         if (branchCount < MAX_EVENTS) {
             branchPC[branchCount] = pendingBranch;
             branchTaken[branchCount++] = address == pendingBranch + 4 ? 'n' : 't';
+        } else {
+            overflowed = 1;
         }
         hasPending = 0;
     }
     // A call out of the image: into an import stub, or anywhere unmapped
     // is reported by the fetch fault instead.
     if (inRanges(stubs, stubCount, address)) {
-        uint64_t lr = 0;
-        uc_reg_read(uc, UC_ARM64_REG_LR, &lr);
-        if (callCount < MAX_EVENTS) {
-            Call *call = &calls[callCount++];
-            call->pc = lr - 4;
-            call->target = address;
-            uc_reg_read(uc, UC_ARM64_REG_X0, &call->x[0]);
-            uc_reg_read(uc, UC_ARM64_REG_X1, &call->x[1]);
-            uc_reg_read(uc, UC_ARM64_REG_X2, &call->x[2]);
-            uc_reg_read(uc, UC_ARM64_REG_X3, &call->x[3]);
-        }
-        wentExternal = 1;
-        redirect = lr;
-        hasRedirect = 1;
+        leaveImage(uc, address);
         uc_emu_stop(uc);
         return;
     }
@@ -113,7 +169,51 @@ static void onCode(uc_engine *uc, uint64_t address, uint32_t size, void *user) {
 
 static void die(const char *message) { fprintf(stderr, "emu-oracle: %s\n", message); exit(2); }
 
+static uint64_t imageBase;
+static int fixupsApplied;      // slots rewritten
+static int fixupsUnsupported;  // a pointer format this does not read: the image stays as on disk
+
+/// Rewrite each chained slot as dyld would. A rebase becomes its target.
+/// A bind becomes the address this machine gives that import.
+static void applyChainedFixups(uc_engine *uc, const uint8_t *data) {
+    const struct dyld_chained_fixups_header *header = (const struct dyld_chained_fixups_header *)data;
+    const struct dyld_chained_starts_in_image *starts =
+        (const struct dyld_chained_starts_in_image *)(data + header->starts_offset);
+    for (uint32_t s = 0; s < starts->seg_count; s++) {
+        if (starts->seg_info_offset[s] == 0) continue;
+        const struct dyld_chained_starts_in_segment *segment =
+            (const struct dyld_chained_starts_in_segment *)((const uint8_t *)starts + starts->seg_info_offset[s]);
+        if (segment->pointer_format != DYLD_CHAINED_PTR_64 && segment->pointer_format != DYLD_CHAINED_PTR_64_OFFSET) {
+            fixupsUnsupported = 1;
+            continue;
+        }
+        for (uint32_t page = 0; page < segment->page_count; page++) {
+            uint16_t start = segment->page_start[page];
+            if (start == DYLD_CHAINED_PTR_START_NONE) continue;
+            if (start & DYLD_CHAINED_PTR_START_MULTI) { fixupsUnsupported = 1; continue; }
+            uint64_t address = imageBase + segment->segment_offset + (uint64_t)page * segment->page_size + start;
+            for (;;) {
+                uint64_t raw = 0;
+                if (uc_mem_read(uc, address, &raw, 8) != UC_ERR_OK) break;
+                uint64_t next = (raw >> 51) & 0xfff, value;
+                if (raw >> 63) {
+                    value = IMPORT_BASE + 16 * (raw & 0xffffff) + ((raw >> 24) & 0xff);
+                } else {
+                    uint64_t target = raw & 0xfffffffffull, high = (raw >> 36) & 0xff;
+                    value = (segment->pointer_format == DYLD_CHAINED_PTR_64_OFFSET ? imageBase + target : target)
+                        | (high << 56);
+                }
+                uc_mem_write(uc, address, &value, 8);
+                fixupsApplied += 1;
+                if (next == 0) break;
+                address += next * 4;
+            }
+        }
+    }
+}
+
 static void mapImage(uc_engine *uc, const char *path) {
+    const uint8_t *fixups = NULL;
     FILE *file = fopen(path, "rb");
     if (!file) die("cannot open the image");
     fseek(file, 0, SEEK_END);
@@ -137,6 +237,11 @@ static void mapImage(uc_engine *uc, const char *path) {
                 if (segment->filesize && segment->fileoff + segment->filesize <= (uint64_t)length)
                     uc_mem_write(uc, segment->vmaddr, bytes + segment->fileoff, segment->filesize);
                 if (imageCount < 64) image[imageCount++] = (Range){ start, end };
+                if (segment->fileoff == 0 && segment->filesize) imageBase = segment->vmaddr;
+                if ((segment->initprot & VM_PROT_WRITE) && writableCount < 64) {
+                    writable[writableCount] = (Range){ start, end };
+                    loaded[writableCount++] = NULL;
+                }
                 const struct section_64 *section = (const struct section_64 *)(segment + 1);
                 for (uint32_t s = 0; s < segment->nsects; s++, section++) {
                     int isStub = (section->flags & SECTION_TYPE) == S_SYMBOL_STUBS
@@ -146,7 +251,19 @@ static void mapImage(uc_engine *uc, const char *path) {
                 }
             }
         }
+        if (command->cmd == LC_DYLD_CHAINED_FIXUPS) {
+            const struct linkedit_data_command *data = (const struct linkedit_data_command *)cursor;
+            if ((uint64_t)data->dataoff + data->datasize <= (uint64_t)length) fixups = bytes + data->dataoff;
+        }
         cursor += command->cmdsize;
+    }
+    if (fixups) applyChainedFixups(uc, fixups);
+    // What a run may write is put back before the next one.
+    for (int index = 0; index < writableCount; index++) {
+        size_t size = (size_t)(writable[index].end - writable[index].start);
+        loaded[index] = malloc(size);
+        if (!loaded[index] || uc_mem_read(uc, writable[index].start, loaded[index], size) != UC_ERR_OK)
+            die("cannot keep a segment as loaded");
     }
     free(bytes);
 }
@@ -172,7 +289,7 @@ int main(int argc, char **argv) {
     uc_hook_add(uc, &hook, UC_HOOK_CODE, onCode, NULL, 1, 0);
     setvbuf(stdout, NULL, _IOLBF, 0);
 
-    static uint8_t zero[SCRATCH_SIZE];
+    static uint8_t zero[STACK_SIZE];
     char line[4096];
     while (fgets(line, sizeof line, stdin)) {
         char *token = strtok(line, " \t\r\n");
@@ -181,11 +298,12 @@ int main(int argc, char **argv) {
         if (!token) { printf("OUT invalid\n"); continue; }
         uint64_t start = strtoull(token, NULL, 0);
         uint64_t limit = 1000000, peek = 0;
+        hasPoison = 0;
 
         // A clean machine for every run: registers zero, FP enabled, a
         // fresh stack and scratch buffer.
         for (int reg = 0; reg <= 28; reg++) { uint64_t v = 0; uc_reg_write(uc, UC_ARM64_REG_X0 + reg, &v); }
-        for (int reg = 0; reg < 32; reg++) { uint64_t v = 0; uc_reg_write(uc, UC_ARM64_REG_D0 + reg, &v); }
+        for (int reg = 0; reg < 32; reg++) { uint64_t v[2] = { 0, 0 }; uc_reg_write(uc, UC_ARM64_REG_V0 + reg, v); }
         uint64_t fp = 0, lr = RETURN_ADDRESS, sp = STACK_BASE + STACK_SIZE - 0x1000, nzcv = 0;
         uint64_t cpacr = 3ull << 20;
         uc_reg_write(uc, UC_ARM64_REG_CPACR_EL1, &cpacr);
@@ -194,6 +312,9 @@ int main(int argc, char **argv) {
         uc_reg_write(uc, UC_ARM64_REG_SP, &sp);
         uc_reg_write(uc, UC_ARM64_REG_NZCV, &nzcv);
         uc_mem_write(uc, SCRATCH_BASE, zero, SCRATCH_SIZE);
+        uc_mem_write(uc, STACK_BASE, zero, STACK_SIZE);
+        for (int index = 0; index < writableCount; index++)
+            uc_mem_write(uc, writable[index].start, loaded[index], (size_t)(writable[index].end - writable[index].start));
 
         while ((token = strtok(NULL, " \t\r\n"))) {
             char *equals = strchr(token, '=');
@@ -202,6 +323,7 @@ int main(int argc, char **argv) {
             const char *value = equals + 1;
             if (strcmp(token, "limit") == 0) limit = strtoull(value, NULL, 0);
             else if (strcmp(token, "peek") == 0) peek = strtoull(value, NULL, 0);
+            else if (strcmp(token, "poison") == 0) { poison = strtoull(value, NULL, 0); hasPoison = 1; }
             else if (token[0] == 'x') {
                 int reg = atoi(token + 1);
                 uint64_t v = parseValue(value);
@@ -216,14 +338,21 @@ int main(int argc, char **argv) {
             }
         }
 
-        branchCount = callCount = hasPending = wentExternal = hasRedirect = 0;
+        branchCount = callCount = hasPending = wentExternal = hasRedirect = overflowed = 0;
         lastPC = 0;
+        uint64_t saved[12];   // x19…x28, x29, sp as the run begins
+        for (int reg = 0; reg < 10; reg++) uc_reg_read(uc, UC_ARM64_REG_X19 + reg, &saved[reg]);
+        saved[10] = fp;
+        saved[11] = sp;
         const char *outcome = "returned";
         uint64_t pc = start, executed = 0;
         for (;;) {
             hasRedirect = 0;
             uc_err error = uc_emu_start(uc, pc, RETURN_ADDRESS, 0, (size_t)(limit - executed));
             uc_reg_read(uc, UC_ARM64_REG_PC, &pc);
+            // A branch to an import's own address, through a pointer the
+            // loader bound: the same call out as one through a stub.
+            if (!hasRedirect && error == UC_ERR_FETCH_UNMAPPED && isImport(pc)) leaveImage(uc, pc);
             if (hasRedirect) { pc = redirect; executed += 1; if (executed >= limit) { outcome = "hung"; break; } continue; }
             if (error == UC_ERR_OK) { outcome = pc == RETURN_ADDRESS ? "returned" : "hung"; break; }
             if (error == UC_ERR_EXCEPTION || error == UC_ERR_INSN_INVALID) {
@@ -240,6 +369,7 @@ int main(int argc, char **argv) {
             break;
         }
         if (wentExternal && strcmp(outcome, "returned") == 0) outcome = "external";
+        if (overflowed) { outcome = "overflowed"; branchCount = callCount = 0; }
 
         printf("OUT %s pc=0x%llx last=0x%llx", outcome, (unsigned long long)pc, (unsigned long long)lastPC);
         for (int reg = 0; reg <= 28; reg++) {
@@ -252,15 +382,28 @@ int main(int argc, char **argv) {
             uc_reg_read(uc, UC_ARM64_REG_D0 + reg, &v);
             printf(" d%d=0x%llx", reg, (unsigned long long)v);
         }
+        printf(" abi=");
+        int changed = 0;
+        if (strcmp(outcome, "returned") == 0 || strcmp(outcome, "external") == 0) {
+            for (int reg = 0; reg < 12; reg++) {
+                uint64_t v = 0;
+                uc_reg_read(uc, reg < 10 ? UC_ARM64_REG_X19 + reg : reg == 10 ? UC_ARM64_REG_FP : UC_ARM64_REG_SP, &v);
+                if (v == saved[reg]) continue;
+                if (reg < 11) printf("%sx%d", changed ? "," : "", 19 + reg); else printf("%ssp", changed ? "," : "");
+                changed = 1;
+            }
+        }
+        if (!changed) printf("ok");
         printf(" branches=");
         for (int index = 0; index < branchCount; index++)
             printf("%s0x%llx:%c", index ? "," : "", (unsigned long long)branchPC[index], branchTaken[index]);
         printf(" calls=");
         for (int index = 0; index < callCount; index++)
-            printf("%s0x%llx>0x%llx(0x%llx;0x%llx;0x%llx;0x%llx)", index ? "," : "",
+            printf("%s0x%llx>0x%llx(0x%llx;0x%llx;0x%llx;0x%llx)%s", index ? "," : "",
                    (unsigned long long)calls[index].pc, (unsigned long long)calls[index].target,
                    (unsigned long long)calls[index].x[0], (unsigned long long)calls[index].x[1],
-                   (unsigned long long)calls[index].x[2], (unsigned long long)calls[index].x[3]);
+                   (unsigned long long)calls[index].x[2], (unsigned long long)calls[index].x[3],
+                   calls[index].handed ? "!" : "");
         printf(" mem=");
         for (uint64_t index = 0; index < peek && index < 64; index++) {
             uint64_t v = 0;
