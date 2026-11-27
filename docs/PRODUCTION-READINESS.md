@@ -61,6 +61,35 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: a float's getter takes nothing from the integer registers
+
+**FIXED (soundness).** A getter the layout code could not place fell to
+the positional layout: the integer registers as the call found them. A
+getter of `Swift.Float`, `Swift.Double` or another one-float type takes
+its `self` in v0 and nothing else, so those registers held the caller's
+own formals or an earlier call's result.
+`libBitPatternGetters.onone.dylib` `floatBits(_: TwoF, _: Int, _: Int)`
+rendered `Swift.Float.bitPattern.getter(arg1, arg2)`, then
+`Swift.Float.bitPattern.getter(r0)` (the machine passes `p.b`), and
+`doubleBits` rendered `Swift.Double.bitPattern.getter(arg1)`. Each is now
+`getter(self: ?)`: no argument, and a receiver this layout does not read
+from v0.
+
+Blast radius against b370aa0: 134 lines structured in 12 images, all
+-Onone or authored, every one a `Float`/`Double` getter going from
+`getter(…)`, `getter(?)` or `getter()` to `getter(self: ?)`, and a
+`let rN =` dropped where the stale argument was its only reader.
+Instructions +0.16%.
+
+**OPEN.**
+- The receiver is in v0 and could be named; it is `?`.
+- An integer receiver's getter still takes the positional layout:
+  `Swift.Int.hashValue.getter(arg0, arg1)` at -Onone, where `arg1` is
+  stale. The fixture's `intHash` shows it.
+- A getter an extension adds (`(extension in M):Swift.Float.….getter`)
+  is not a scalar the lowering knows and stays positional.
+
+
 ## 2026-11-27: an address parked in x20 is named a foreign struct method's receiver
 
 **OPEN (soundness), with a DEAD END.** For an instance member of a struct

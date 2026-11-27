@@ -136,8 +136,9 @@ func swiftNarrowArgumentRolesPreserveAddressesReceiversAndFPBanksIfPresent(level
         }
         for (name, function) in zip(["Int32", "UInt8"], functions.suffix(2)) {
             let site = try swiftNarrowCall(function, consumer: "floatBits" + name + "Consumer(")
-            // Onone still lacks the getter receiver. Do not invent arg0 there.
-            let atom = level == "Onone" ? "Swift.Float.bitPattern.getter()" : "arg0.bitPattern"
+            // Onone still lacks the getter receiver: it is unknown, not
+            // absent, and never an invented arg0.
+            let atom = level == "Onone" ? "Swift.Float.bitPattern.getter(self: ?)" : "arg0.bitPattern"
             let expected = swiftNarrowView(atom, bits: name == "Int32" ? 32 : 8, signed: name == "Int32")
             #expect(site.callArguments == [expected], Comment(rawValue: image.path + " API \(stage)\n" + function.renderStructured()))
         }

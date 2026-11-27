@@ -10587,6 +10587,26 @@ public struct Disassembler: Sendable {
                 strategy = "resilient-getter-self"
                 continue
             }
+            // An instance getter of a type that is one floating-point
+            // register takes its `self` there and nothing in the
+            // integer registers, which still hold the caller's own formals
+            // or an earlier call's result: at -Onone
+            // `Float.bitPattern.getter` read `getter(arg1, arg2)`, then
+            // `getter(r0)`. It shows no argument, and its receiver, which
+            // this layout does not read from v0, is unknown.
+            // A static getter never gets here: it shows no parameters above.
+            // Nor does a getter or subscript an extension adds: its receiver
+            // is spelled `(extension in M):Swift.Float`, which is no scalar
+            // the lowering knows.
+            if selfValueBySite[address] == nil, let callee = calleeByAddress[address],
+               let property = DisassembledFunction.swiftAccessorProperty(callee), property.isGetter,
+               let accessor = callee.range(of: ".\(property.property).getter"),
+               SwiftLowering.of(String(callee[..<accessor.lowerBound]), enumCaseIndex: enumCaseIndex,
+                                classTypeIndex: classTypeIndex) == .oneFloat {
+                selfValueBySite[address] = .unknown
+                strategy = "float-getter-self"
+                continue
+            }
             // A Swift callee gets exactly its declared parameters. Async GP
             // slots use only facts common to both candidate prefixes; FP
             // slots keep their independent bank. No trailing trim hides arity.
