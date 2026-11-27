@@ -40,3 +40,9 @@ public struct JoinedWide {
 @inline(never) public func afterSplitWide(_ w: SplitWide, _ x: Double, _ y: Double) -> Double { x - y }
 // w takes h0, d1 and d2, so x is d3 and y is d4. `fsub d0, d3, d4`: x - y
 @inline(never) public func afterJoinedWide(_ w: JoinedWide, _ x: Double, _ y: Double) -> Double { x - y }
+
+// The result has five scalars, so it is written through x8. a is w0, b is
+// w1 and d is d0; h is the constant 1.5, the half 0x3e00, stored to +2.
+@inline(never) public func withHalf(_ a: Int16, _ b: Int16, _ d: Double) -> SplitWide {
+    SplitWide(a: a, h: 1.5, b: b, d: d, e: d)
+}

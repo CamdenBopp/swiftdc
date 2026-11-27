@@ -60,12 +60,15 @@ let package = Package(
         // as themselves, inferred attributes marked, a hand-written `_a` not
         // hidden, an `@objc` thunk marking only its own member, a case count
         // where no record names cases, `let`/`var` read off a global's section,
-        // a vtable offset under a resilient superclass called relative). Return
+        // a vtable offset under a resilient superclass called relative), the
+        // unaligned reads, and on top (branch
+        // swiftdc-interim/0.24.0-float16-layout) a two-byte entry for
+        // `Swift.Float16` in the known-layout table. Return
         // to an upstream version pin once these ship there; see
         // docs/PRODUCTION-READINESS.md.
         .package(
             url: "https://github.com/CamdenBopp/MachOSwiftSection",
-            revision: "4de80b7d55513b6c3e333d930ea092ab1a4dae4f"
+            revision: "327984f3e854dfa691f23255ad57080e783e5fd6"
         ),
         // INTERIM FORK: upstream 1.3.0 plus `MachOSegmentMap`, branch
         // swiftdc-interim/1.3.0-vm-relative. The file-to-memory mapping everything

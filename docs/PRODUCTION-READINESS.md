@@ -61,6 +61,34 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: a Swift.Float16 field has a size
+
+**FIXED (completeness).** A struct with a `Swift.Float16` field had no
+trusted layout in an image analysed alone: the size table in the
+MachOSwiftSection fork named Float and Double and not the half, so the
+reader threw `typeDescriptorNotFound` and every offset after the field was
+untrusted. The fork (327984f3, branch
+`swiftdc-interim/0.24.0-float16-layout`) now sizes it as two bytes, and a
+half constant stored to a field prints as its value (`h: 1.5`, not 15872).
+`libFPBarrierPieces` at -O and -Onone: `afterSplit`, `afterJoined`,
+`afterSplitWide`, `afterJoinedWide` go from `return ?` to
+`return (arg1 - arg2)`; `SplitWide.init` and `withHalf` return the struct
+with named fields; field getters and setters name `h`, `b`, `d`, `e`.
+Blast radius against 4954763: those two images only (105 lines
+structured), instructions +0.08%.
+
+**OPEN, exposed by it.**
+- -Onone `Split.a.getter` (a bare `ret`: `a` is already in w0) went from
+  `return self.a` to `return ?`. With a trusted layout that mixes integer
+  and floating-point fields, a by-value self is entered as
+  `swift-instance` with `x20=self` seeded, which is not how a 6-byte
+  struct in registers arrives. Nothing false renders from it on the
+  fixtures, but the seed is a claim nothing proves. `Joined` had it before
+  this change.
+- A two-byte field stored with `strh w0` prints its value with the
+  register's mask, `a: (arg0 & 0xffffffff)`, wider than the field.
+
+
 ## 2026-11-27: the Go tests are opt-in
 
 **CHANGED (tests).** Go is not a target. The 13 tests that analyse the Go

@@ -12787,6 +12787,10 @@ public struct Disassembler: Sendable {
             case "Sb": "Swift.Bool"
             case "Sd": "Swift.Double"
             case "Sf": "Swift.Float"
+            // A half's constant is its own 16-bit pattern (`fmov h1, #1.5`
+            // carries 0x3e00), which is no integer the field holds. Its field
+            // record is a symbolic reference, so the name is the resolved one.
+            case "s7Float16V", "Swift.Float16": "Swift.Float16"
             default: nil
             }
             if case .immediate(let bits) = value, let typeName,
@@ -12866,7 +12870,8 @@ public struct Disassembler: Sendable {
             for field in fields {
                 guard let store = exit.stores[field.offset], store.bytes == field.bytes else { return nil }
                 let value = sanitizeValue(store.value)
-                let text = renderFieldValue(value, mangledType: field.typeMangledName)
+                let text = renderFieldValue(value, mangledType: FieldMap.printableTypeName(
+                    mangled: field.typeMangledName, resolved: layout.fieldTypeNames[field.name]))
                 if text != "?" { known += 1 }
                 parts.append("\(field.name): \(text)")
                 values.append(value)

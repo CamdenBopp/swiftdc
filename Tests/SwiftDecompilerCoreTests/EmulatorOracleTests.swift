@@ -271,6 +271,7 @@ private let sweptImages = [
     "libSwiftArgumentBoundary.O.dylib", "libReconstruction.opt.dylib", "libSwiftTailResults.O.dylib",
     "libCalleeBodyTransfer.opt.dylib", "libFrameReach.dylib",
     "libStackHole.dylib",
+    "libFPBarrierPieces.dylib", "libFPBarrierPieces.onone.dylib",
     "libErrorCarrier.O.dylib",
     "libTypedCatch.Onone.dylib", "libTypedCatch.O.dylib",
     "libEmuImage.dylib", "libFrameFactStore.dylib",

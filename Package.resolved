@@ -1,5 +1,5 @@
 {
-  "originHash" : "8c03680e3fa96407d26b5f978d6688bb92066754c2c3b3bf805a05ab663c92b9",
+  "originHash" : "d0423336aa9291b1d817e1989cbe0e86928a42b6d44b58bdd4895f7a6dd5a7fa",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -66,7 +66,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/CamdenBopp/MachOSwiftSection",
       "state" : {
-        "revision" : "4de80b7d55513b6c3e333d930ea092ab1a4dae4f"
+        "revision" : "327984f3e854dfa691f23255ad57080e783e5fd6"
       }
     },
     {
