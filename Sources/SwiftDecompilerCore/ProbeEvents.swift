@@ -77,7 +77,7 @@ extension ProbeEvent {
     // MARK: abi
     static let argumentLayout = ProbeEvent(
         "abi.argument-layout", .abi, .decision,
-        "How a call site's arguments were laid out: strategy is swift-signature, swift-leading, no-parameters, float-getter-self, integer-getter-self, c-arity, c-declaration, c-format, c-format-unread, objc-format, objc-signature, objc-signature-disputed, objc-maybe-nonpositional, objc-variadic, body-reads, will-throw, witness-unplaced, unproven-arity or positional.")
+        "How a call site's arguments were laid out: strategy is swift-signature, swift-leading, no-parameters, float-getter-self, integer-getter-self, metadata-accessor-request, c-arity, c-declaration, c-format, c-format-unread, objc-format, objc-signature, objc-signature-disputed, objc-maybe-nonpositional, objc-variadic, body-reads, will-throw, witness-unplaced, unproven-arity or positional.")
 }
 
 extension ProbeEvent {

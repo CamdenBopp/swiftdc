@@ -434,6 +434,10 @@ $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -o libEmuImage.dylib
 # The same image with the older bind opcodes in place of chained fixups.
 $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -Wl,-no_fixup_chains -o libEmuImage.opcodes.dylib
 
+echo "==> an imported type metadata accessor reached with the caller's formals still in x1 and x2 (metaaccessorkit.swift, metaaccessorclient.swift, -O)"
+$SWIFTC -parse-as-library -O -emit-library -emit-module -module-name MetaAccessorKit metaaccessorkit.swift -o libMetaAccessorKit.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name MetaAccessorClient metaaccessorclient.swift -I . -L . -lMetaAccessorKit -o libMetaAccessorClient.dylib
+
 echo "==> a standard library getter whose self is a float: nothing in the integer registers is its argument (bitpatterngetters.swift, -Onone)"
 $SWIFTC -parse-as-library -Onone -emit-library -module-name BitPatternGetters bitpatterngetters.swift -o libBitPatternGetters.onone.dylib
 

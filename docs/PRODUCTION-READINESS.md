@@ -61,6 +61,31 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: an imported metadata accessor does not take the caller's registers
+
+**FIXED (soundness).** A type metadata accessor of another image takes
+the request in x0 and, only when its type is generic, metadata after it.
+The import's name does not say which, and with no body it took the
+positional layout. `libMetaAccessorClient.dylib`
+`foreignMake(_: Int, _: Int, _: Int)` reaches the accessor of a class that
+is not generic with its formals still in x1 and x2, and rendered
+`type metadata accessor for MetaAccessorKit.MAKlass(0, arg1, arg2)`.
+Where a later register holds a value, the accessor now shows its request
+and an unknown tail: `(0, …)`. With nothing known after the request it
+prints `(0)` as before. An accessor in the image (from its body) and a
+system library's (from the SDK table's count) are laid out before this
+and unchanged.
+
+Blast radius against 5a93320: the new image, and two more where the stale
+value was an earlier call's result or an earlier accessor:
+`ExistentialWitness.Tag(0, r0)` and `FieldVTableOther.Engine(0, type
+metadata accessor for FieldVTable.Garage())`. Six lines structured.
+Instructions +0.08%.
+
+**OPEN (completeness).** A generic type's imported accessor reached with
+its real metadata arguments also shows `…` for them.
+
+
 ## 2026-11-27: a float's getter takes nothing from the integer registers
 
 **FIXED (soundness).** A getter the layout code could not place fell to

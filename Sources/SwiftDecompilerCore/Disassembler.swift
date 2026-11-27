@@ -11287,6 +11287,23 @@ public struct Disassembler: Sendable {
                 strategy = "unproven-arity"
                 continue
             }
+            // A type metadata accessor of another image takes the request
+            // in x0 and, only when its type is generic, the arguments'
+            // metadata after it. The import's name does not say which, and
+            // there is no body to read: `type metadata accessor for
+            // GenExLib.Klass(0, arg1, arg2)` named the caller's own formals,
+            // still in x1 and x2, for a class that is not generic. Where a
+            // later register holds a value, it shows its request and an
+            // unknown tail. Only such an accessor gets this far: one in the
+            // image was laid out from its body, and a system library's from
+            // the SDK table's count.
+            if let callee = calleeByAddress[address], callee.hasPrefix("type metadata accessor for "),
+               let shown = sanitize(values), shown.dropFirst().contains(where: { $0 != .unknown }) {
+                argumentsByAddress[address] = [shown[0]]
+                unprovenVariadicSites.insert(address)
+                strategy = "metadata-accessor-request"
+                continue
+            }
             if let values = sanitize(values) {
                 argumentsByAddress[address] = values
             } else if unavailableBodyInputSites.contains(address), strategy == "positional",
