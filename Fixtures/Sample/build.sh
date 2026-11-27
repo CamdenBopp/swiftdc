@@ -338,6 +338,9 @@ echo "==> awaits whose result is not in x0 alone: generic, 5-word, String, Int?,
 $SWIFTC -parse-as-library -O -emit-library -module-name AwaitResults awaitresults.swift -o libAwaitResults.opt.dylib
 $SWIFTC -parse-as-library -Onone -emit-library -module-name AwaitResults awaitresults.swift -o libAwaitResults.onone.dylib
 
+echo "==> closed async startup operands (closed_await_hop.swift, -O)"
+$SWIFTC -target arm64-apple-macosx15.0 -swift-version 6 -parse-as-library -O -module-name ClosedAwaitHop closed_await_hop.swift -o closed-await-hop-oracle
+
 echo "==> a value struct's Int64 and UInt64 fields in registers (int64fields.swift, -O and -Onone)"
 $SWIFTC -parse-as-library -O -emit-library -module-name Int64Fields int64fields.swift -o libInt64Fields.dylib
 $SWIFTC -parse-as-library -Onone -emit-library -module-name Int64Fields int64fields.swift -o libInt64Fields.onone.dylib

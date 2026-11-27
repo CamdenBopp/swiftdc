@@ -61,6 +61,26 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: closed-caller async scaffolding lands with no caller
+
+**OPEN (refactor; nothing renders from it).** The checked-image extraction,
+detached-ingress census, closed-caller solver, physical region and replay,
+and raw instruction lifter (`Async{CheckedImage,DetachedIngress,
+ClosedCallerSolver,PhysicalRegion,PhysicalReplay,PhysicalInstructionLifter}.swift`)
+are in the tree with 17 tests and the `closed-await-hop-oracle` fixture.
+`asyncChainSlots` takes an admitted region and a checked image, and every
+production caller passes neither: there is no admission issuer, so no
+awaited scalar is carried across an executor hop yet. Against 0f34298 all
+four views of 3,340 renders are byte-identical (`Tools/blast-radius.sh
+--real --perf`: instructions -0.07%, footprint +0.76%).
+
+Still to prove before a caller is wired: the loaded provider and bounded
+memory effects of the TaskPriority value-witness slots, and one authentic
+linked scalar positive. A sampled mutation run left 17 of 18 guards
+standing, so the guards in these files are not yet held by tests; each
+needs a killing test before it gates a render.
+
+
 ## 2026-11-27: the emulator oracle binds an image linked with bind opcodes
 
 **FIXED (validation).** 39 fixture images carry `LC_DYLD_INFO` bind

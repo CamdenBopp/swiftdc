@@ -19,7 +19,7 @@ struct AsyncDescriptorHandoff: Sendable, Equatable {
     /// Other instruction shapes retain ordinary grouping without this fact.
     static func prove(
         _ body: [Instruction], source: UInt64, site: UInt64, resume: UInt64,
-        entry: UInt64, evidence: Evidence
+        entry: UInt64, outgoingScalarRegister: Int = 0, evidence: Evidence
     ) -> Self? {
         let suffixCount = 13
         guard body.count >= suffixCount, body.first?.address == source,
@@ -80,7 +80,7 @@ struct AsyncDescriptorHandoff: Sendable, Equatable {
               let install = operands(7, AARCH64_INS_MOV, count: 2),
               isGPR(install[0], 22), isGPR(install[1], 0),
               let restoreArgument = operands(8, AARCH64_INS_MOV, count: 2),
-              isGPR(restoreArgument[0], 0),
+              isGPR(restoreArgument[0], outgoingScalarRegister),
               let restoreLink = operands(9, AARCH64_INS_LDP, count: 3),
               isGPR(restoreLink[0], 29), isGPR(restoreLink[1], 30),
               case .memory(let stack?, nil, _) = restoreLink[2].operand,

@@ -2679,7 +2679,9 @@ public struct Disassembler: Sendable {
     /// decline until their inter-funclet ordering can be independently proved.
     func asyncChainSlots(
         index: AsyncFuncletIndex, function: (UInt64) -> DisassembledFunction?,
-        enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex
+        enumCaseIndex: EnumCaseIndex, classTypeIndex: ClassTypeIndex,
+        admittedClosedCaller: AsyncCheckedImage.AdmittedRegion? = nil,
+        checkedAsyncImage: AsyncCheckedImage? = nil
     ) -> [UInt64: [Int: AbstractValue]] {
         func isPortable(_ value: AbstractValue) -> Bool {
             switch value {
@@ -2794,7 +2796,59 @@ public struct Disassembler: Sendable {
                 }
             }
         }
+        if let admittedClosedCaller, let checkedAsyncImage,
+           admittedClosedCaller.sliceDigest == checkedAsyncImage.sliceDigest,
+           let scoped = AsyncClosedCallerSolver.solve(admittedClosedCaller.model),
+           scoped.resume == admittedClosedCaller.resume,
+           let words = Self.asyncScalarWords(scoped, index: index),
+           function(scoped.resume) != nil {
+            let prior = result[scoped.resume] ?? [:]
+            result[scoped.resume] = Self.mergeAsyncScalarSlots(prior, with: words)
+        }
         return result
+    }
+
+    static func mergeAsyncScalarSlots(
+        _ prior: [Int: AbstractValue], with scoped: [Int: AbstractValue]
+    ) -> [Int: AbstractValue] {
+        var agreed = prior
+        for (offset, value) in scoped {
+            if let existing = prior[offset], existing != value {
+                agreed.removeValue(forKey: offset)
+            } else {
+                agreed[offset] = value
+            }
+        }
+        return agreed
+    }
+
+    static func asyncScalarWords(
+        _ scoped: AsyncClosedCallerSolver.Solution, index: AsyncFuncletIndex
+    ) -> [Int: AbstractValue]? {
+        guard let destination = index.funclets[scoped.resume], destination.kind == .continuation,
+              let owner = destination.parent
+        else { return nil }
+        let indexed = index.transfers.values.flatMap { $0 }.filter { $0.resume == scoped.resume }
+        guard indexed.count == scoped.edges.count,
+              indexed.allSatisfy({ $0.kind == .executorHop && $0.resumeKind == .continuation }),
+              Set(indexed.map { AsyncClosedCallerSolver.Edge(source: $0.source, branch: $0.site) }) == scoped.edges
+        else { return nil }
+        var words: [Int: AbstractValue] = [:]
+        for (offset, identity) in scoped.words {
+            for edge in scoped.edges {
+                guard let source = index.funclets[edge.source], source.parent == owner,
+                      source.kind == .awaitReturn, identity.returnEntry == edge.source,
+                      awaitedResultRegister(into: edge.source, index: index) == "x0",
+                      let (site, _) = index.suspension(into: edge.source),
+                      site == identity.callEdge.branch,
+                      index.transfers[identity.callEdge.source]?.contains(where: {
+                          $0.site == site && $0.resume == edge.source && $0.kind == .awaitCall
+                      }) == true
+                else { return nil }
+                words[offset] = .awaitResult(source.ordinal)
+            }
+        }
+        return words
     }
 
     /// The code sections of `machO` (`CodeSection.of`), in address order,
@@ -3267,12 +3321,18 @@ public struct Disassembler: Sendable {
     private func validatedFunctionReferences(
         in machO: MachOFile, permits: (RuntimeFunctionReference) -> Bool
     ) -> [UInt64: RuntimeFunctionReference] {
+        validatedFunctionBindings(in: machO, permits: permits).mapValues(\.reference)
+    }
+
+    private func validatedFunctionBindings(
+        in machO: MachOFile, permits: (RuntimeFunctionReference) -> Bool
+    ) -> [UInt64: AsyncCheckedImage.Binding] {
         guard !machO.isLoadedFromDyldCache else { return [:] }
         let candidates = symbolStubReferences(in: machO)
         guard !candidates.isEmpty, let engine = CapstoneEngine() else { return [:] }
         let bindings = ChainedFixupTable()
         let sections = machO.sections.filter { $0.flags.type == .symbol_stubs }
-        var references: [UInt64: RuntimeFunctionReference] = [:]
+        var references: [UInt64: AsyncCheckedImage.Binding] = [:]
         for (address, symbol) in candidates {
             guard let flags = symbol.nlist.flags, flags.stab == nil, flags.contains(.ext),
                   flags.type == .undf, symbol.offset == 0,
@@ -3296,9 +3356,36 @@ public struct Disassembler: Sendable {
                   let offset = machO.fileOffset(of: slot),
                   bindings.validatedFunctionReference(at: UInt64(offset), in: machO) == reference
             else { continue }
-            references[address] = reference
+            references[address] = .init(stub: address, pointerFileOffset: UInt64(offset),
+                                        libraryOrdinal: Int(description.libraryOrdinal), reference: reference)
         }
         return references
+    }
+
+    /// Explicit startup-candidate route. The runtime-effect layer consumes
+    /// this result only after checking its configuration against sliceDigest.
+    /// No placement in the hints-only census and no hypothesis based on nameOf.
+    func checkedAsyncImage(in machO: MachOFile) -> AsyncCheckedImage? {
+        let fixups = ChainedFixupTable()
+        return AsyncCheckedImage.extract(from: machO, bindFunctions: {
+            self.validatedFunctionBindings(in: machO) { _ in true }
+        }, isVoidMetadataSlot: { offset in
+            guard let reference = fixups.importedFunction(at: UInt64(offset), in: machO),
+                  reference.rawSymbol == "_$sytN"
+            else { return false }
+            return ["/usr/lib/swift/libswiftCore.dylib", "@rpath/libswiftCore.dylib"].contains(reference.libraryName)
+        }, strongImportedDataAt: { offset in
+            guard let reference = fixups.importedFunction(at: UInt64(offset), in: machO) else { return nil }
+            return RuntimeFunctionReference(rawSymbol: reference.rawSymbol, libraryName: reference.libraryName)
+        }, rebasedTargets: {
+            guard let base = machO.preferredLoadAddress else { return [] }
+            return Set(fixups.allRebases(in: machO).values.compactMap { offset in
+                let (target, overflow) = base.addingReportingOverflow(offset)
+                return overflow ? nil : target
+            })
+        }, decode: { address, starts in
+            self.decodeFunction(at: address, boundaries: starts, in: machO)
+        })
     }
 
     /// The address a symbol defined in a section names. An absolute symbol

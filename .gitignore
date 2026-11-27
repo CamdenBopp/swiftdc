@@ -35,6 +35,7 @@ Fixtures/Sample/*.shape
 Fixtures/Sample/abi-source-oracle
 Fixtures/Sample/sprint-native-oracle
 Fixtures/Sample/emu-oracle
+Fixtures/Sample/closed-await-hop-oracle
 Fixtures/Sample/abi-source-resilient-oracle
 Fixtures/Sample/exception-cleanup-oracle
 Fixtures/Sample/async-fp-raw-oracle
