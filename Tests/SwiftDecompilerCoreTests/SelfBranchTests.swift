@@ -22,7 +22,7 @@ import Foundation
     #expect(!body.contains { $0.contains("entryBackEdge(") }, "\(function.renderStructured())")
 }
 
-@Test func goStackGrowthIsALoopWithoutACallIfPresent() async throws {
+@Test(.goTier) func goStackGrowthIsALoopWithoutACallIfPresent() async throws {
     let path = "Fixtures/Sample/goProgram.stripped"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let functions = try await withStableDependencies {

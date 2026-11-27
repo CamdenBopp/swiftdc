@@ -7,9 +7,11 @@
 #                                      and local changes, plus Determinism and
 #                                      FixturePresence. Unknown sources run full.
 #   Tools/test.sh full                  tier 4: the enforcing suite (the gate's)
-#   Tools/test.sh quick                tier 4 except the dyld-cache memory and
-#                                      the Go tests, which set the suite's
-#                                      length. For iteration only.
+#   Tools/test.sh quick                tier 4 except the dyld-cache memory
+#                                      test. For iteration only.
+#   Tools/test.sh go                   the Go tests, which no other tier runs
+#                                      (SWIFTDC_GO_TESTS=1; the longest takes
+#                                      28 minutes alone). Go is not a target.
 #
 # Subsystems: arm64 abi tracer cflow meta render audit. Every tier builds
 # tests first and requires fixtures. Before a push, run Tools/test.sh full.
@@ -52,9 +54,11 @@ fi
 args=()
 case $1 in
   full) args=() ;;
-  # The Go x8 tests are the longest in the suite: alone,
-  # goX8ResolvedStackBranches… takes 28 minutes and goX8ArrayPipelines… 5.
-  quick) args=(--skip 'streamingWholeImageMemoryStaysLow|GoFunctionTableTests|goStackGrowth|goX8') ;;
+  quick) args=(--skip 'streamingWholeImageMemoryStaysLow') ;;
+  # The tests marked .goTier (GoTestTier.swift) report as skipped without
+  # the variable, in every other tier and in the gate.
+  go) export SWIFTDC_GO_TESTS=1
+      args=(--filter 'GoFunctionTableTests\.swift|goX8|goStackGrowth') ;;
   file)
     shift; [ $# -ge 1 ] || { echo "test.sh file <NameTests>..." >&2; exit 2; }
     re=$(printf '%s\\.swift|' "$@"); args=(--filter "${re%|}") ;;
@@ -106,7 +110,7 @@ case ${args[0]-} in
   --filter)
     printf 'test.sh: selecting test names and files matching %s; other tests are omitted\n' "${args[1]}" >&2 ;;
   --skip)
-    echo "test.sh: skipping the dyld-cache memory test and selected Go tests for iteration" >&2
+    echo "test.sh: skipping the dyld-cache memory test for iteration" >&2
     printf 'test.sh: exclusion regex %s\n' "${args[1]}" >&2 ;;
   *)
     echo "test.sh: running the full enforcing suite" >&2 ;;

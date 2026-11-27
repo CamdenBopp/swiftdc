@@ -61,6 +61,18 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: the Go tests are opt-in
+
+**CHANGED (tests).** Go is not a target. The 13 tests that analyse the Go
+fixtures carry `.goTier` and run only under `SWIFTDC_GO_TESTS=1`
+(`Tools/test.sh go`); elsewhere, the gate and hosted CI included, each is
+reported as skipped with that reason. Full enforcing suite: 2,667 s
+before, 787 s after (2,228 tests, 13 skipped). **OPEN:** nothing runs
+the Go tests automatically, so a regression in the Go function table,
+build-ID or x8 handling shows only when the tier is run by hand. The
+all-fixture sweeps (emulator, facts, CFG) still read the Go images.
+
+
 ## 2026-11-27: a callee whose own signature is async takes x22
 
 **FIXED (soundness).** A call to a callee with no body in the image handed

@@ -176,8 +176,9 @@ around what a rebuild costs:
 | no-op `swift build` | 7 s, nearly all manifest loading and planning |
 | body edit, `swift build --build-tests` | about 20 s: one Core object, no test files recompile |
 | internal signature edit, `--build-tests` | about 24 s |
-| full enforcing suite | about 44 min (2,667 s in the gate, 2026-11-27, 2,205 tests); one Go x8 test sets the length. `--parallel` changes nothing (Swift Testing already runs concurrently) |
-| `Tools/test.sh quick` | about 12 min (697 s and 731 s, 6,390 CPU-seconds): the suite without the Go and dyld-cache memory tests |
+| full enforcing suite | about 13 min (787 s, 2026-11-27, 2,228 tests, 6,030 CPU-seconds). `--parallel` changes nothing (Swift Testing already runs concurrently) |
+| `Tools/test.sh quick` | about 12 min: the suite without the dyld-cache memory test |
+| `Tools/test.sh go` | the 13 Go tests, which nothing else runs (`SWIFTDC_GO_TESTS=1`); with them the suite took 44 min |
 | one test file, `--filter 'NameTests\.swift'` | 1.7 s plus its tests |
 | `swift build -c release --scratch-path .build-release` after a change | about 70 s |
 | release in the shared `.build` after a debug build | about 5 min: every dependency rebuilds |
@@ -385,5 +386,6 @@ fails while building fixtures, and 6.3 is untried.
 The emulator oracle (`Fixtures/Sample/emu-oracle`) needs Unicorn
 (`brew install unicorn pkgconf`); without it `build.sh` skips it and the
 enforcing suite names it. The Go fixtures (`Fixtures/Sample/gofunctions`) need `go` on the path;
-without it `build.sh` skips them and the enforcing suite names them.
+without it `build.sh` skips them and the enforcing suite names them. The
+tests that analyse them are opt-in (`Tools/test.sh go`): Go is not a target.
 `brew install openssl@3` is needed only for the device commands.

@@ -18,7 +18,7 @@ The ratios held.
 | No-op rebuild | 7.4 s | nearly all manifest loading and planning |
 | Body edit, any Core file, `--build-tests` | 19-22 s | rewrites 1 Core `.o`, **0 of 174** test `.o` |
 | Internal signature change | 24 s | still 0 test `.o` |
-| Full enforcing suite | 145 s | 984 tests, about 850 CPU-seconds. On 2026-11-27: 2,667 s in the gate for 2,205 tests |
+| Full enforcing suite | 145 s | 984 tests, about 850 CPU-seconds. On 2026-11-27: 2,667 s in the gate for 2,205 tests, then 787 s for 2,228 with the Go tests opt-in |
 | `Tools/test.sh quick` | 697-731 s | 2026-11-27: 2,206 tests, 6,390 CPU-seconds; its last five minutes are the four host swift-syntax pipeline tests and the CFG comparison on every fixture |
 | Suite without the three outliers | 96 s | 590 CPU-seconds |
 | One test file (`--filter 'X\.swift'`) | 1.7 s + the tests | fixed overhead |
@@ -148,7 +148,7 @@ Four tiers. Each one is a superset of the tier before it.
 | 1. Individual | every edit | `swift test --skip-build --filter '<TestFile>\.swift'` or a test name | 2-20 s |
 | 2. Subsystem | before asking for review | the owner's filter from the table above | 10-40 s |
 | 3. Affected | before handing to the gate | tier 2 plus every subsystem that imports a changed shared-contract file, plus `Determinism` and `FixturePresence` | 40-100 s |
-| 4. Full | the gate only | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build` | 145 s then; 44 min on 2026-11-27 |
+| 4. Full | the gate only | `SWIFTDC_REQUIRE_FIXTURES=1 swift test --skip-build` | 145 s then; 13 min on 2026-11-27 |
 
 Tier 4 is never skipped before a push; CLAUDE.md requires it per commit, and
 the gate enforces it. Tiers 1-3 are what an agent runs while it iterates.
@@ -161,9 +161,13 @@ the gate enforces it. Tiers 1-3 are what an agent runs while it iterates.
   Determinism and FixturePresence. Unmapped source and shared test/build
   inputs trigger the full suite.
 - `full`
-- `quick`, which skips the dyld-cache memory test and the Go tests (alone, the
-  longest Go x8 test takes 28 minutes and sets the suite's length) for
-  iteration. The script prints the exclusion regex and the full-suite command.
+- `quick`, which skips the dyld-cache memory test for iteration. The script
+  prints the exclusion regex and the full-suite command.
+- `go`, the 13 tests that analyse the Go fixtures (`.goTier` in
+  `GoTestTier.swift`). They are skipped, and reported as skipped, in every
+  other tier and in the gate unless `SWIFTDC_GO_TESTS=1` is set. Alone, the
+  longest takes 28 minutes; with them the suite took 44 minutes, without
+  them 787 s (2026-11-27).
 
 A `--filter` regex matches a test's file name as well as its name, so
 `'SmokeTests\.swift'` runs exactly that file. Measured 2026-11-02 at load
@@ -229,8 +233,8 @@ finished, so it was moved.
 
 Release binaries are kept per commit, so the next gate's baseline is already
 built. The expected gate time on a cache hit was the suite (145 s) plus the
-blast radius (about 75 s), about 4 minutes; with the suite at 44 minutes
-(2026-11-27) a gate takes 49, while a release build
+blast radius (about 75 s), about 4 minutes; with the suite at 13 minutes
+(2026-11-27) a gate takes about 18, while a release build
 that overlaps the suite stays off the critical path.
 
 ### The cost budget

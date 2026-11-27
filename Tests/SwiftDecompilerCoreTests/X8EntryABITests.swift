@@ -244,7 +244,7 @@ private func x8RawBody(_ words: [UInt32], at address: UInt64 = 0x1000) throws ->
 }
 
 
-@Test func goX8EntryABIMetadataIsAppliedInFilteredPipelinesIfPresent() async throws {
+@Test(.goTier) func goX8EntryABIMetadataIsAppliedInFilteredPipelinesIfPresent() async throws {
     for path in x8GoImages {
         guard FileManager.default.fileExists(atPath: path) else { continue }
         let image = try BinaryLoader.load(path: path)
@@ -312,15 +312,15 @@ private func goX8PipelineStages(_ stages: [Int]) async throws {
 }
 
 
-@Test func goX8ArrayPipelinesKeepIncomingDataUnownedIfPresent() async throws {
+@Test(.goTier) func goX8ArrayPipelinesKeepIncomingDataUnownedIfPresent() async throws {
     try await goX8PipelineStages([0, 1, 2])
 }
 
-@Test func goX8StreamingPipelineKeepsIncomingDataUnownedIfPresent() async throws {
+@Test(.goTier) func goX8StreamingPipelineKeepsIncomingDataUnownedIfPresent() async throws {
     try await goX8PipelineStages([3])
 }
 
-@Test func goX8AnalyzeEachPipelineKeepsIncomingDataUnownedIfPresent() async throws {
+@Test(.goTier) func goX8AnalyzeEachPipelineKeepsIncomingDataUnownedIfPresent() async throws {
     try await goX8PipelineStages([4])
 }
 
@@ -404,7 +404,7 @@ private func x8EmptyArityCaller(_ kind: String, tail: Bool, indirect: Bool = fal
 }
 
 
-@Test func goX8ResolvedStackBranchesKeepTheirArgumentDeclineIfPresent() async throws {
+@Test(.goTier) func goX8ResolvedStackBranchesKeepTheirArgumentDeclineIfPresent() async throws {
     func baseName(_ name: String) -> String {
         let name = String(name.drop(while: { $0 == "_" }))
         return name.hasSuffix(".abi0") ? String(name.dropLast(5)) : name
@@ -630,7 +630,7 @@ private func x8EmptyArityCaller(_ kind: String, tail: Bool, indirect: Bool = fal
 private let x8GoStackGrowthNames = ["runtime.morestack", "runtime.morestack.abi0",
     "runtime.morestack_noctxt", "runtime.morestack_noctxt.abi0", "runtime.morestackc", "runtime.morestackc.abi0"]
 
-@Test func goStackGrowthRegisterInputsAreNotSourceFormalsIfPresent() async throws {
+@Test(.goTier) func goStackGrowthRegisterInputsAreNotSourceFormalsIfPresent() async throws {
     guard FileManager.default.fileExists(atPath: x8ScratchImages[0]) else { return }
     try await withStableDependencies {
         for name in x8GoStackGrowthNames {

@@ -34,7 +34,7 @@ private func symbols() -> [UInt64: String]? {
     return result.isEmpty ? nil : result
 }
 
-@Test func aStrippedGoImageTakesItsFunctionsFromTheGoTableIfPresent() async throws {
+@Test(.goTier) func aStrippedGoImageTakesItsFunctionsFromTheGoTableIfPresent() async throws {
     guard FileManager.default.fileExists(atPath: stripped) else { return }
     let oracle = try #require(symbols())
     let machO = try BinaryLoader.load(path: stripped)
@@ -53,7 +53,7 @@ private func symbols() -> [UInt64: String]? {
 }
 
 /// The streaming path (`xrefs`), where one 7.4 MB function took 2.77 GB.
-@Test func aStrippedGoImageStreamsByTheGoTableIfPresent() async throws {
+@Test(.goTier) func aStrippedGoImageStreamsByTheGoTableIfPresent() async throws {
     guard FileManager.default.fileExists(atPath: stripped) else { return }
     let oracle = try #require(symbols())
     let scale = try #require(oracle.first { $0.value == "main.scale" }?.key)
@@ -69,7 +69,7 @@ private func symbols() -> [UInt64: String]? {
 
 /// The objdump listing names functions from the table: objdump has no
 /// symbol to print.
-@Test func aStrippedGoImageListsTheGoTableNamesIfPresent() async throws {
+@Test(.goTier) func aStrippedGoImageListsTheGoTableNamesIfPresent() async throws {
     guard FileManager.default.fileExists(atPath: stripped) else { return }
     let oracle = try #require(symbols())
     let listing = try await withStableDependencies { try await Disassembler(preset: .default).disassemble(path: stripped) }
@@ -79,7 +79,7 @@ private func symbols() -> [UInt64: String]? {
 }
 
 /// Each inconsistency declines the whole table, never part of it.
-@Test func anInconsistentGoTableIsDeclinedIfPresent() throws {
+@Test(.goTier) func anInconsistentGoTableIsDeclinedIfPresent() throws {
     guard FileManager.default.fileExists(atPath: stripped) else { return }
     let machO = try BinaryLoader.load(path: stripped)
     let section = try #require(machO.sections.first { $0.sectionName == "__gopclntab" })
@@ -130,7 +130,7 @@ private func symbols() -> [UInt64: String]? {
 /// called its two symbols there an identical-code fold. Name and bytes
 /// agreeing, the span is data: whole and filtered, it keeps its name and has
 /// no instruction, and streaming still lists it as a function.
-@Test func theGoBuildIDIsDataNotCodeIfPresent() async throws {
+@Test(.goTier) func theGoBuildIDIsDataNotCodeIfPresent() async throws {
     let variants = [full, stripped, "Fixtures/Sample/x8-entry-go-oracle", "Fixtures/Sample/x8-entry-go-stripped-oracle"]
     for path in variants {
         guard FileManager.default.fileExists(atPath: path) else {
@@ -223,7 +223,7 @@ private func symbols() -> [UInt64: String]? {
 /// `fcntl(…)` for the `clock_gettime` its stub's GOT slot is bound to. The
 /// stride now comes from the stubs (`adrp; ldr; br`), and each runtime
 /// trampoline calls the libc function it is named for.
-@Test func goImportStubsAreNamedByTheirOwnStrideIfPresent() async throws {
+@Test(.goTier) func goImportStubsAreNamedByTheirOwnStrideIfPresent() async throws {
     guard FileManager.default.fileExists(atPath: full) else { return }
     let functions = try await withStableDependencies { try await Disassembler().disassemble(path: full) }
     func text(_ name: String) throws -> String {
