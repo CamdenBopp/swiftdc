@@ -434,6 +434,12 @@ $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -o libEmuImage.dylib
 # The same image with the older bind opcodes in place of chained fixups.
 $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -Wl,-no_fixup_chains -o libEmuImage.opcodes.dylib
 
+echo "==> a result buffer across calls named like runtime entries, by declared result and by provider (resultrole.swift + .s + resultroleprovider.c, -O)"
+$CLANG -arch arm64 -O2 -dynamiclib resultroleprovider.c -install_name @rpath/libResultRoleProvider.dylib -o libResultRoleProvider.dylib
+$CLANG -arch arm64 -c resultrole.s -o resultrole.o
+$SWIFTC -parse-as-library -O -emit-library -module-name ResultRole resultrole.swift resultrole.o -L . -lResultRoleProvider -lobjc -o libResultRole.dylib
+rm -f resultrole.o
+
 echo "==> enum-only value-witness slots need a table proven an enum's (enum_slot_evidence.s; links libswiftCore for the metadata binds and accessors)"
 $CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib enum_slot_evidence.s -L"$(xcrun --show-sdk-path)/usr/lib/swift" -lswiftCore -o libEnumSlotEvidence.dylib
 

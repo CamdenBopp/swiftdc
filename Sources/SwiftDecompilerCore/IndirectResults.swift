@@ -210,6 +210,9 @@ extension Disassembler {
         // x8. Binding objc_msgSend itself does not declare that method.
         let dispatch = String(name.split(separator: "$", maxSplits: 1).first ?? "")
         if ValueTracer.isObjCMessageEntry(dispatch) { return false }
+        // The forwarding entry is declared `void (void)` (objc/message.h)
+        // and, like a send, returns whatever the forwarded method returns.
+        if name == "objc_msgForward" || name == "objc_msgForward_stret" { return false }
         if name.hasPrefix("swift_") || name.hasPrefix("objc_") { return true }
         let libc: Set<String> = [
             "memcpy", "memmove", "memset", "memcmp", "bzero", "strlen", "strcmp", "strncmp",

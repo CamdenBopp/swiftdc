@@ -61,6 +61,23 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: a result buffer is not kept across `_objc_msgForward`
+
+**FIXED (soundness).** A bound `swift_` or `objc_` runtime name was taken
+to return in registers, so stores to the caller's x8 buffer before the
+call stayed the result. `_objc_msgForward`, bound to libobjc and declared
+`void (void)`, returns whatever the forwarded method returns, x8 buffer
+included. `libResultRole.dylib` `staleAfterForward` rendered
+`return ResultRole.Big(a: 27, b: 27, c: 27, d: 27, e: 27)` after the
+call. The forwarding entries are now excluded beside the send entries:
+the stores print as raw writes and the return is `?`. Seven controls in
+the fixture (kept across `swift_release`, `swift_allocObject`,
+`swift_allocBox`, `swift_release_n`; stale after same-named functions
+from another library and after a call returning through x8) print as
+before. Blast radius against cf55245: the new image only; instructions
++0.05%.
+
+
 ## 2026-11-27: an enum-only witness slot is named only for an enum's table
 
 **FIXED (soundness).** A call through `[metadata - 8] + 0x58/0x60/0x68`
