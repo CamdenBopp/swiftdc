@@ -61,6 +61,20 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: a void runtime name's result stays declined, bound or not
+
+**GUARD (tests).** `swift_willThrow`, `swift_willThrowTypedImpl` and
+`swift_job_run` discard x0 after the call by name alone, with no library
+binding asked. Requiring the binding would be wrong: `swift_willThrow`
+has no row in the provider table, so no genuine site is ever bound, and
+x0 after every real throw hook would become the call's result again. For
+a function of the image that takes one of those names and returns a
+value (`libVoidRuntimeTwin.dylib`), the render declines: the call is
+shown and the return is `?`. The tests hold the list to exact names and
+the discard to both bound and unbound sites; the image is in the
+emulator sweep. No Core change.
+
+
 ## 2026-11-27: a function of the image named swift_willThrow is not the runtime's
 
 **FIXED (soundness).** The runtime's `swift_willThrow` takes the error in

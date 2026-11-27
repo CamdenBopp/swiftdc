@@ -860,3 +860,75 @@ private let namedBufferMatrix: [NamedABIMatrixInput] = [
         }
     }
 }
+
+/// A runtime entry point that returns nothing leaves no result in x0. A
+/// call site says which function it reaches only through its binding, and
+/// `swift_willThrow` has no row in the provider table, so its binding is
+/// never proven. x0 after a call under one of these names is therefore
+/// claimed by nothing in either state: the library's function left no
+/// result there, and a function that only shares the name returns a value
+/// nothing here proves. Requiring the binding for the discard would name a
+/// result for every unproven `swift_willThrow`.
+@Test func aVoidRuntimeNameClaimsNoResultWithOrWithoutItsBinding() {
+    for name in ValueTracer.voidRuntimeCalls.sorted() {
+        for spelling in [name, "_" + name] {
+            #expect(ValueTracer.CallFacts(callee: spelling).returnsVoidByName, Comment(rawValue: spelling))
+            #expect(ValueTracer.CallFacts(callee: spelling, namedABIContract: true).returnsVoidByName, Comment(rawValue: spelling))
+            // The facts built for a call into this image's own function.
+            #expect(ValueTracer.CallFacts(callee: spelling, knownArityApplies: false).returnsVoidByName, Comment(rawValue: spelling))
+        }
+        for binding in [[true, false], [false, true]] {
+            let cache = ValueTracer.CallFactsCache()
+            for bound in binding {
+                #expect(cache.facts(for: name, namedABIContract: bound).returnsVoidByName, Comment(rawValue: "\(name) bound=\(bound)"))
+            }
+        }
+    }
+    #expect(ValueTracer.voidRuntimeCalls == ["swift_willThrow", "swift_willThrowTypedImpl", "swift_job_run"])
+    // The exact names, and nothing longer or shorter.
+    for name in ["swift_willThrowLookalike", "swift_job_runner", "swift_job_run_on_task_executor", "swift_willThro",
+                 "plain_result"] {
+        #expect(!ValueTracer.CallFacts(callee: name).returnsVoidByName, Comment(rawValue: name))
+        #expect(!ValueTracer.CallFacts(callee: name, namedABIContract: true).returnsVoidByName, Comment(rawValue: name))
+    }
+}
+
+/// The same through the tracer: `bl <callee>; ret`. x0 and v0 at the
+/// return are no value after a void runtime name, bound or not, and the
+/// call's opaque result after any other name without a declaration.
+@Test func theTracerNamesNoResultAfterAVoidRuntimeNameInEitherBinding() throws {
+    let engine = try #require(CapstoneEngine())
+    // bl +0x2000; ret
+    let words: [UInt32] = [0x94000800, 0xd65f03c0]
+    let bytes = words.flatMap { word in (0..<4).map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } }
+    let decoded = engine.disassemble(Data(bytes), address: 0x1000)
+    try #require(decoded.count == words.count)
+    func exits(_ name: String, bound: Bool) throws -> (AbstractValue?, AbstractValue?) {
+        let instructions = decoded.map { item in
+            var facts = Instruction.Facts()
+            facts.namedABIContract = bound && item.controlFlow == .call
+            return Instruction(address: item.address, text: item.text, controlFlow: item.controlFlow,
+                branchTarget: item.branchTarget, detail: item.detail,
+                callee: .kept(item.controlFlow == .call ? name : nil), facts: facts)
+        }
+        let function = DisassembledFunction(symbol: "_voidName", demangledName: nil,
+            startAddress: 0x1000, instructions: instructions, source: .symbol)
+        let result = ValueTracer().analyze(function, entry: nil)
+        let address = try #require(instructions.last?.address)
+        return (result.exitValues[address], result.exitFloatValues[address])
+    }
+    for name in ValueTracer.voidRuntimeCalls.sorted() {
+        for bound in [false, true] {
+            let (gp, fp) = try exits(name, bound: bound)
+            #expect(gp == nil, Comment(rawValue: "\(name) bound=\(bound)"))
+            #expect(fp == nil, Comment(rawValue: "\(name) bound=\(bound)"))
+        }
+    }
+    // The controls: a name with a void name as its prefix, and one no
+    // table knows, keep the call's opaque result in both banks.
+    for name in ["swift_willThrowLookalike", "swift_job_runner", "plain_result"] {
+        let (gp, fp) = try exits(name, bound: false)
+        #expect(gp == .callResult(0x1000), Comment(rawValue: name))
+        #expect(fp == .callResult(0x1000), Comment(rawValue: name))
+    }
+}

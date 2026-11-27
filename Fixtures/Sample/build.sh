@@ -434,6 +434,9 @@ $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -o libEmuImage.dylib
 # The same image with the older bind opcodes in place of chained fixups.
 $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -Wl,-no_fixup_chains -o libEmuImage.opcodes.dylib
 
+echo "==> x0 read after an in-image twin of a void runtime entry point (voidruntimetwin.s + voidruntimetwin.c, -O2)"
+$CLANG -arch arm64 -O2 -dynamiclib voidruntimetwin.c voidruntimetwin.s -o libVoidRuntimeTwin.dylib
+
 echo "==> callers of an in-image function named swift_willThrow that reads x0 (willthrowtwin.s + willthrowtwin.c, -O2)"
 $CLANG -arch arm64 -O2 -dynamiclib willthrowtwin.c willthrowtwin.s -o libWillThrowTwin.dylib
 
