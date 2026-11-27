@@ -3293,6 +3293,23 @@ public struct Disassembler: Sendable {
         return nil
     }
 
+    /// Whether `symbol` is an enum's type metadata, or with `accessor` its
+    /// metadata accessor. The mangling spells the nominal kind
+    /// (swift/docs/ABI/Mangling.rst: `O` an enum, `V` a struct, `C` a
+    /// class), so `$s7EnumKit6SignalOMa` is an enum's accessor and
+    /// `$sSiN`, `$ss23_ContiguousArrayStorageCMa` are not. Anything that
+    /// does not demangle to exactly that entity is no evidence.
+    static func namesEnumMetadata(_ symbol: String, accessor: Bool) -> Bool {
+        let mangled = symbol.hasPrefix("_$s") ? String(symbol.dropFirst()) : symbol
+        guard mangled.hasPrefix("$s"), let global = try? demangleAsNode(mangled), global.kind == .global,
+              global.children.count == 1, let entity = global.children.first,
+              accessor ? entity.kind == .typeMetadataAccessFunction : entity.kind == .typeMetadata,
+              entity.children.count == 1, let type = entity.children.first, type.kind == .type,
+              type.children.count == 1, let nominal = type.children.first
+        else { return false }
+        return nominal.kind == .enum || nominal.kind == .boundGenericEnum
+    }
+
     struct ImportedFunctionReference: Sendable, Equatable {
         let rawSymbol: String
         let libraryName: String
@@ -4936,12 +4953,35 @@ public struct Disassembler: Sendable {
         }
         func valueWitnessCall(_ value: AbstractValue, site: UInt64) -> String? {
             let callSite = site
+            /// Whether `metadata` is proven an enum's: a slot the loader
+            /// binds to an enum's metadata symbol, or the result of a direct
+            /// call to an enum's metadata accessor. A generic parameter, an
+            /// incoming argument, an associated type and a type a mangled
+            /// name spells carry no nominal kind here, so none is an enum.
+            func isEnumMetadata(_ metadata: AbstractValue) -> Bool {
+                switch metadata {
+                case .loaded(let slot):
+                    return resolver.bindsEnumMetadata(at: slot)
+                case .callResult(let site):
+                    guard let call = function.instructions.first(where: { $0.address == site }),
+                          call.controlFlow == .call, let target = call.branchTarget
+                    else { return false }
+                    return resolver.returnsEnumMetadata(accessorAt: target)
+                default:
+                    return false
+                }
+            }
             /// The witness at `offset` in a value-witness table: one of the
             /// eight every table has, or an enum's three after its size,
             /// stride, flags and extra inhabitant count (`+0x58`, ValueWitness.def).
-            /// An enum slot exists only in an enum's table, so it is named
-            /// only when the call passes the metadata it was loaded through
-            /// where the witness takes its metadata, its last parameter.
+            /// An enum slot exists only in an enum's table
+            /// (`EnumValueWitnessTable`, swift/include/swift/ABI/Metadata.h):
+            /// any other table ends at +0x58 and the word there is another
+            /// object's. So it is named only when the call passes the
+            /// metadata it was loaded through where the witness takes its
+            /// metadata, its last parameter, and that metadata is proven an
+            /// enum's. Passing the metadata back proves which type the call
+            /// is for, never that the type is an enum.
             func slotName(_ offset: Int, metadata: AbstractValue) -> String? {
                 guard offset >= 0, offset % 8 == 0 else { return nil }
                 if offset / 8 < MetadataSymbolizer.valueWitnessNames.count {
@@ -4950,7 +4990,8 @@ public struct Disassembler: Sendable {
                 guard offset >= 0x58, (offset - 0x58) / 8 < MetadataSymbolizer.enumValueWitnessNames.count else { return nil }
                 let name = MetadataSymbolizer.enumValueWitnessNames[(offset - 0x58) / 8]
                 guard let arity = DisassembledFunction.valueWitnessArity[name],
-                      let arguments = callArguments[callSite], arguments.count >= arity, arguments[arity - 1] == metadata
+                      let arguments = callArguments[callSite], arguments.count >= arity, arguments[arity - 1] == metadata,
+                      isEnumMetadata(metadata)
                 else { return nil }
                 return name
             }
@@ -5581,6 +5622,10 @@ public struct Disassembler: Sendable {
         /// built on the first lookup and shared by every copy of the resolver.
         let chainedFixups = ChainedFixupTable()
 
+        /// This image's enum metadata accessors, read from its descriptors
+        /// on the first lookup and shared by every copy of the resolver.
+        let enumAccessors = MetadataSymbolizer.EnumAccessorIndex()
+
         /// `@"literal"` for a `__cfstring` entry.
         ///
         /// Layout is `struct __NSConstantString { void *isa; int32 flags; int32 _;
@@ -5858,6 +5903,27 @@ public struct Disassembler: Sendable {
 
         func importedFunction(at target: UInt64) -> ImportedFunctionReference? {
             importedStubFunctions[target]
+        }
+
+        /// Whether the loader binds `slot` to an enum's type metadata: the
+        /// bound symbol's mangling carries the nominal kind (`$s…ON`, or a
+        /// bound generic enum's `$sSiSgN`). A slot the program can rewrite
+        /// never gets here: the witness is named for a loaded metadata only
+        /// through `loadedName(at:)`, which refuses such a slot
+        /// (`anEnumBoundIntoAWritableSlotIsNoEvidenceIfPresent`).
+        func bindsEnumMetadata(at slot: UInt64) -> Bool {
+            guard let symbol = boundSymbol(at: slot) else { return false }
+            return Disassembler.namesEnumMetadata(symbol, accessor: false)
+        }
+
+        /// Whether the function at `target` is an enum's metadata accessor:
+        /// an import whose stub's symbol says so (`$s…OMa`), or the accessor
+        /// one of this image's enum descriptors points at.
+        func returnsEnumMetadata(accessorAt target: UInt64) -> Bool {
+            if let imported = importedFunction(at: target) {
+                return Disassembler.namesEnumMetadata(imported.rawSymbol, accessor: true)
+            }
+            return enumAccessors.contains(target, in: machO)
         }
 
         func importedFunction(for value: AbstractValue) -> ImportedFunctionReference? {

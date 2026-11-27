@@ -434,6 +434,14 @@ $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -o libEmuImage.dylib
 # The same image with the older bind opcodes in place of chained fixups.
 $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -Wl,-no_fixup_chains -o libEmuImage.opcodes.dylib
 
+echo "==> enum-only value-witness slots need a table proven an enum's (enum_slot_evidence.s; links libswiftCore for the metadata binds and accessors)"
+$CLANG -arch arm64 -mmacosx-version-min=15.0 -dynamiclib enum_slot_evidence.s -L"$(xcrun --show-sdk-path)/usr/lib/swift" -lswiftCore -o libEnumSlotEvidence.dylib
+
+echo "==> a resilient enum's witnesses beside the word past a struct's and a class's table (enumslotkit.swift -O resilient; enumslotclient.swift, -O and -Onone)"
+$SWIFTC -parse-as-library -O -enable-library-evolution -emit-library -emit-module -module-name EnumSlotKit enumslotkit.swift -o libEnumSlotKit.dylib
+$SWIFTC -parse-as-library -O -emit-library -module-name EnumSlotClient enumslotclient.swift -I . -L . -lEnumSlotKit -o libEnumSlotClient.dylib
+$SWIFTC -parse-as-library -Onone -emit-library -module-name EnumSlotClient enumslotclient.swift -I . -L . -lEnumSlotKit -o libEnumSlotClient.Onone.dylib
+
 echo "==> a context slot across an awaited child that follows its Parent word, a child that does not, and an executor hop (async_child_seed.s)"
 $CLANG -arch arm64 -dynamiclib async_child_seed.s -L "$ASYNC_MERGE_SWIFT_LIB" -lswift_Concurrency -o libAsyncChildSeed.dylib
 

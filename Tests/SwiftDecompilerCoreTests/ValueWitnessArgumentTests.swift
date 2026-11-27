@@ -39,17 +39,20 @@ private func structured(_ path: String) async throws -> [String: String] {
 }
 
 /// An enum's three witnesses follow its size, stride, flags and extra
-/// inhabitant count (`+0x58`). Only an enum's table has them, so a call
-/// through one is named only when it passes the metadata back as its last
-/// argument.
-@Test func anEnumValueWitnessIsNamedOnlyWithItsMetadataIfPresent() async throws {
+/// inhabitant count (`+0x58`). Only an enum's table has them, and an
+/// incoming argument's metadata has no nominal kind: passing it back as the
+/// last operand proves which type the call is for, never that the type is
+/// an enum. So no call through those words of an argument's table is
+/// named, with the metadata passed back (`_vwEnumTag`, `_vwInjectTag`) or
+/// without (`_vwEnumTagOther`).
+@Test func anEnumSlotOfAnArgumentsTableStaysUnresolvedIfPresent() async throws {
     let path = "Fixtures/Sample/libValueWitnessArgs.dylib"
     guard FileManager.default.fileExists(atPath: path) else { return }
     let text = try await structured(path)
-    #expect(text["_vwEnumTag"]?.contains("getEnumTag value witness for arg1(arg0, arg1)") == true)
-    #expect(text["_vwInjectTag"]?.contains("destructiveInjectEnumTag value witness for arg2(arg0, arg1, arg2)") == true)
-    #expect(text["_vwEnumTagOther"]?.contains("unresolved call") == true)
-    #expect(text["_vwEnumTagOther"]?.contains("value witness") == false)
+    for name in ["_vwEnumTag", "_vwInjectTag", "_vwEnumTagOther"] {
+        #expect(text[name]?.contains("unresolved call") == true, "\(name): \(text[name] ?? "")")
+        #expect(text[name]?.contains("value witness") == false, "\(name)")
+    }
 }
 
 /// The same rule for metadata the loader binds: an enum slot read through

@@ -111,6 +111,44 @@ struct MetadataSymbolizer: Sendable {
         return claims
     }
 
+    /// The addresses of the metadata accessors this image's enum
+    /// descriptors point at (`TypeContextDescriptor.accessFunctionPtr`): a
+    /// call to one returns an enum's metadata, whatever names the callee.
+    /// An address a struct's or a class's descriptor also points at is
+    /// claimed by two kinds and proves neither.
+    static func enumAccessorAddresses(in machO: MachOFile) -> Set<UInt64> {
+        var enums: Set<UInt64> = []
+        var others: Set<UInt64> = []
+        for type in UnrecordedTypes.all(in: machO) {
+            let target: Int?
+            let isEnum: Bool
+            switch type {
+            case .struct(let m): target = accessorOffset(of: m.descriptor, in: machO); isEnum = false
+            case .enum(let m): target = accessorOffset(of: m.descriptor, in: machO); isEnum = true
+            case .class(let m): target = accessorOffset(of: m.descriptor, in: machO); isEnum = false
+            }
+            guard let target, let address = machO.imageAddress(ofOffset: target) else { continue }
+            if isEnum { enums.insert(address) } else { others.insert(address) }
+        }
+        return enums.subtracting(others)
+    }
+
+    /// `enumAccessorAddresses`, read once on the first query: only a call
+    /// through an enum-only value-witness slot asks. Lock-guarded, as
+    /// functions are analysed across the cores.
+    final class EnumAccessorIndex: @unchecked Sendable {
+        private let lock = NSLock()
+        private var addresses: Set<UInt64>?
+
+        func contains(_ address: UInt64, in machO: MachOFile) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            let built = addresses ?? MetadataSymbolizer.enumAccessorAddresses(in: machO)
+            addresses = built
+            return built.contains(address)
+        }
+    }
+
     // MARK: - Value witnesses
 
     /// The value witness table's functions in order

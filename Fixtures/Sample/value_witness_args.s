@@ -42,9 +42,9 @@ _vwNotTheTable:
 
 // Enum witnesses sit after the size, stride, flags and extra inhabitant
 // count: getEnumTag at +0x58 (value, T), destructiveInjectEnumTag at +0x68
-// (value, tag, T). Only an enum's table has them, so the call must pass the
-// metadata back. _vwEnumTag and _vwInjectTag do; _vwEnumTagOther passes x2
-// where getEnumTag takes T: unresolved.
+// (value, tag, T). Only an enum's table has them, and an argument's
+// metadata has no nominal kind, so none of the three is named: _vwEnumTag
+// and _vwInjectTag pass the metadata back, _vwEnumTagOther passes x2.
 .globl _vwEnumTag
 .p2align 2
 _vwEnumTag:

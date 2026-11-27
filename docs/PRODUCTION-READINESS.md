@@ -61,6 +61,33 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: an enum-only witness slot is named only for an enum's table
+
+**FIXED (soundness).** A call through `[metadata - 8] + 0x58/0x60/0x68`
+was named getEnumTag, destructiveProjectEnumData or destructiveInjectEnumTag
+whenever it passed the metadata back as the witness's last argument.
+Nothing asked whether the metadata was an enum's; any other table ends at
++0x58 and the word there is another object's. `libEnumSlotEvidence.dylib`
+printed `getEnumTag value witness for Swift.Int(?)` and
+`… for Swift._ContiguousArrayStorage(arg0)`; `libEnumSlotClient.dylib`
+(compiled, -O) printed it for a resilient struct and class. The name now
+needs the metadata proven an enum's: a loader-bound slot whose symbol is
+an enum's metadata, or the result of a call to an enum's metadata
+accessor (an import by its symbol, a local one by its descriptor). Those
+calls are now `/* unresolved call */`; the enum's own keep their names.
+
+Blast radius against d94c2c5: the two new images and
+`libValueWitnessArgs.dylib`, where `_vwEnumTag` and `_vwInjectTag` lose
+`getEnumTag value witness for arg1(…)`: an argument's metadata has no
+nominal kind. Nothing in the swift-syntax dylibs moves. Instructions
+-0.15%.
+
+**OPEN (completeness).** A generic parameter's, an incoming argument's
+and an associated type's enum witness calls are no longer named. A
+tail-called enum witness (`br x3` in `libEnumSlotClient` -O `level`) is
+still an unresolved branch, as before. No probe event records the decline.
+
+
 ## 2026-11-27: an entry's context slot is not carried across an awaited child
 
 **FIXED (soundness).** `asyncChainSlots` proved a context slot at the
