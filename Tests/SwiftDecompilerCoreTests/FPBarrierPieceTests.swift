@@ -203,3 +203,18 @@ func theIntegerAfterTheFloatIsNotTheNextFormalIfPresent(path: String) async thro
     #expect(text.contains("h: 1.5"), "\(text)")
     #expect(!text.contains("15872") && !text.lowercased().contains("3e00"), "\(text)")
 }
+
+/// A two-byte field stored with `strh w0` holds the register's low sixteen
+/// bits. The 32-bit mask that w0 itself carries is wider than the field:
+/// `a: (arg0 & 0xffffffff)` named bits the field does not have.
+@Test(arguments: ["libFPBarrierPieces.dylib", "libFPBarrierPieces.onone.dylib"])
+func aNarrowFieldOfAResultIsItsStoredWidthIfPresent(image: String) async throws {
+    let path = "Fixtures/Sample/\(image)"
+    guard FileManager.default.fileExists(atPath: path) else { return }
+    let text = try await structured(path, "SplitWide.init")
+    #expect(text.contains("a: (arg0 & 0xffff),"), "\(text)")
+    #expect(text.contains("b: (arg2 & 0xffff),"), "\(text)")
+    #expect(!text.contains("0xffffffff"), "\(text)")
+    // A floating-point register's store is not masked.
+    #expect(text.contains("h: arg1,") && text.contains("d: arg3, e: arg4"), "\(text)")
+}

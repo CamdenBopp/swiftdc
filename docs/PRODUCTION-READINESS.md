@@ -240,8 +240,12 @@ structured), instructions +0.08%.
   struct in registers arrives. Nothing false renders from it on the
   fixtures, but the seed is a claim nothing proves. `Joined` had it before
   this change.
-- A two-byte field stored with `strh w0` prints its value with the
-  register's mask, `a: (arg0 & 0xffffffff)`, wider than the field.
+- **FIXED** in the commit "Narrow a result-buffer store to its width":
+  a two-byte field stored with `strh w0` printed its value with the
+  register's mask, `a: (arg0 & 0xffffffff)`, wider than the field. A
+  store from a general register narrower than the register now keeps the
+  store's bytes: `a: (arg0 & 0xffff)`. Three lines in the two
+  libFPBarrierPieces images, nothing else in 3,400 renders.
 
 
 ## 2026-11-27: the Go tests are opt-in

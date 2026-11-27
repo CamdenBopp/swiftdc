@@ -4792,7 +4792,12 @@ public struct ValueTracer: Sendable {
                 }
                 if case .resultSlot(let offset)? = target {
                     let bytes = Self.accessBytes(detail) ?? 8
-                    Self.storeResult(value, at: offset, bytes: bytes, into: &registers)
+                    // A store narrower than its general register keeps only
+                    // the low bytes: `strh w0` into an Int16 field of the
+                    // result is not the `arg0 & 0xffffffff` that w0 holds.
+                    let general = first.operand.register?.kind == .gpr
+                    let stored = general && bytes < 8 ? narrowed(value, bits: bytes * 8) : value
+                    Self.storeResult(stored, at: offset, bytes: bytes, into: &registers)
                 }
                 if case .asyncSlot(let offset)? = target {
                     // -Onone stores x22 into its own context (`str x9, [x22,
