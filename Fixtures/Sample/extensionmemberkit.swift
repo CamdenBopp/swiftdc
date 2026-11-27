@@ -31,3 +31,10 @@ extension EMShape {
 extension Int {
     @inline(never) public func emPlus(_ k: Int) -> Int { self &+ k &* 3 }
 }
+
+// A raw buffer pointer is two words: its extension's member takes them
+// after the formal, in x1 and x2.
+// UnsafeRawBufferPointer.emCount(k) = count &+ k.
+extension UnsafeRawBufferPointer {
+    @inline(never) public func emCount(_ k: Int) -> Int { count &+ k }
+}

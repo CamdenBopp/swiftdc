@@ -100,8 +100,12 @@ becomes its own statement. Instructions -0.10%.
 **OPEN, in the same fixture.**
 - A formal in a floating-point register: `tilted(self: …, ?, ?,
   <projection>)` is left as found.
-- A value type's extension member, `self` in the registers after the
-  formals: `Swift.Int.emPlus(arg2, arg0, arg2)`, the third a stale x2.
+- **FIXED** in a later commit: a fixed-width integer's extension member,
+  `self` in the one register after the formals:
+  `Swift.Int.emPlus(arg2, arg0, arg2)`, the third a stale x2, is now
+  `emPlus(arg2, arg0)`. Whether the member is mutating its name does not
+  say, so the words stay positional and are not named `self`. A receiver
+  of two words or more is not bounded.
 - A protocol witness thunk and a specialization called with `self` in x20
   still show registers past their formals (`protocol witness for
   sample.Shape.describe(self: …, 0x…, 0x…)`); a specialization's printed

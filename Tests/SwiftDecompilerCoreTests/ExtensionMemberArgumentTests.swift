@@ -37,11 +37,13 @@ private func extensionMemberViews(_ name: String) async throws -> [String]? {
 }
 
 /// A value type's member takes `self` in the registers after its formals,
-/// and x20 is not its receiver: that call is left as it was found.
-@Test func anExtensionMemberOfAValueKeepsItsRegistersIfPresent() async throws {
+/// and x20 is not its receiver. An Int is one word, so the call takes its
+/// formal and that word: `emPlus(arg2, arg0, arg2)` named a third register,
+/// the formal's source still in x2.
+@Test func anExtensionMemberOfAnIntegerTakesItsFormalsAndOneWordIfPresent() async throws {
     guard let views = try await extensionMemberViews("viaInt") else { return }
     for text in views {
-        #expect(text.contains("Swift.Int.emPlus(arg2, arg0"), "\(text)")
+        #expect(text.contains("Swift.Int.emPlus(arg2, arg0) + arg1)"), "\(text)")
         #expect(!text.contains("self:"), "\(text)")
     }
 }
@@ -69,4 +71,23 @@ private func extensionMemberViews(_ name: String) async throws -> [String]? {
         $0.contains("protocol witness for sample.Shape.describe(self: ")
     })
     #expect(call.contains("), 0x"), "\(call)")
+}
+
+/// Only a fixed-width integer's one word is known from its name.
+@Test func onlyAFixedWidthIntegerReceiverHasAKnownWordCount() {
+    for name in ["Swift.Int", "Swift.UInt8", "Swift.Int64", "Swift.Bool"] {
+        #expect(Disassembler.extensionReceiverWords(name) == 1, "\(name)")
+    }
+    for name in ["Swift.String", "Swift.UnsafeRawBufferPointer", "Swift.Double", "M.Pair", "Swift.Array<Swift.Int>", ""] {
+        #expect(Disassembler.extensionReceiverWords(name) == nil, "\(name)")
+    }
+}
+
+/// A two-word receiver is not cut to one word past its formal: its call is
+/// left as another layout decided it.
+@Test func anExtensionMemberOfATwoWordValueIsNotBoundToOneWordIfPresent() async throws {
+    guard let views = try await extensionMemberViews("viaBuffer") else { return }
+    for text in views {
+        #expect(text.contains("Swift.UnsafeRawBufferPointer.emCount(…)"), "\(text)")
+    }
 }

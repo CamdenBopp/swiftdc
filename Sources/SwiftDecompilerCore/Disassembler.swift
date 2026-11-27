@@ -7694,6 +7694,16 @@ public struct Disassembler: Sendable {
         return name
     }
 
+    /// The general registers the `self` of a value type another module
+    /// extends takes after the member's formals, when its name alone proves
+    /// it: one for a frozen fixed-width integer. Any other receiver is two
+    /// words or more, or of a layout its name does not give, and has none
+    /// here. (Another module cannot extend a type of this image, so no
+    /// layout read from this image applies.)
+    static func extensionReceiverWords(_ receiver: String) -> Int? {
+        SwiftLowering.fixedWidthIntegers.contains(receiver) ? 1 : nil
+    }
+
     /// Whether a property getter takes nothing in x0–x7: a static property's
     /// (the metatype rides in x20), a class instance property's (self in
     /// x20) or a global's. A value type's instance getter does not qualify,
@@ -11336,6 +11346,31 @@ public struct Disassembler: Sendable {
                values.count > parameters.count {
                 argumentsByAddress[address] = values.prefix(parameters.count).map(sanitizeValue)
                 strategy = "extension-formals"
+                continue
+            }
+            // A value type's member an extension adds, with no `self` in
+            // x20, takes its formals from x0 and then at most `self`'s
+            // words: a register past those is the caller's.
+            // `(extension in M):Swift.Int.emPlus(Swift.Int) -> Swift.Int`
+            // read `emPlus(arg2, arg0, arg2)`, the formal, `self`, and the
+            // formal's source still in x2. Whether the member is mutating,
+            // and so takes `self` by address instead, its name does not
+            // say; either way nothing past those registers is its argument.
+            if selfValueBySite[address] == nil, let callee = calleeByAddress[address],
+               callee.hasPrefix("(extension in "), let close = callee.range(of: "):"),
+               let signature = DisassembledFunction.splitSignature(callee),
+               let range = DisassembledFunction.outermostArgumentListRange(of: signature.head),
+               case let member = signature.head[close.upperBound..<range.lowerBound].dropLast(),
+               let dot = member.lastIndex(of: "."),
+               let words = Self.extensionReceiverWords(String(member[..<dot])),
+               case let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])
+                   .filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }),
+               parameters.allSatisfy({
+                   Self.scalarParameterClass($0, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) == .integer
+               }),
+               values.count > parameters.count + words {
+                argumentsByAddress[address] = values.prefix(parameters.count + words).map(sanitizeValue)
+                strategy = "extension-value-bound"
                 continue
             }
             // A type metadata accessor of another image takes the request

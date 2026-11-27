@@ -18,3 +18,8 @@ import ExtensionMemberKit
 @inline(never) public func viaInt(_ a: Int, _ b: Int, _ k: Int) -> Int {
     a.emPlus(k) &+ b
 }
+
+// viaBuffer(p, k, j) = p.emCount(k) &+ j = p.count &+ k &+ j
+@inline(never) public func viaBuffer(_ p: UnsafeRawBufferPointer, _ k: Int, _ j: Int) -> Int {
+    p.emCount(k) &+ j
+}
