@@ -61,6 +61,29 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: a callee whose own signature is async takes x22
+
+**FIXED (soundness).** A call to a callee with no body in the image handed
+it x0-x8 and x20. x22 reached a callee only when its summary proved the
+body reads it, so an imported async function was assumed to leave its
+caller's context alone. `async_edge_role.s` `directLeaf` stores 7 in slot
+16 of its context, calls the imported `AsyncEdge.endpoint() async`, which
+stores 11 there, and rendered `return AsyncEdge.observe(7)`; the machine
+returns 11. `frameLeaf` (`mov x22, sp`) rendered the same 7 for a frame
+word. Now `AsyncEdge.observe(?)` and `return AsyncEdge.observe(?)`; the
+four controls (an `async` only in a parameter type, a C import, an
+in-image async body that never reads x22, a synchronous callee) keep
+`observe(7)`. `directLeaf` also loses its `return`: the resume-parent
+reload from the context is no longer proven.
+
+Blast radius against bf98e25 (`Tools/blast-radius.sh --real --perf`): the
+new fixture only, in all four views; instructions -0.03%.
+
+**OPEN.** A veneer in the image that tail-branches to an async import is
+still summarised as not reading x22. An unnamed `blr` and an import whose
+symbol is not a Swift signature keep x22 as callee-saved state.
+
+
 ## 2026-11-27: closed-caller async scaffolding lands with no caller
 
 **OPEN (refactor; nothing renders from it).** The checked-image extraction,

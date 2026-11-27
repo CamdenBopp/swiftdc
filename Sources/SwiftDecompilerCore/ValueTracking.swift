@@ -1111,8 +1111,16 @@ public struct ValueTracer: Sendable {
         let writesNoFields: Bool
         /// The registers that may hand the callee a pointer: the parameters of
         /// a runtime entry point with a fixed C arity, anything else's x0–x8
-        /// and x20.
+        /// and x20, and x22 for a callee whose own signature is `async`
+        /// (`takesAsyncContext`).
         let passedRegisters: [Location]
+        /// The callee's printed signature carries the `async` effect, so it
+        /// takes its context in x22 (`swiftasync`). The storage x22 points at
+        /// is the callee's to write, whether it is an allocated context or
+        /// the caller's frame. An `async` inside a parameter or result type
+        /// is not the callee's effect, and a callee with no signature has no
+        /// such role: for both x22 stays callee-saved state.
+        let takesAsyncContext: Bool
         let passesNoStackArguments: Bool
         /// The demangled name carries ` throws`.
         let throwsByName: Bool
@@ -1159,10 +1167,15 @@ public struct ValueTracer: Sendable {
             self.namedABIContract = namedABI
             readsOnly = bodyProjectsBoxedExistential
             let knownArity = applies ? DisassembledFunction.knownCArity(of: callee, namedABIContract: namedABI) : nil
+            let asyncSignature = callee.contains(" async")
+                && DisassembledFunction.splitSignature(callee)?.isAsync == true
+            takesAsyncContext = asyncSignature
+            var unboundedInputs: [Location] = [.x(0), .x(1), .x(2), .x(3), .x(4), .x(5), .x(6), .x(7), .x(8), .x(20)]
+            if asyncSignature { unboundedInputs.append(.x(22)) }
             passedRegisters = knownArity.map { arity in
                 (0..<arity).map { Location.x($0) }
                     + (SwiftIntrinsicSignatures.resultThroughX8.contains(callee) ? [Location.x(8)] : [])
-            } ?? [.x(0), .x(1), .x(2), .x(3), .x(4), .x(5), .x(6), .x(7), .x(8), .x(20)]
+            } ?? unboundedInputs
             passesNoStackArguments = applies && ValueTracer.passesNoStackArguments(callee, namedABIContract: namedABI)
             throwsByName = callee.contains(" throws")
             throwsTypedError = DisassembledFunction.splitSignature(callee)?.thrownType
@@ -2332,9 +2345,10 @@ public struct ValueTracer: Sendable {
             // rendered `return 7`.
             for index in 1...18 { registers[.x(index)] = .unknown }
             registers[.x(30)] = .unknown
-            // A callee handed the context (in an argument register; a call
-            // reached with `bl` gets x22 only as callee-saved state) may write
-            // it. `site` is the argument snapshot taken above.
+            // A callee handed the context in an argument register may write
+            // it. `site` is the argument snapshot taken above. x22 itself is
+            // callee-saved state at a `bl`, and an input only where
+            // `passedRegisters` carries it.
             if site.arguments.contains(.asyncContext) || site.selfValue == .asyncContext {
                 for key in registers.keys where Self.isContextSlot(key) { registers[key] = nil }
             }

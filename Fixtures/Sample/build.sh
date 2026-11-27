@@ -434,6 +434,11 @@ $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -o libEmuImage.dylib
 # The same image with the older bind opcodes in place of chained fixups.
 $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -Wl,-no_fixup_chains -o libEmuImage.opcodes.dylib
 
+echo "==> x22 at a call to an imported callee: an async signature takes the context, any other name does not (async_edge_role.s, async_edge_role_provider.s)"
+$CLANG -arch arm64 -dynamiclib async_edge_role_provider.s \
+    -Wl,-install_name,@rpath/libAsyncEdgeRoleProvider.dylib -o libAsyncEdgeRoleProvider.dylib
+$CLANG -arch arm64 -dynamiclib async_edge_role.s -L. -lAsyncEdgeRoleProvider -Wl,-rpath,@loader_path -o libAsyncEdgeRole.dylib
+
 echo "==> the emulator oracle: any address, any register, traps and loops as outcomes (emuoracle.c, needs Unicorn)"
 if pkg-config --exists unicorn 2>/dev/null; then
     $CLANG -O1 $(pkg-config --cflags --libs unicorn) emuoracle.c -o emu-oracle
