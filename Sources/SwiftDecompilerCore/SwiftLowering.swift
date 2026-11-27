@@ -72,10 +72,64 @@ enum SwiftLowering: Equatable, Sendable {
         // takes its Int in x1).
         if type == "AnyObject.Type" || type == "Swift.AnyObject.Type" { return .oneInteger }
         if multiWord.contains(type) || multiWordGenerics.contains(where: { isWhole(type, generic: $0) })
-            || type.hasSuffix(".Type") || type.hasSuffix(".Protocol") || isFunctionType(type) {
+            || type.hasSuffix(".Protocol") || isFunctionType(type) {
             return .direct
         }
+        // Any other metatype is a metadata pointer (or nothing, when thin)
+        // and, when existential, one witness table for each protocol that
+        // has one. Five words leave the registers.
+        if type.hasSuffix(".Type") {
+            return metatypeWordBound(type) <= maxDirectResultWords ? .direct : .unknown
+        }
         return .unknown
+    }
+
+    /// A result of more words than this is returned through x8.
+    private static let maxDirectResultWords = 4
+    /// Composition members that are never a protocol with a witness table:
+    /// the `AnyObject` layout constraint and the `Sendable` marker.
+    private static let witnesslessMembers: Set<String> = ["Swift.AnyObject", "Swift.Sendable"]
+
+    /// The most words the metatype spelled `type` (`….Type`) can take: its
+    /// metadata pointer and one witness table for each member of the
+    /// composition it names (IRGen's `convertExistentialMetatypeType`).
+    ///
+    /// An existential metatype prints as its members joined by ` & ` with
+    /// the suffix on the last one (`M.P & M.Q.Type`, `any M.P & M.Q<…>.Type`),
+    /// and the name does not say which members are protocols with witness
+    /// tables: a superclass, an `@objc` protocol and a marker protocol of
+    /// another module take none and are counted as one each. A concrete
+    /// metatype (`M.S.Type`, `M.G<M.P & M.Q>.Type`) has one member and is
+    /// one word or none.
+    private static func metatypeWordBound(_ type: String) -> Int {
+        var members: [Substring] = []
+        var depth = 0
+        var start = type.startIndex
+        var index = type.startIndex
+        while index < type.endIndex {
+            let character = type[index]
+            if depth == 0, type[index...].hasPrefix(" & ") {
+                members.append(type[start..<index])
+                index = type.index(index, offsetBy: 3)
+                start = index
+                continue
+            }
+            switch character {
+            case "(", "<", "[": depth += 1
+            // The `>` of an arrow closes nothing.
+            case ">" where index > type.startIndex && type[type.index(before: index)] == "-": break
+            case ")", ">", "]": depth -= 1
+            default: break
+            }
+            index = type.index(after: index)
+        }
+        members.append(type[start...])
+        // The suffix belongs to the whole composition, and a metatype of a
+        // metatype (`M.P & M.Q.Type.Type`) has the same words.
+        var last = members.removeLast()
+        while last.hasSuffix(".Type") { last = last.dropLast(".Type".count) }
+        members.append(last)
+        return 1 + members.filter { !witnesslessMembers.contains(String($0)) }.count
     }
 
     private static let floats: Set<String> = [

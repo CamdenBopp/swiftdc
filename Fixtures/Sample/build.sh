@@ -434,6 +434,16 @@ $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -o libEmuImage.dylib
 # The same image with the older bind opcodes in place of chained fixups.
 $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -Wl,-no_fixup_chains -o libEmuImage.opcodes.dylib
 
+echo "==> an existential metatype is a metadata pointer and a table per protocol, and the fifth word goes through x8 (existentialmetatypes.swift, -O and -Onone)"
+$SWIFTC -parse-as-library -O -emit-library -emit-module -module-name ExistentialMetatypes existentialmetatypes.swift -o libExistentialMetatypes.dylib
+$SWIFTC -parse-as-library -Onone -emit-library -module-name ExistentialMetatypes existentialmetatypes.swift -o libExistentialMetatypes.onone.dylib
+
+echo "==> callers of those makers from another image, where the maker has no body (existentialmetatypes_client.swift, existentialmetatypes_stale.s, -O and -Onone)"
+$CLANG -arch arm64 -c existentialmetatypes_stale.s -o existentialmetatypes_stale.o
+$SWIFTC -parse-as-library -O -emit-library -module-name ExistentialMetatypesClient existentialmetatypes_client.swift existentialmetatypes_stale.o -I . -L . -lExistentialMetatypes -o libExistentialMetatypesClient.dylib
+$SWIFTC -parse-as-library -Onone -emit-library -module-name ExistentialMetatypesClient existentialmetatypes_client.swift existentialmetatypes_stale.o -I . -L . -lExistentialMetatypes -o libExistentialMetatypesClient.onone.dylib
+rm -f existentialmetatypes_stale.o
+
 echo "==> x0 read after an in-image twin of a void runtime entry point (voidruntimetwin.s + voidruntimetwin.c, -O2)"
 $CLANG -arch arm64 -O2 -dynamiclib voidruntimetwin.c voidruntimetwin.s -o libVoidRuntimeTwin.dylib
 

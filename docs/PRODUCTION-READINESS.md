@@ -61,6 +61,21 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: an existential metatype result of five words is not called direct
+
+**GUARD (soundness).** `SwiftLowering.of` called every `.Type` result
+direct. An existential metatype is a metadata pointer and one witness
+table for each protocol that has one, so `P1 & P2 & P3 & P4.Type` is five
+words and its compiled maker writes through x8
+(`libExistentialMetatypes.dylib`, -O and -Onone). The classifier now
+counts the composition's members and answers unknown past four words. No
+render showed the false claim, and none moves: 0 lines in 3,400 renders.
+A client image calling the five- and six-word makers already rendered
+`return ?`, and that is pinned. The name does not say which members
+carry a witness table, so a superclass or an `@objc` protocol is counted
+as one: an over-count, which declines.
+
+
 ## 2026-11-27: a void runtime name's result stays declined, bound or not
 
 **GUARD (tests).** `swift_willThrow`, `swift_willThrowTypedImpl` and
