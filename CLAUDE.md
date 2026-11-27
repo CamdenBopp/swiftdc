@@ -176,7 +176,8 @@ around what a rebuild costs:
 | no-op `swift build` | 7 s, nearly all manifest loading and planning |
 | body edit, `swift build --build-tests` | about 20 s: one Core object, no test files recompile |
 | internal signature edit, `--build-tests` | about 24 s |
-| full enforcing suite | about 145 s; `--parallel` changes nothing (Swift Testing already runs concurrently) |
+| full enforcing suite | about 44 min (2,667 s in the gate, 2026-11-27, 2,205 tests); one Go x8 test sets the length. `--parallel` changes nothing (Swift Testing already runs concurrently) |
+| `Tools/test.sh quick` | about 12 min (697 s and 731 s, 6,390 CPU-seconds): the suite without the Go and dyld-cache memory tests |
 | one test file, `--filter 'NameTests\.swift'` | 1.7 s plus its tests |
 | `swift build -c release --scratch-path .build-release` after a change | about 70 s |
 | release in the shared `.build` after a debug build | about 5 min: every dependency rebuilds |
