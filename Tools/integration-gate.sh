@@ -30,6 +30,8 @@
 # Release binaries are kept per commit under $SWIFTDC_BINARY_CACHE, so the
 # next gate's baseline is usually already built. A missing baseline is
 # built once in a temporary worktree.
+# One not written for $SWIFTDC_BINARY_CACHE_DAYS days (default 7) is
+# dropped at the start of a gate, origin/dev's and HEAD's excepted.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -58,6 +60,12 @@ base=$(git rev-parse origin/dev)
 head=$(git rev-parse HEAD)
 git merge-base --is-ancestor "$base" "$head" || fail "HEAD does not fast-forward origin/dev; rebase onto it"
 [ "$base" != "$head" ] || fail "nothing to integrate: HEAD is origin/dev"
+# A release binary is about 50 MB and one is kept for every commit a gate
+# has seen: 272 of them, 12 GB, by 2026-11-27. Only origin/dev's and HEAD's
+# are read here, so the ones no gate has written for a week go; a baseline
+# missing below is rebuilt.
+find "${bins:?}" -mindepth 1 -maxdepth 1 -mtime +"${SWIFTDC_BINARY_CACHE_DAYS:-7}" \
+  ! -name "$base" ! -name "$head" -exec rm -rf {} +
 tree=${SWIFTDC_GATE_TREE:-$repo-gate}
 if ! git -C "$tree" rev-parse --git-dir > /dev/null 2>&1; then
   step "creating the gate tree $tree (its first build is cold)"
