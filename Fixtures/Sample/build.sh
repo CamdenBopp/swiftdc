@@ -434,6 +434,9 @@ $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -o libEmuImage.dylib
 # The same image with the older bind opcodes in place of chained fixups.
 $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -Wl,-no_fixup_chains -o libEmuImage.opcodes.dylib
 
+echo "==> callers of an in-image function named swift_willThrow that reads x0 (willthrowtwin.s + willthrowtwin.c, -O2)"
+$CLANG -arch arm64 -O2 -dynamiclib willthrowtwin.c willthrowtwin.s -o libWillThrowTwin.dylib
+
 echo "==> a result buffer across calls named like runtime entries, by declared result and by provider (resultrole.swift + .s + resultroleprovider.c, -O)"
 $CLANG -arch arm64 -O2 -dynamiclib resultroleprovider.c -install_name @rpath/libResultRoleProvider.dylib -o libResultRoleProvider.dylib
 $CLANG -arch arm64 -c resultrole.s -o resultrole.o

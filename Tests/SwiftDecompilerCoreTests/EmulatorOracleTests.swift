@@ -272,6 +272,7 @@ private let sweptImages = [
     "libCalleeBodyTransfer.opt.dylib", "libFrameReach.dylib",
     "libStackHole.dylib",
     "libFPBarrierPieces.dylib", "libFPBarrierPieces.onone.dylib",
+    "libWillThrowTwin.dylib",
     "libErrorCarrier.O.dylib",
     "libTypedCatch.Onone.dylib", "libTypedCatch.O.dylib",
     "libEmuImage.dylib", "libFrameFactStore.dylib",

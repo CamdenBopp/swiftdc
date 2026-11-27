@@ -61,6 +61,20 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: a function of the image named swift_willThrow is not the runtime's
+
+**FIXED (soundness).** The runtime's `swift_willThrow` takes the error in
+x21 and nothing in x0, and that was applied to any call whose callee has
+the name. `libWillThrowTwin.dylib` defines
+`long swift_willThrow(long x)` in the image; `stale`, which calls it with
+arg0 in x0 and arg1 parked in x21, rendered `swift_willThrow(arg1)`, and
+`plain` rendered `swift_willThrow(?)` for a value the tracer holds. A
+call that reaches a function of this image now takes what that body
+reads: both print `swift_willThrow(arg0)`. A call that leaves the image
+keeps the runtime's convention. Blast radius against 4e78b4f: the new
+image only; instructions +0.02%.
+
+
 ## 2026-11-27: a result buffer is not kept across `_objc_msgForward`
 
 **FIXED (soundness).** A bound `swift_` or `objc_` runtime name was taken

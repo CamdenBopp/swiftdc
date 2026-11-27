@@ -10512,7 +10512,13 @@ public struct Disassembler: Sendable {
             // the thrown error in x21 and nothing in x0. Rendering x0 printed
             // a stale register as the thrown value (`swift_willThrow(0)`, 105
             // times in SwiftData); the error box is x21's.
-            if calleeByAddress[address] == "swift_willThrow" {
+            // That is the library's function. The provider table has no
+            // row for the name, so no binding can be asked; a call that
+            // reaches a function of this image is not it, and takes what
+            // its own body reads. One that reads x0, called with x21
+            // holding another value, read `swift_willThrow(arg1)` for a
+            // call given arg0.
+            if calleeByAddress[address] == "swift_willThrow", callTargets[address] == nil {
                 values = site.errorValue == .unknown ? [] : [site.errorValue]
                 strategy = "will-throw"
             }
