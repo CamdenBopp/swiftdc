@@ -160,7 +160,8 @@ the gate enforces it. Tiers 1-3 are what an agent runs while it iterates.
   Determinism and FixturePresence. Unmapped source and shared test/build
   inputs trigger the full suite.
 - `full`
-- `quick`, which skips the dyld-cache memory test and selected Go tests for
+- `quick`, which skips the dyld-cache memory test and the Go tests (alone, the
+  longest Go x8 test takes 28 minutes and sets the suite's length) for
   iteration. The script prints the exclusion regex and the full-suite command.
 
 A `--filter` regex matches a test's file name as well as its name, so

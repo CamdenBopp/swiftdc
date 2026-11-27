@@ -8,7 +8,8 @@
 #                                      FixturePresence. Unknown sources run full.
 #   Tools/test.sh full                  tier 4: the enforcing suite (the gate's)
 #   Tools/test.sh quick                tier 4 except the dyld-cache memory and
-#                                      selected Go tests. For iteration only.
+#                                      the Go tests, which set the suite's
+#                                      length. For iteration only.
 #
 # Subsystems: arm64 abi tracer cflow meta render audit. Every tier builds
 # tests first and requires fixtures. Before a push, run Tools/test.sh full.
@@ -51,7 +52,9 @@ fi
 args=()
 case $1 in
   full) args=() ;;
-  quick) args=(--skip 'streamingWholeImageMemoryStaysLow|GoFunctionTableTests|goStackGrowth') ;;
+  # The Go x8 tests are the longest in the suite: alone,
+  # goX8ResolvedStackBranches… takes 28 minutes and goX8ArrayPipelines… 5.
+  quick) args=(--skip 'streamingWholeImageMemoryStaysLow|GoFunctionTableTests|goStackGrowth|goX8') ;;
   file)
     shift; [ $# -ge 1 ] || { echo "test.sh file <NameTests>..." >&2; exit 2; }
     re=$(printf '%s\\.swift|' "$@"); args=(--filter "${re%|}") ;;
