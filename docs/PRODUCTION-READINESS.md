@@ -61,6 +61,37 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: an extension's member called with self in x20 takes its formals only
+
+**FIXED (soundness).** A member an extension adds has no signature layout
+(its context may be a protocol or a value type), so it took the positional
+one. Called on an opened existential it takes its formals from x0, then
+Self's metadata and the witness table, with `self` in x20.
+`libExtensionMemberClient.dylib` `viaExistential` rendered
+`EMShape.scaled(self: <projection>, arg2, ?, ?, <projection>)`: the hidden
+pair, and the projected address still in x3, as three more arguments.
+With `self` proven in x20 and every formal one general register, the call
+now shows exactly its formals: `scaled(self: <projection>, arg2)`.
+
+Blast radius against f26ac56: 8 images, 38 lines structured. In the
+swift-syntax dylibs and the sample images, calls such as
+`SyntaxCollection.makeIterator(self: local_50, ?, …)`,
+`Collection.makeIterator(self: local_58, <metadata>, <witness accessor>)`
+and `Sequence.max(self: local_38, <metadata>, <witness table>)` lose the
+hidden and stale registers; a call that was nested there as an argument
+becomes its own statement. Instructions -0.10%.
+
+**OPEN, in the same fixture.**
+- A formal in a floating-point register: `tilted(self: …, ?, ?,
+  <projection>)` is left as found.
+- A value type's extension member, `self` in the registers after the
+  formals: `Swift.Int.emPlus(arg2, arg0, arg2)`, the third a stale x2.
+- A protocol witness thunk and a specialization called with `self` in x20
+  still show registers past their formals (`protocol witness for
+  sample.Shape.describe(self: …, 0x…, 0x…)`); a specialization's printed
+  formals are not proven to be its body's.
+
+
 ## 2026-11-27: a generic free function has no self
 
 **FIXED (soundness).** A module-level function, `Module.name(…)`, has no

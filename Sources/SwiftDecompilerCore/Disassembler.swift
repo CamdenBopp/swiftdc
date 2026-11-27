@@ -11313,6 +11313,31 @@ public struct Disassembler: Sendable {
                 strategy = "unproven-arity"
                 continue
             }
+            // A member an extension adds, called with its `self` in x20,
+            // takes its formals from x0 and nothing of `self` after them:
+            // a later register is the hidden Self metadata or witness
+            // table, or whatever the caller left. `(extension in
+            // GenExLib):GenExLib.Shape4.ext(Swift.Int) -> Swift.Int` on an
+            // opened existential read `ext(self: …, arg1, ?, ?, <the
+            // projected address>)`, x3 the temporary that address passed
+            // through. With every formal one general register, it shows
+            // exactly those. Only such a member: a specialization's name
+            // prints formals its body may no longer take, and a witness
+            // thunk is left as found.
+            if selfValueBySite[address] != nil, let callee = calleeByAddress[address],
+               callee.hasPrefix("(extension in "),
+               let signature = DisassembledFunction.splitSignature(callee),
+               let range = DisassembledFunction.outermostArgumentListRange(of: signature.head),
+               case let parameters = DisassembledFunction.splitTopLevelArguments(signature.head[range])
+                   .filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty }),
+               parameters.allSatisfy({
+                   Self.scalarParameterClass($0, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) == .integer
+               }),
+               values.count > parameters.count {
+                argumentsByAddress[address] = values.prefix(parameters.count).map(sanitizeValue)
+                strategy = "extension-formals"
+                continue
+            }
             // A type metadata accessor of another image takes the request
             // in x0 and, only when its type is generic, the arguments'
             // metadata after it. The import's name does not say which, and
