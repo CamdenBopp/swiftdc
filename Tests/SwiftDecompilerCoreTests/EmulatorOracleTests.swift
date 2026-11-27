@@ -384,10 +384,13 @@ private let knownFalseStatements: Set<String> = []
 }
 
 /// The emulated image is the image as dyld leaves it, and every run starts
-/// from the same machine. emuimage.s states each function's behaviour.
-@Test func theEmulatorLoadsTheImageAndStartsEveryRunCleanIfPresent() async throws {
-    let path = "Fixtures/Sample/libEmuImage.dylib"
-    guard FileManager.default.fileExists(atPath: path), let emulator = try EmulatorOracle(image: "libEmuImage.dylib")
+/// from the same machine. emuimage.s states each function's behaviour. The
+/// second image is the same source linked with bind opcodes in place of
+/// chained fixups.
+@Test(arguments: ["Fixtures/Sample/libEmuImage.dylib", "Fixtures/Sample/libEmuImage.opcodes.dylib"])
+func theEmulatorLoadsTheImageAndStartsEveryRunCleanIfPresent(path: String) async throws {
+    guard FileManager.default.fileExists(atPath: path),
+          let emulator = try EmulatorOracle(image: URL(fileURLWithPath: path).lastPathComponent)
     else { return }
     let functions = try await withStableDependencies { try await Disassembler(preset: .default).disassemble(path: path) }
     func run(_ name: String, _ registers: [Int: UInt64] = [:], poison: UInt64? = nil) throws -> EmulatedRun {
@@ -400,6 +403,9 @@ private let knownFalseStatements: Set<String> = []
     #expect(rebased.outcome == "returned" && rebased.x[0] == 77, "\(rebased.outcome) \(rebased.x[0])")
     let bound = try run("bound")
     #expect(bound.outcome == "returned" && bound.x[0] >= 0x7_d000_0000 && bound.x[0] < 0x7_d100_0000, "\(bound.x[0])")
+    // Each import has an address of its own, 16 apart.
+    let two = try run("two_imports")
+    #expect(two.outcome == "returned" && two.x[0] != 0 && two.x[0] < 0x1000 && two.x[0] % 16 == 0, "\(two.x[0])")
     // A call through that pointer is a call out, like one through a stub.
     let through = try run("call_pointer", poison: 1)
     #expect(through.outcome == "external" && through.externalCalls.count == 1 && through.x[0] == 5)

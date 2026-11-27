@@ -9,9 +9,9 @@
 // endless loop is an outcome, not a crash. Nothing here is swiftdc's: it
 // is an independent account of the same bytes.
 //
-// The image is loaded as dyld would leave it: chained fixups are applied,
-// a rebase to its target and a bind to an address of its own in a page
-// that is not mapped, so a call or a load through an import is known by
+// The image is loaded as dyld would leave it: chained fixups or the older
+// bind opcodes are applied, a rebase to its target and a bind to an
+// address of its own in a page that is not mapped, so a call or a load through an import is known by
 // which import it was. Every run starts from the same machine: registers
 // and vector registers zero, a zeroed stack, and the image's writable
 // segments as loaded.
@@ -212,8 +212,83 @@ static void applyChainedFixups(uc_engine *uc, const uint8_t *data) {
     }
 }
 
+static uint64_t uleb(const uint8_t **cursor, const uint8_t *end) {
+    uint64_t value = 0;
+    int shift = 0;
+    while (*cursor < end) {
+        uint8_t byte = *(*cursor)++;
+        if (shift < 64) value |= (uint64_t)(byte & 0x7f) << shift;
+        shift += 7;
+        if (!(byte & 0x80)) break;
+    }
+    return value;
+}
+
+static char importNames[4096][96];   // imports of an opcode-bound image, in order of first use
+static int importNameCount;
+
+static uint64_t importAddress(const char *name) {
+    for (int index = 0; index < importNameCount; index++)
+        if (strncmp(importNames[index], name, 95) == 0) return IMPORT_BASE + 16 * (uint64_t)index;
+    if (importNameCount == 4096) { fixupsUnsupported = 1; return IMPORT_BASE; }
+    strncpy(importNames[importNameCount], name, 95);
+    return IMPORT_BASE + 16 * (uint64_t)importNameCount++;
+}
+
+/// The LC_DYLD_INFO bind stream: each bound slot becomes the address this
+/// machine gives that import, plus its addend. An image's rebases need
+/// nothing here: with no slide a rebased slot already holds its target.
+/// Lazy binds are left alone: a call through a stub is taken at the stub.
+static void applyBindOpcodes(uc_engine *uc, const uint8_t *cursor, const uint8_t *end,
+                             const uint64_t *segmentAddress, int segmentCount) {
+    const char *name = "";
+    uint64_t address = 0, addend = 0;
+    while (cursor < end) {
+        uint8_t byte = *cursor++, opcode = byte & 0xf0, immediate = byte & 0x0f;
+        uint64_t count = 1, skip = 0;
+        switch (opcode) {
+        case BIND_OPCODE_DONE: return;
+        case BIND_OPCODE_SET_DYLIB_ORDINAL_IMM: case BIND_OPCODE_SET_DYLIB_SPECIAL_IMM: case BIND_OPCODE_SET_TYPE_IMM:
+            continue;
+        case BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB: uleb(&cursor, end); continue;
+        case BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM:
+            name = (const char *)cursor;
+            while (cursor < end && *cursor) cursor++;
+            cursor++;
+            continue;
+        case BIND_OPCODE_SET_ADDEND_SLEB: {
+            uint64_t value = 0; int shift = 0; uint8_t part = 0;
+            do { part = cursor < end ? *cursor++ : 0; value |= (uint64_t)(part & 0x7f) << shift; shift += 7; }
+            while ((part & 0x80) && shift < 64);
+            if ((part & 0x40) && shift < 64) value |= ~0ull << shift;
+            addend = value;
+            continue;
+        }
+        case BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB:
+            if (immediate >= segmentCount) { fixupsUnsupported = 1; return; }
+            address = segmentAddress[immediate] + uleb(&cursor, end);
+            continue;
+        case BIND_OPCODE_ADD_ADDR_ULEB: address += uleb(&cursor, end); continue;
+        case BIND_OPCODE_DO_BIND: break;
+        case BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB: skip = uleb(&cursor, end); break;
+        case BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED: skip = (uint64_t)immediate * 8; break;
+        case BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB: count = uleb(&cursor, end); skip = uleb(&cursor, end); break;
+        default: fixupsUnsupported = 1; return;   // threaded binds and anything newer
+        }
+        for (uint64_t index = 0; index < count; index++) {
+            uint64_t value = importAddress(name) + addend;
+            uc_mem_write(uc, address, &value, 8);
+            fixupsApplied += 1;
+            address += 8 + skip;
+        }
+    }
+}
+
 static void mapImage(uc_engine *uc, const char *path) {
     const uint8_t *fixups = NULL;
+    const struct dyld_info_command *opcodes = NULL;
+    uint64_t segmentAddress[64];
+    int segmentCount = 0;
     FILE *file = fopen(path, "rb");
     if (!file) die("cannot open the image");
     fseek(file, 0, SEEK_END);
@@ -230,6 +305,7 @@ static void mapImage(uc_engine *uc, const char *path) {
         const struct load_command *command = (const struct load_command *)cursor;
         if (command->cmd == LC_SEGMENT_64) {
             const struct segment_command_64 *segment = (const struct segment_command_64 *)cursor;
+            if (segmentCount < 64) segmentAddress[segmentCount++] = segment->vmaddr;
             if (segment->vmsize && strcmp(segment->segname, "__PAGEZERO") != 0) {
                 uint64_t start = segment->vmaddr & ~(PAGE - 1);
                 uint64_t end = (segment->vmaddr + segment->vmsize + PAGE - 1) & ~(PAGE - 1);
@@ -255,9 +331,16 @@ static void mapImage(uc_engine *uc, const char *path) {
             const struct linkedit_data_command *data = (const struct linkedit_data_command *)cursor;
             if ((uint64_t)data->dataoff + data->datasize <= (uint64_t)length) fixups = bytes + data->dataoff;
         }
+        if (command->cmd == LC_DYLD_INFO || command->cmd == LC_DYLD_INFO_ONLY)
+            opcodes = (const struct dyld_info_command *)cursor;
         cursor += command->cmdsize;
     }
     if (fixups) applyChainedFixups(uc, fixups);
+    if (opcodes) {
+        if ((uint64_t)opcodes->bind_off + opcodes->bind_size <= (uint64_t)length)
+            applyBindOpcodes(uc, bytes + opcodes->bind_off, bytes + opcodes->bind_off + opcodes->bind_size,
+                             segmentAddress, segmentCount);
+    }
     // What a run may write is put back before the next one.
     for (int index = 0; index < writableCount; index++) {
         size_t size = (size_t)(writable[index].end - writable[index].start);

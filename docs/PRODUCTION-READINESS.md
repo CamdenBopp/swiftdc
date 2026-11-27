@@ -61,6 +61,27 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: the emulator oracle binds an image linked with bind opcodes
+
+**FIXED (validation).** 39 fixture images carry `LC_DYLD_INFO` bind
+opcodes, not chained fixups, and were still mapped with their imports
+unbound: on emuimage.s linked that way a bound GOT slot read 0 and a call
+through it stopped the run. The harness now runs the bind stream and
+gives each import an address of its own, as it does for chained binds.
+Rebases need nothing with no slide. Lazy binds are left alone: a call
+through a stub is taken at the stub, so applying them changed nothing a
+test could see, and that code was removed.
+
+Sweep of all 690 fixture images: 12,981 functions, 207,696 runs, 90,332
+returns and 4,600 constant conditions checked, 1,632 runs checked past a
+call out, no disagreement.
+
+Verified: theEmulatorLoadsTheImageAndStartsEveryRunCleanIfPresent, now
+over both link formats of emuimage.s, seen red under five mutations run
+with `Tools/mutate.py`: no bind opcodes applied, every import given one
+address, the segment offset ignored, a bound slot not advancing, and
+every chained bind given one address. Full enforcing suite: 2,222 tests.
+
 ## 2026-11-26: the emulator oracle loads the image, starts every run clean, and checks past calls
 
 **FIXED (validation).** Reading the harness after the CPU-model fix found
@@ -91,9 +112,9 @@ Sweep of all 689 fixture images: 12,974 functions, 207,584 runs, 90,268
 returns and 4,600 constant conditions checked, 1,616 runs checked past a
 call out, no disagreement.
 
-**OPEN:** the 38 fixture images that carry `LC_DYLD_INFO` fixups and any
-arm64e pointer format are still mapped unfixed. Stack arguments are not
-seeded. A claim whose path condition holds a comparison is skipped,
+The `LC_DYLD_INFO` images named open here are closed by the entry above.
+**OPEN:** an arm64e pointer format is still mapped unfixed. Stack
+arguments are not seeded. A claim whose path condition holds a comparison is skipped,
 because the claim evaluator cannot evaluate it. No branch after a call
 out is checked.
 

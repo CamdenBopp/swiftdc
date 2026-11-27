@@ -5,6 +5,8 @@
 //                                 the word it points at.
 // _emu_image_bound()          -> the address of an import, loaded from its
 //                                 GOT slot: one the loader binds.
+// _emu_image_two_imports()    -> the two imports' addresses xored: not 0,
+//                                 since each import has its own.
 // _emu_image_call_pointer()   -> 5: calls an import through that pointer and
 //                                 returns a constant of its own.
 // _emu_image_uses_result()    -> the import's result plus 1: nothing the
@@ -41,6 +43,16 @@ _emu_image_rebased:
 _emu_image_bound:
   adrp x8, _getpid@GOTPAGE
   ldr x0, [x8, _getpid@GOTPAGEOFF]
+  ret
+
+.p2align 2
+.globl _emu_image_two_imports
+_emu_image_two_imports:
+  adrp x8, _getpid@GOTPAGE
+  ldr x8, [x8, _getpid@GOTPAGEOFF]
+  adrp x9, _getuid@GOTPAGE
+  ldr x9, [x9, _getuid@GOTPAGEOFF]
+  eor x0, x8, x9
   ret
 
 .p2align 2
