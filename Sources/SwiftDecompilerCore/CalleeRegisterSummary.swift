@@ -362,6 +362,22 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             else { inputForwardFlags &= ~4 }
         }
     }
+    /// On some path the body leaves, by a call or a tail branch, to an
+    /// import stub of unknown arity with the x22 it was entered with still
+    /// in x22. Whether that hands the caller's context on depends on the
+    /// import: one whose own signature is `async` takes its context in x22,
+    /// any other receives x22 as callee-saved state. The body does not know
+    /// its imports' names, so the edge waits here, as an in-image call
+    /// waits in `pendingReads`, until `closeOverReads` is given the role of
+    /// each import in `callees` and resolves it into `readsContextRegister`.
+    /// False again after that.
+    var handsContextToImport: Bool {
+        get { inputForwardFlags & 32 != 0 }
+        set {
+            if newValue { inputForwardFlags |= 32 }
+            else { inputForwardFlags &= ~32 }
+        }
+    }
 
     init(
         argumentReads: RegisterSet, provenArgumentReads: RegisterSet = [], provenFloatArgumentReads: RegisterSet = [],
@@ -564,6 +580,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         var writesFloatResult = readFacts?.mayWriteFloatResult ?? false
         var readsFramePointer = readFacts?.readsFramePointer ?? false
         var readsContextRegister = readFacts?.readsContextRegister ?? false
+        // Closed reads have resolved it already (`closeOverReads`).
+        var handsContextToImport = false
         var mayRead: UInt32 = readFacts?.mayReadRegisters ?? 0
         var mayReadFloat: UInt8 = readFacts?.mayReadFloatArguments ?? 0
         // By call address: a block revisited with fewer registers written
@@ -640,6 +658,12 @@ struct CalleeRegisterSummary: Sendable, Equatable {
                             else if insn.branchTarget.map(isImportStub) ?? true { Preservation.abiCallInputs }
                             else { Set(Self.registerNumbers.keys) }
                         for key in inputs { if let number = Self.registerNumbers[key], !written.contains(key) { mayRead |= 1 << number } }
+                        // x22 is not among the ABI's inputs, but an import
+                        // whose signature is `async` takes its context
+                        // there. Which import this is has no answer here.
+                        if known == nil, !written.contains("x22"), insn.branchTarget.map(isImportStub) == true {
+                            handsContextToImport = true
+                        }
                     }
                 }
                 // Operands without access flags are counted as read, so a gap
@@ -889,6 +913,7 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             framedCallTarget: readFacts?.framedCallTarget ?? framedCallTarget(of: function, isFunction: isFunction),
             hasProvenReturnTargets: hasProvenReturnTargets, needsReturnPreservation: needsReturnPreservation)
         summary.leavesOnlyThroughReturn = leavesOnlyThroughReturn
+        summary.handsContextToImport = handsContextToImport
         if let preservedFacts {
             summary.callerFrameReach = preservedFacts.callerFrameReach
             summary.frameReachCalls = preservedFacts.frameReachCalls
@@ -1111,7 +1136,8 @@ struct CalleeRegisterSummary: Sendable, Equatable {
             readsContextRegister: readsContextRegister, clobberedCalleeSaved: Self.calleeSavedKeys,
             definitelyClobbered: Self.calleeSavedKeys, callees: callees, memoryEffect: memoryEffect,
             inputProofEntry: inputProofEntry, pureTailTarget: pureTailTarget, framedCallTarget: framedCallTarget, hasOpaqueInputTransfer: hasOpaqueInputTransfer, hasUnresolvedSwiftErrorCall: hasUnresolvedSwiftErrorCall)
-            .keepingReadRegisters(mayReadRegisters, readsIncomingStack: readsIncomingStack)
+            .keepingReadRegisters(mayReadRegisters, readsIncomingStack: readsIncomingStack,
+                                  handsContextToImport: handsContextToImport)
             .keepingCallerFrameReach(callerFrameReach, calls: frameReachCalls, points: frameReachPoints)
     }
 
@@ -1127,10 +1153,13 @@ struct CalleeRegisterSummary: Sendable, Equatable {
 
 
     /// The facts a rebuild from the initializer would otherwise reset.
-    private func keepingReadRegisters(_ bits: UInt32, readsIncomingStack: Bool) -> CalleeRegisterSummary {
+    private func keepingReadRegisters(
+        _ bits: UInt32, readsIncomingStack: Bool, handsContextToImport: Bool
+    ) -> CalleeRegisterSummary {
         var summary = self
         summary.mayReadRegisters = bits
         summary.readsIncomingStack = readsIncomingStack
+        summary.handsContextToImport = handsContextToImport
         return summary
     }
 
@@ -1266,6 +1295,15 @@ struct CalleeRegisterSummary: Sendable, Equatable {
         return evidence
     }
 
+    /// A callee's printed name says it takes its async context in x22: the
+    /// function's own effects include `async` (`swiftasync`). An `async`
+    /// inside a parameter or result type is not the callee's effect, and a
+    /// name with no signature has no such role.
+    static func isAsyncSignature(_ name: String?) -> Bool {
+        guard let name, name.contains(" async") else { return false }
+        return DisassembledFunction.splitSignature(name)?.isAsync == true
+    }
+
     /// Carries argument reads through calls to in-image functions: each
     /// pending call reads the registers its target reads, among those the
     /// body had not written there. A target with no summary reads every one.
@@ -1279,8 +1317,29 @@ struct CalleeRegisterSummary: Sendable, Equatable {
     /// reading every unwritten register, and its callers passed it whatever
     /// those held: a Terminal helper reached x4 and x5 only through such a
     /// call, and a caller rendered it with two of its own arguments.
-    static func closeOverReads(_ summaries: inout [UInt64: CalleeRegisterSummary]) {
+    ///
+    /// `takesAsyncContext` gives the role of an import stub: true when the
+    /// function bound to it takes its async context in x22
+    /// (`isAsyncSignature`). A body that reaches an import with its
+    /// caller's x22 (`handsContextToImport`) reads the context register when
+    /// one of the imports it reaches has that role, before the fixpoint, so
+    /// its callers inherit the read as they do any other: a veneer `b
+    /// <async import>` hid the import from `bl veneer`, and the caller kept
+    /// the context slot the import wrote. Which of several imports the
+    /// unwritten x22 reached is not kept, so one with the role anywhere in
+    /// the body counts. With no role given, no import takes x22.
+    static func closeOverReads(
+        _ summaries: inout [UInt64: CalleeRegisterSummary],
+        takesAsyncContext: (UInt64) -> Bool = { _ in false }
+    ) {
         let starts = summaries.keys.sorted()
+        for start in starts where summaries[start]?.handsContextToImport == true {
+            if summaries[start]?.callees.contains(where: takesAsyncContext) == true {
+                summaries[start]?.readsContextRegister = true
+                summaries[start]?.mayReadRegisters |= contextRegisterBit
+            }
+            summaries[start]?.handsContextToImport = false
+        }
         var callers: [UInt64: [UInt64]] = [:]
         for start in starts {
             for target in Set((summaries[start]?.pendingReads ?? []).map(\.target)).sorted() {

@@ -61,6 +61,34 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: a veneer to an async import reads its caller's context
+
+**FIXED (soundness).** A body in the image that leaves to an import stub
+was summarised with the ABI's call inputs, which have no x22, so
+`veneer: b <AsyncEdge.endpoint() async>` did not read the context register
+and a caller kept its context slot across `bl veneer`. In
+`libAsyncEdgeRole.dylib`, `veneerLeaf` (a tail veneer), `wrapperLeaf` (the
+same edge as a call) and `frameVeneerLeaf` (x22 holding a frame address)
+rendered `observe(7)`; the machine returns 11. Now `observe(?)`. The
+controls keep 7: a veneer to a synchronous import, and a body that writes
+x22 before reaching the async import.
+
+The summary records one bit, an import of unknown arity reached with the
+entry x22, and `closeOverReads` resolves it with the role of the body's
+imports at all three entry points (streaming, each-function, whole-image).
+Which of several imports the unwritten x22 reached is not kept, so one
+async import anywhere in the body counts: an over-claimed read.
+
+Blast radius against 3b440f5: the fixture only (8 lines structured),
+instructions -0.01%.
+
+**OPEN.** A body that itself does `mov x22, sp; bl <async import stub>`
+still has its own save slots judged intact in its summary. And
+`analyzeEachFunction` forgets a context slot across any call from an async
+body into the image, role or not, so the two controls print `observe(?)`
+there: lost precision, measured with the role turned off.
+
+
 ## 2026-11-27: a Swift.Float16 field has a size
 
 **FIXED (completeness).** A struct with a `Swift.Float16` field had no
@@ -119,9 +147,9 @@ reload from the context is no longer proven.
 Blast radius against bf98e25 (`Tools/blast-radius.sh --real --perf`): the
 new fixture only, in all four views; instructions -0.03%.
 
-**OPEN.** A veneer in the image that tail-branches to an async import is
-still summarised as not reading x22. An unnamed `blr` and an import whose
-symbol is not a Swift signature keep x22 as callee-saved state.
+The veneer case is fixed in the entry above. **OPEN.** An unnamed `blr`
+and an import whose symbol is not a Swift signature keep x22 as
+callee-saved state.
 
 
 ## 2026-11-27: closed-caller async scaffolding lands with no caller

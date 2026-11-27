@@ -434,7 +434,7 @@ $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -o libEmuImage.dylib
 # The same image with the older bind opcodes in place of chained fixups.
 $CLANG -arch arm64 -dynamiclib emuimage.s -lobjc -Wl,-no_fixup_chains -o libEmuImage.opcodes.dylib
 
-echo "==> x22 at a call to an imported callee: an async signature takes the context, any other name does not (async_edge_role.s, async_edge_role_provider.s)"
+echo "==> x22 at a call to an imported callee, directly or through a veneer in the image: an async signature takes the context, any other name does not (async_edge_role.s, async_edge_role_provider.s)"
 $CLANG -arch arm64 -dynamiclib async_edge_role_provider.s \
     -Wl,-install_name,@rpath/libAsyncEdgeRoleProvider.dylib -o libAsyncEdgeRoleProvider.dylib
 $CLANG -arch arm64 -dynamiclib async_edge_role.s -L. -lAsyncEdgeRoleProvider -Wl,-rpath,@loader_path -o libAsyncEdgeRole.dylib

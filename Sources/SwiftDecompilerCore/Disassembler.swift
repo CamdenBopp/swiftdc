@@ -1092,7 +1092,9 @@ public struct Disassembler: Sendable {
                     calleeEffects: effects, calleeArity: arity, isFunction: isFunction, isImportStub: isImportStub, isStackProbe: isStackProbe)
             }
         }
-        CalleeRegisterSummary.closeOverReads(&registerSummaries)
+        CalleeRegisterSummary.closeOverReads(&registerSummaries, takesAsyncContext: { target in
+            isImportStub(target) && CalleeRegisterSummary.isAsyncSignature(names[target])
+        })
         // Keep the arity closure's original name snapshot. The complete name
         // index is needed here only to decide whether positive entry-role
         // proofs have any possible consumer in this image.
@@ -1663,7 +1665,9 @@ public struct Disassembler: Sendable {
                 }
             }
         }
-        CalleeRegisterSummary.closeOverReads(&summaries)
+        CalleeRegisterSummary.closeOverReads(&summaries, takesAsyncContext: { target in
+            isImportStub(target) && CalleeRegisterSummary.isAsyncSignature(resolver.names[target])
+        })
         let rebuildingEntryRoles = hasEntryRoleConsumer || Self.needsEntryRegisterProofs(
             in: machO, names: resolvedNames, folded: foldedByAddress, swiftTargets: swiftTargets)
         CalleeRegisterSummary.closeOverCalls(&summaries, rebuildingEntryRoles: rebuildingEntryRoles) { start, effects, readFacts, reusePreservation in
@@ -1951,7 +1955,9 @@ public struct Disassembler: Sendable {
                         }
                     }
                 }
-                CalleeRegisterSummary.closeOverReads(&summaries)
+                CalleeRegisterSummary.closeOverReads(&summaries, takesAsyncContext: { target in
+                    isImportStub(target) && CalleeRegisterSummary.isAsyncSignature(resolver.names[target])
+                })
                 let rebuildingEntryRoles = hasEntryRoleConsumer || Self.needsEntryRegisterProofs(
                     in: machO, names: resolvedNames, folded: foldedByAddress, swiftTargets: swiftTargets)
                 CalleeRegisterSummary.closeOverCalls(&summaries, rebuildingEntryRoles: rebuildingEntryRoles) { start, effects, readFacts, reusePreservation in
