@@ -88,7 +88,11 @@ Instructions +0.16%.
   where `arg1` is stale. It takes `self` in x0 and nothing after it:
   `getter(self: arg0)`. One line, in the fixture. The two getter rules
   together cost +0.4% instructions: each parses the callee's name again
-  at every call site they reach, which a shared parse would remove.
+  at every call site they reach. **FIXED (speed)** in the commit after:
+  one parse per call site, shared by the four getter layouts. 3,404
+  renders, 0 lines changed, instructions 9354.0G -> 9254.4G (-1.06%),
+  below the 9307.4G measured before either rule; whole-image
+  libSwiftSyntax `--structured` 794.7G -> 783.7G (-1.4%).
 - A getter an extension adds (`(extension in M):Swift.Float.….getter`)
   is not a scalar the lowering knows and stays positional.
 

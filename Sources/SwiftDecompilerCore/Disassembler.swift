@@ -10549,6 +10549,16 @@ public struct Disassembler: Sendable {
                 strategy = "string-getter"
                 continue
             }
+            // The receiver type of an instance property getter called with no
+            // `self` in x20, parsed once for the four layouts below.
+            let getterReceiver: String? = {
+                guard selfValueBySite[address] == nil, let callee = calleeByAddress[address],
+                      callee.contains(".getter"),
+                      let property = DisassembledFunction.swiftAccessorProperty(callee), property.isGetter,
+                      let accessor = callee.range(of: ".\(property.property).getter")
+                else { return nil }
+                return String(callee[..<accessor.lowerBound])
+            }()
             // A value type's instance getter takes no formal parameter: its
             // registers from x0 are `self`'s words, as many as the type
             // lowers to, and nothing after them. Positional, `Pair(a: x,
@@ -10557,11 +10567,9 @@ public struct Disassembler: Sendable {
             // Only when the site has no `self` in x20: a witness through an
             // existential, or a struct passed by address (`VersionTuple.
             // normalized.getter(self: local_80)`), takes it there.
-            if selfValueBySite[address] == nil, let callee = calleeByAddress[address],
-               let property = DisassembledFunction.swiftAccessorProperty(callee), property.isGetter,
+            if let receiver = getterReceiver, let callee = calleeByAddress[address],
                !callee.hasPrefix("static "), !callee.contains(".subscript"),
-               let accessor = callee.range(of: ".\(property.property).getter"),
-               case let receiver = String(callee[..<accessor.lowerBound]), classTypeIndex.isValueType(receiver),
+               classTypeIndex.isValueType(receiver),
                typeFieldMaps[receiver]?.isGeneric == false,
                let words = SwiftLowering.aggregateRegisters(of: receiver, fieldMaps: typeFieldMaps,
                                                             enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex),
@@ -10577,11 +10585,9 @@ public struct Disassembler: Sendable {
             // A possibly resilient receiver is passed by address in x20,
             // and the getter takes nothing else. With no value tracked
             // there the receiver is unknown, not absent: `getter(self: ?)`.
-            if selfValueBySite[address] == nil, let callee = calleeByAddress[address],
-               let property = DisassembledFunction.swiftAccessorProperty(callee), property.isGetter,
+            if let receiver = getterReceiver, let callee = calleeByAddress[address],
                !callee.hasPrefix("static "), !callee.contains(".subscript"),
-               let accessor = callee.range(of: ".\(property.property).getter"),
-               typeFieldMaps[String(callee[..<accessor.lowerBound])]?.mayBeResilient == true {
+               typeFieldMaps[receiver]?.mayBeResilient == true {
                 selfValueBySite[address] = .unknown
                 argumentsByAddress[address] = []
                 strategy = "resilient-getter-self"
@@ -10598,11 +10604,8 @@ public struct Disassembler: Sendable {
             // Nor does a getter or subscript an extension adds: its receiver
             // is spelled `(extension in M):Swift.Float`, which is no scalar
             // the lowering knows.
-            if selfValueBySite[address] == nil, let callee = calleeByAddress[address],
-               let property = DisassembledFunction.swiftAccessorProperty(callee), property.isGetter,
-               let accessor = callee.range(of: ".\(property.property).getter"),
-               SwiftLowering.of(String(callee[..<accessor.lowerBound]), enumCaseIndex: enumCaseIndex,
-                                classTypeIndex: classTypeIndex) == .oneFloat {
+            if let receiver = getterReceiver,
+               SwiftLowering.of(receiver, enumCaseIndex: enumCaseIndex, classTypeIndex: classTypeIndex) == .oneFloat {
                 selfValueBySite[address] = .unknown
                 strategy = "float-getter-self"
                 continue
@@ -10611,10 +10614,7 @@ public struct Disassembler: Sendable {
             // `self` in x0 and nothing after it: `Int.hashValue.getter` at
             // -Onone read `getter(arg0, arg1)`, the caller's second formal
             // still in x1.
-            if selfValueBySite[address] == nil, let callee = calleeByAddress[address],
-               let property = DisassembledFunction.swiftAccessorProperty(callee), property.isGetter,
-               let accessor = callee.range(of: ".\(property.property).getter"),
-               SwiftLowering.fixedWidthIntegers.contains(String(callee[..<accessor.lowerBound])) {
+            if let receiver = getterReceiver, SwiftLowering.fixedWidthIntegers.contains(receiver) {
                 let value = values.first.map(sanitizeValue) ?? .unknown
                 selfValueBySite[address] = value
                 strategy = "integer-getter-self"
