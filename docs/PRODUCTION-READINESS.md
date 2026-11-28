@@ -61,6 +61,26 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: a printed signature is parsed once for each name
+
+**FIXED (speed).** A profile of a whole serial release render of
+libSwiftSyntax (`sample`, 783G instructions) put 40% of CPU in
+`enrichCallArguments` and 11% of the run in one scan:
+`splitSignature` looking for a callee name's top-level arrow, asked again
+at every call to that callee and by about ten passes. The parse is a pure
+function of the name, and is now cached by name behind 64 lock-guarded
+shards, each emptied past 8,192 entries.
+
+`Tools/blast-radius.sh --real --perf` against 396a295: 0 lines changed in
+3,532 renders. Instructions 9807.9G -> 9455.9G (-3.59%). Whole-image:
+libSwiftSyntax `--structured` 783.1G -> 737.7G (-5.8%), `xrefs` -5.9%;
+libSwiftParser -5.5% and -5.8%. Footprint +1.2% to +3.3% on those four
+runs, -0.07% in total. The full suite ran in 751 s, against 791 s.
+
+**OPEN.** The same profile: `Sequence.starts(with:)` 5.6% and dictionary
+lookups 5% of the run, mostly name tests inside `enrichCallArguments`.
+
+
 ## 2026-11-27: the first fixture family is held by the emulator
 
 **ADDED (tests).** `cfa.swift`, a family of 190 compiled functions whose

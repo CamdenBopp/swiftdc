@@ -282,7 +282,17 @@ extension DisassembledFunction {
         return declaration[..<accessor].hasSuffix(".subscript")
     }
 
-    static func splitSignature(
+    /// A printed signature's parts. Parsed once for each distinct name: a
+    /// callee's name is asked for its parts at every call to it and by a
+    /// dozen passes, and the scan for its top-level arrow was 11% of a
+    /// whole-image render (libSwiftSyntax, 2026-11-27).
+    typealias SplitSignature = (head: String, result: String, isAsync: Bool, isThrowing: Bool, thrownType: String?)
+
+    static func splitSignature(_ name: String) -> SplitSignature? {
+        SplitSignatureCache.shared.value(for: name) { parseSignature(name) }
+    }
+
+    private static func parseSignature(
         _ name: String
     ) -> (head: String, result: String, isAsync: Bool, isThrowing: Bool, thrownType: String?)? {
         // A storage entity's arrow belongs to the storage's type. Read as
@@ -423,4 +433,48 @@ extension DisassembledFunction {
         return parts
     }
 
+}
+
+/// `splitSignature`'s results by name. The parse is a pure function of the
+/// name, so a cached answer is the answer, in any order and from any thread:
+/// functions are analysed across the cores, and each shard has its own lock.
+/// A shard that grows past its bound is emptied, which costs a reparse and
+/// changes nothing else.
+private final class SplitSignatureCache: @unchecked Sendable {
+    static let shared = SplitSignatureCache()
+
+    private enum Entry {
+        case none
+        case parsed(DisassembledFunction.SplitSignature)
+    }
+
+    private final class Shard {
+        let lock = NSLock()
+        var entries: [String: Entry] = [:]
+    }
+
+    private static let shardCount = 64
+    private static let shardBound = 8192
+    private let shards = (0..<SplitSignatureCache.shardCount).map { _ in Shard() }
+
+    func value(
+        for name: String, parse: () -> DisassembledFunction.SplitSignature?
+    ) -> DisassembledFunction.SplitSignature? {
+        var hasher = Hasher()
+        hasher.combine(name)
+        let shard = shards[Int(UInt(bitPattern: hasher.finalize()) % UInt(Self.shardCount))]
+        shard.lock.lock()
+        if let entry = shard.entries[name] {
+            shard.lock.unlock()
+            if case .parsed(let value) = entry { return value }
+            return nil
+        }
+        shard.lock.unlock()
+        let value = parse()
+        shard.lock.lock()
+        if shard.entries.count >= Self.shardBound { shard.entries.removeAll(keepingCapacity: true) }
+        shard.entries[name] = value.map(Entry.parsed) ?? .none
+        shard.lock.unlock()
+        return value
+    }
 }
