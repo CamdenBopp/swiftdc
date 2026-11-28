@@ -106,8 +106,19 @@ Not taken, each with a reason in `work/fork-survey-2026-11-27.md`:
 `MachOFile.init(data:)` (#360, makes `url` optional and breaks the
 packages above), the multi-start chained fixup fix (#367, conflicts with
 the segment-relative file), the readers refactor (#368), swift-fileio
-0.16. **OPEN:** no malformed-input fixture of swiftdc's own exercises the
-bounded readers; the fork's tests do.
+0.16.
+
+`MachOKitHardeningTests` now feeds those readers from swiftdc: a bind and
+a rebase stream whose ULEB128 runs off the end, and an export trie whose
+only child is its own root, each written over a copy of
+`libEmuImage.opcodes.dylib`. On the old pin the test process dies; on this
+one all four pass.
+
+**OPEN, found writing them.** `MachOPreflight` refuses the looping export
+trie but accepts both opcode streams: it checks their ranges and special
+ordinals, not that each ULEB ends. Before this pin such a file reached
+unbounded readers through `disasm`. It now comes back with its functions,
+and nothing says the stream was cut short.
 
 
 ## 2026-11-27: a printed signature is parsed once for each name
