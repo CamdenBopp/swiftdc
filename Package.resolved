@@ -1,5 +1,5 @@
 {
-  "originHash" : "d0423336aa9291b1d817e1989cbe0e86928a42b6d44b58bdd4895f7a6dd5a7fa",
+  "originHash" : "20d8a4baf083272955cb3f637013043bba4f73e1cdc16c2edc8039e089214749",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -42,7 +42,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/CamdenBopp/MachOKit.git",
       "state" : {
-        "revision" : "32629829cccea576194b3c5667328cb68e17fd2e"
+        "revision" : "87e16e69ec43bb03b42a6b61481004ef4557db6f"
       }
     },
     {

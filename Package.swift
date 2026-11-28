@@ -96,13 +96,20 @@ let package = Package(
         // 4.4s, dump 168s -> 77s, interface 240s -> 74s. The 64-bit fat header
         // fix the old fork cherry-picked (p-x9 #340) is upstream in 0.55.0,
         // line for line, and FatArch64Tests passes on it.
-        // Branch swiftdc-interim/0.55.100-vm-relative, on top of
-        // swiftdc-interim/0.55.100-memoize-cache.
+        // Branch swiftdc-interim/0.55.102-hardened: MxIris 0.55.102, whose own
+        // fix (a standalone file is given no dyld cache) replaces the memo
+        // this fork carried, with the segment-relative fixups and unaligned
+        // loads on top, and five upstream p-x9 changes MxIris has not merged:
+        // bounded LEB128, trie and opcode reads (#358), the trap on a negative
+        // chained import addend (#357), two classic binding fixes (#354,
+        // #366), the chained pointer stride (#356) and the initializers their
+        // tests need (#352).
         // As the root package this revision overrides the transitive range;
-        // return to an upstream version pin once the memo ships.
+        // return to an upstream version pin once MxIris carries these and the
+        // segment-relative reads.
         .package(
             url: "https://github.com/CamdenBopp/MachOKit.git",
-            revision: "32629829cccea576194b3c5667328cb68e17fd2e"
+            revision: "87e16e69ec43bb03b42a6b61481004ef4557db6f"
         ),
         // `Semantic` provides SemanticString, the return type of SwiftDump's
         // `.dump(...)`. Moves in lockstep with MachOSwiftSection: 0.15.0 raised its

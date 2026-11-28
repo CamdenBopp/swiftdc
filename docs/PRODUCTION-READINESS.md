@@ -61,6 +61,33 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: the MachOKit fork takes MxIris 0.55.102 and upstream's hardening
+
+**CHANGED (robustness).** The MachOKit pin moves to 87e16e69, branch
+`swiftdc-interim/0.55.102-hardened`. It merges MxIris 0.55.102, whose own
+fix (a standalone file is given no dyld cache instead of being reopened as
+one) replaces the cache memo this fork carried, and adds five upstream
+p-x9 changes MxIris has not merged: bounded LEB128, trie and opcode reads
+(#358), a trap on a negative 64-bit chained import addend (#357), two
+classic binding fixes (#354, #366), the chained pointer stride (#356) and
+the initializers their tests need (#352). The segment-relative fixups and
+unaligned loads stay on top.
+
+On the pinned revision: full enforcing suite 2,297 passed;
+`Tools/blast-radius.sh --real --perf` against 4a59f30, 0 lines changed in
+3,532 renders, instructions +0.00%, footprint -0.65%. `dump`, `objc` and
+`interface` on libSwiftSyntax are byte-identical at the same instruction
+counts (46.4G, 1.4G, 1012.4G), so MxIris's fix costs what the memo did.
+The fork's own 50 targeted tests pass.
+
+Not taken, each with a reason in `work/fork-survey-2026-11-27.md`:
+`MachOFile.init(data:)` (#360, makes `url` optional and breaks the
+packages above), the multi-start chained fixup fix (#367, conflicts with
+the segment-relative file), the readers refactor (#368), swift-fileio
+0.16. **OPEN:** no malformed-input fixture of swiftdc's own exercises the
+bounded readers; the fork's tests do.
+
+
 ## 2026-11-27: a printed signature is parsed once for each name
 
 **FIXED (speed).** A profile of a whole serial release render of
