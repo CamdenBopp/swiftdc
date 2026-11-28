@@ -511,6 +511,16 @@ linked scalar positive. A sampled mutation run left 17 of 18 guards
 standing, so the guards in these files are not yet held by tests; each
 needs a killing test before it gates a render.
 
+**Measured in full, 2026-11-27.** One mutation for each boolean guard
+clause in the six files, 155 of them, each removing the clause, run with
+`Tools/mutate.py` against the 17 tests: 21 did not compile, 29 were
+killed, **105 survived**. By file, survived of valid: AsyncCheckedImage
+30 of 31, AsyncPhysicalReplay 24 of 24, AsyncPhysicalRegion 18 of 24,
+AsyncClosedCallerSolver 17 of 27, AsyncDetachedIngress 14 of 26,
+AsyncPhysicalInstructionLifter 2 of 2. AsyncPhysicalReplay and the lifter
+have no clause a test holds. Nothing may be wired to this code on the
+strength of its tests.
+
 
 ## 2026-11-27: the emulator oracle binds an image linked with bind opcodes
 
