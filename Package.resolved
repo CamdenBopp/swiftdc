@@ -1,5 +1,5 @@
 {
-  "originHash" : "20d8a4baf083272955cb3f637013043bba4f73e1cdc16c2edc8039e089214749",
+  "originHash" : "161c02d8842e663242ba423f64e325f5585d582cdd6b1b229bf033fdeb955515",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -58,7 +58,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/CamdenBopp/MachOObjCSection.git",
       "state" : {
-        "revision" : "eabdb358cd181b7aafbd9bb38adcd98a9f2448e2"
+        "revision" : "e0c52c748586d38a4991ced3e70bbe0a85d5c27f"
       }
     },
     {

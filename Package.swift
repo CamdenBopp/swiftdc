@@ -139,12 +139,16 @@ let package = Package(
         // 0.8.201 and later require MachOKit 0.55.100, and a `from:` range
         // resolved to 0.8.200, which lacks the selector, signed-IMP and
         // relative-method-list fixes.
-        // INTERIM FORK of 0.8.205, branch swiftdc-interim/0.8.205-vm-relative: a
-        // relative method list's fields through their segments. An exact pin would
-        // be the upstream one; see the note above on why it is not.
+        // INTERIM FORK of 0.8.205, branch swiftdc-interim/0.8.205-upstream-fixes:
+        // a relative method list's fields through their segments, unaligned
+        // loads, and three upstream p-x9 fixes MxIris has not merged: a null
+        // relative method implementation reads as zero, in a file and in a
+        // loaded image, and a protocol's list pointer with the list-of-lists
+        // bit set is not read as a list. An exact pin would be the upstream
+        // one; see the note above on why it is not.
         .package(
             url: "https://github.com/CamdenBopp/MachOObjCSection.git",
-            revision: "eabdb358cd181b7aafbd9bb38adcd98a9f2448e2"
+            revision: "e0c52c748586d38a4991ced3e70bbe0a85d5c27f"
         ),
         // INTERIM FORKS of p-x9's binary-parsing and file packages, branch
         // swiftdc-interim/unaligned-loads on the versions MachOKit and

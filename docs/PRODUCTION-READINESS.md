@@ -61,6 +61,28 @@ The Swift benchmark checks every repeat's output and exit status. Its smoke
 results do not replace previously recorded release performance measurements.
 
 
+## 2026-11-27: the MachOObjCSection fork takes three upstream fixes
+
+**CHANGED (robustness).** The MachOObjCSection pin moves to e0c52c74,
+branch `swiftdc-interim/0.8.205-upstream-fixes`: three p-x9 fixes MxIris
+has not merged, on top of the segment-relative method lists and unaligned
+loads. A null relative method implementation reads as zero, in a file and
+in a loaded image, where it was resolved as an offset from the entry; and
+a protocol's list pointer with the list-of-lists bit set is no longer
+read as a list. The two that touched this fork's own reader were ported
+hunk by hunk.
+
+On the pinned revision, against 5d8d81d: full enforcing suite 2,297
+passed; 0 lines changed in 3,532 renders, instructions +0.05%; `objc` on
+all 738 fixture images byte-identical. No fixture has a null relative
+implementation or a list-of-lists protocol pointer, so the fixes
+themselves are unexercised here: **OPEN**.
+
+Not taken: upstream's class layout matching `class_t`, which removes
+`swiftClassFlags` from the layout that MachOSwiftSection 0.24 reads; list
+entry positions and `locateValue`, which conflict.
+
+
 ## 2026-11-27: the MachOKit fork takes MxIris 0.55.102 and upstream's hardening
 
 **CHANGED (robustness).** The MachOKit pin moves to 87e16e69, branch
